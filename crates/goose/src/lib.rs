@@ -17,6 +17,11 @@ pub mod conversation {
     pub use goose_providers::conversation::*;
 }
 pub mod dictation;
+// BharatCode v95: canonical product/page manifest for the offline docs-site
+// generator. The CLI's `docsite::generate_site` consumes
+// `goose::doc_manifest::pages()` to seed the generated index, so this manifest
+// is the single source of truth that the generator is driven by (its live wire).
+pub mod doc_manifest;
 pub mod docs_gen;
 pub mod doctor;
 pub mod download_manager;

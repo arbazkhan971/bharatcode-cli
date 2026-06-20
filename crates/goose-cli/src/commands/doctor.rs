@@ -68,6 +68,18 @@ mod security_check;
 #[path = "tutorials.rs"]
 mod tutorials;
 
+// Release packaging readiness deep check (BharatCode v94). A read-only,
+// always-visible row that confirms the release asset names the packaging matrix
+// generator emits stay in lockstep with the self-updater's `asset_name()` and
+// that the running `--version` parses as major.minor.patch. The module lives
+// under `src/release/` (its pure `nfpm_config`/`homebrew_formula`/`sha256sums`/
+// `expected_asset_names` helpers are invoked by release tooling); it is
+// registered here, inline, rather than in lib.rs/cli.rs, same posture as
+// `index_check` above. The `#[path]` is relative to this file's directory
+// (`commands/`), so it reaches the sibling `release/` dir via `../release/`.
+#[path = "../release/package_matrix.rs"]
+pub mod package_matrix;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;

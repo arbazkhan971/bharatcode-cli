@@ -90,6 +90,18 @@ pub(crate) mod streaming_perf;
 #[path = "../packaging.rs"]
 pub(crate) mod packaging;
 
+// v92: privacy-preserving, LOCAL-ONLY aggregated usage rollup (turns, tool
+// invocations, bucketed token/₹ totals) persisted under the state dir. Default
+// OFF behind `BHARATCODE_ANALYTICS`; records coarse counts only — never any
+// prompt/output/path content — and never phones home. The
+// `AnalyticsStore`/`summary_lines` helpers live in `usage_analytics.rs`, wired
+// in here (rather than via lib.rs, which another version owns) so the module is
+// reachable from the running binary alongside the `BHARATCODE_ANALYTICS` key,
+// and its rollup is surfaced through `Config::analytics_summary` on the same
+// config-summary surface doctor / info already render.
+#[path = "../usage_analytics.rs"]
+pub mod usage_analytics;
+
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
