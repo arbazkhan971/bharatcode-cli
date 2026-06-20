@@ -83,6 +83,14 @@ pub mod testgen;
 #[path = "../ci_integration.rs"]
 pub mod ci_integration;
 
+// Opt-in desktop notification on long-turn completion lives in
+// crates/goose/src/desktop_notify.rs. It shares the same finalization point as
+// the testgen/ci hooks above: when enabled and the turn ran past a threshold it
+// fires a best-effort OS notification (notify-send / osascript, bell fallback).
+// Off by default behind BHARATCODE_NOTIFY.
+#[path = "../desktop_notify.rs"]
+pub mod desktop_notify;
+
 // Post-turn editor/IDE changed-files manifest sidecar lives in
 // crates/goose/src/editor_bridge.rs. It shares the same finalization point as
 // the testgen nudge above and reuses the already-computed set of changed files
@@ -1908,6 +1916,7 @@ impl Agent {
             session.agent_type = "bharatcode",
         );
         let inner = Box::pin(async_stream::try_stream! {
+            let turn_started_at = std::time::Instant::now();
             let mut turns_taken = 0u32;
             let max_turns = session_config.max_turns.unwrap_or_else(|| {
                 Config::global()
@@ -2750,6 +2759,14 @@ impl Agent {
                         None,
                     );
                     plugin_summary::dispatch(s, &self.hook_manager, &session_config.id).await;
+                }
+
+                if desktop_notify::is_enabled() {
+                    let elapsed = turn_started_at.elapsed().as_secs();
+                    if elapsed >= desktop_notify::threshold_secs() {
+                        let (title, body) = desktop_notify::completion_message(elapsed);
+                        desktop_notify::notify(&title, &body);
+                    }
                 }
             }
 

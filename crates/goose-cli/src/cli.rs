@@ -76,6 +76,12 @@ pub mod catalog_cmd;
 #[path = "commands/mcp_registry.rs"]
 pub mod mcp_registry_cmd;
 
+// Same rationale as the modules above: the interactive first-run onboarding
+// wizard (`bharatcode onboard`) is declared here, from cli.rs, via an explicit
+// `#[path]` rather than editing the contended `commands/mod.rs`.
+#[path = "commands/onboarding.rs"]
+mod onboarding;
+
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -912,6 +918,18 @@ enum Command {
         path: Option<std::path::PathBuf>,
     },
 
+    /// Guided, idempotent first-run wizard (language, provider/model preset, privacy)
+    #[command(
+        about = "Guided first-run setup: language, provider/model preset, and privacy posture"
+    )]
+    Onboard {
+        /// Print the localized step outline and next-steps summary without
+        /// prompting or saving choices. Also implied automatically when no
+        /// terminal is attached (e.g. CI).
+        #[arg(long)]
+        noninteractive: bool,
+    },
+
     /// List curated India / open-weight model presets
     #[command(about = "List recommended India / open-weight model presets")]
     Presets {},
@@ -1587,6 +1605,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Configure {}) => "configure",
         Some(Command::Doctor {}) => "doctor",
         Some(Command::Git { .. }) => "git",
+        Some(Command::Onboard { .. }) => "onboard",
         Some(Command::Presets {}) => "presets",
         Some(Command::ModelPack { .. }) => "model-pack",
         Some(Command::RecipesLibrary { .. }) => "recipes-library",
@@ -2390,6 +2409,12 @@ pub async fn cli() -> anyhow::Result<()> {
                 limit,
                 path,
             })
+        }
+        Some(Command::Onboard { noninteractive }) => {
+            onboarding::handle_onboard(onboarding::OnboardOptions {
+                no_prompt: noninteractive,
+            })
+            .await
         }
         Some(Command::Presets {}) => {
             crate::commands::presets::print_presets();

@@ -8,6 +8,7 @@ pub mod doctor_checks;
 pub mod gateway;
 pub mod gen_docs;
 pub mod git_helper;
+pub mod help_index;
 pub mod info;
 pub mod mcp_registry;
 pub mod plugin;
@@ -25,6 +26,7 @@ pub mod skills;
 pub mod term;
 #[cfg(feature = "tui")]
 pub mod tui;
+pub mod tutorials;
 #[cfg(feature = "update")]
 pub mod update;
 
@@ -32,6 +34,15 @@ pub mod update;
 // reachable as crate API. The CLI dispatch lives in `cli.rs` (owned by a
 // sibling in this wave) and wires `bharatcode gen-docs` to this handler.
 pub use gen_docs::{doc_guide_section, handle_gen_docs, GenDocsOptions};
+
+// Re-export the `help-index` entry point so the localized, grouped command and
+// feature-flag index is reachable as crate API. The `help_index` table is
+// static and side-effect free; `help_index::help_footer_line` is invoked from
+// the interactive `/help` footer in `session/input.rs` so the index is reachable
+// in the running binary, and `handle_help_index` wires `bharatcode help-index`
+// (text or `--json`) once `cli.rs`, owned by a sibling in this wave, dispatches
+// to it. Both surfaces are read-only and leave default behavior unchanged.
+pub use help_index::{handle_help_index, help_footer_line, HelpEntry, HelpIndexOptions};
 
 // Re-export the `recipe-share` entry point so the recipe export/import bundle
 // flow is reachable as crate API. The CLI dispatch lives in `cli.rs` (owned by
@@ -48,3 +59,13 @@ pub use recipe_share::{run as run_recipe_share, RecipeBundle};
 // `McpRegistryAction`; the listing is offline, embedded, and has no side
 // effects, so default behavior is unchanged.
 pub use mcp_registry::{handle_mcp_registry, McpRegistryAction};
+
+// Re-export the `tutorial` entry point so the offline, embedded, locale-aware
+// walkthroughs are reachable as crate API. The module is already live in the
+// running binary: `session/builder.rs` path-includes `tutorials.rs` and calls
+// `first_run_nudge()` on the session-build path to point new users at
+// `bharatcode tutorial`. `handle_tutorial` wires `bharatcode tutorial`
+// (no arg => list ids+titles; `--show <id>` => print one walkthrough) once
+// `cli.rs`, owned by a sibling in this wave, dispatches to it. Every tutorial is
+// embedded and side-effect free, so default behavior is unchanged.
+pub use tutorials::{handle_tutorial, Tutorial, TUTORIALS};

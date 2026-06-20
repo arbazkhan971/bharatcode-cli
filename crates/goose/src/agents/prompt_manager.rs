@@ -61,6 +61,12 @@ pub mod ext_digest;
 #[path = "../automation_mode.rs"]
 mod automation_mode;
 
+// Screen-reader system-prompt advisory (opt-in via BHARATCODE_A11Y). Declared
+// inline via `#[path]` so the wiring stays confined to the prompt-assembly path
+// and its own file, keeping lib.rs untouched.
+#[path = "../a11y_prompt.rs"]
+mod a11y_prompt;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -262,6 +268,13 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // When disabled this is None and the prompt is byte-identical.
         if let Some(b) = automation_mode::automation_block() {
             system_prompt_extras.insert("bharatcode_automation".to_string(), b);
+        }
+
+        // Screen-reader advisory (opt-in via BHARATCODE_A11Y). Steers replies
+        // toward plain-text, screen-reader-friendly prose. When disabled this is
+        // None and the prompt is byte-identical.
+        if let Some(block) = a11y_prompt::advisory_block() {
+            system_prompt_extras.insert("bharatcode_a11y".to_string(), block);
         }
 
         // Incremental-context repo digest (opt-in via BHARATCODE_REPO_DIGEST).

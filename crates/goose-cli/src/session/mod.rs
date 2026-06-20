@@ -18,6 +18,22 @@ mod thinking;
 #[path = "../commands/plan_file.rs"]
 mod plan_file;
 
+// BharatCode v88: locale- and a11y-aware status-line formatter. Declared via
+// #[path] (the same out-of-tree-module precedent as `plan_file` above) and
+// reached only from the per-turn footer render in `display_context_usage`
+// below, which adds one muted status line without disturbing the banner.
+#[path = "status_line.rs"]
+mod status_line;
+
+// Best-effort desktop notifications for long interactive turns. The module lives
+// at crates/goose-cli/src/desktop_notify.rs and is CLI-local; it is pulled in
+// here via #[path] (the same out-of-tree precedent as `plan_file` above) so the
+// only call site — `run_interactive`'s user-turn completion below — can reach it
+// without touching goose/lib.rs. Entirely gated behind BHARATCODE_NOTIFY (OFF by
+// default), so the default interactive loop is unchanged.
+#[path = "../desktop_notify.rs"]
+mod desktop_notify;
+
 use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
 };
@@ -760,6 +776,15 @@ impl CliSession {
                 let elapsed = start_time.elapsed();
                 let elapsed_str = format_elapsed_time(elapsed);
                 println!("{}", console::style(format!("  ⏱ {}", elapsed_str)).dim());
+
+                // Opt-in (BHARATCODE_NOTIFY) desktop ping when an interactive turn
+                // ran long enough to be worth one. Best-effort and OFF by default.
+                if desktop_notify::is_enabled() && elapsed.as_secs() >= desktop_notify::min_secs() {
+                    let _ = desktop_notify::notify(
+                        desktop_notify::TURN_COMPLETE_TITLE,
+                        desktop_notify::TURN_COMPLETE_BODY,
+                    );
+                }
             }
             RunMode::Plan => {
                 let mut plan_messages = self.messages.clone();
@@ -1845,13 +1870,64 @@ impl CliSession {
                         &metadata.usage,
                     );
                 }
+
+                // BharatCode v88: append one muted, locale-/a11y-aware status
+                // footer per turn boundary. Additive and low-priority — it only
+                // adds a single dim line below the existing banner.
+                self.render_status_footer(
+                    &model_config.model_name,
+                    &provider_name,
+                    total_tokens,
+                    context_limit,
+                );
             }
             Err(_) => {
                 output::display_context_usage(0, context_limit);
+
+                self.render_status_footer(
+                    &model_config.model_name,
+                    &provider_name,
+                    0,
+                    context_limit,
+                );
             }
         }
 
         Ok(())
+    }
+
+    /// Emit the v88 status footer: a single muted, aligned line summarizing the
+    /// model, provider and context usage, routed through the locale- and
+    /// `NO_COLOR`-aware [`status_line::format_status`] formatter.
+    fn render_status_footer(
+        &self,
+        model: &str,
+        provider: &str,
+        total_tokens: usize,
+        context_limit: usize,
+    ) {
+        let context_pct = if context_limit == 0 {
+            0u8
+        } else {
+            (((total_tokens as f64 / context_limit as f64) * 100.0).round() as i64).clamp(0, 100)
+                as u8
+        };
+
+        let width_budget = console::Term::stdout()
+            .size_checked()
+            .map(|(_, cols)| cols as usize)
+            .unwrap_or(80)
+            .max(8);
+
+        let ctx = status_line::StatusCtx {
+            model,
+            provider,
+            context_pct,
+            rupees_spent: None,
+            width_budget,
+        };
+
+        output::render_text(&status_line::format_status(ctx), None, true);
     }
 
     /// Handle prompt command execution

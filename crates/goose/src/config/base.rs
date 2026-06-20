@@ -23,6 +23,15 @@ use thiserror::Error;
 #[path = "../agent_caps.rs"]
 pub(crate) mod agent_caps;
 
+// UX / i18n preferences (this wave: interface language, color theme,
+// accessibility, desktop notifications, cost dashboard, onboarding nudges) are
+// read through the env-first `from_config` resolver below. The reader/summary
+// helpers live in `ux_prefs.rs`, wired in here (rather than via lib.rs) so the
+// module is reachable from the running binary alongside its config keys, and
+// surfaced through `Config::ux_prefs_summary`.
+#[path = "../ux_prefs.rs"]
+pub(crate) mod ux_prefs;
+
 // Extension/plugin ecosystem config getters (plugin auto-update, MCP-registry
 // banner, recipe-share default output dir, automation-mode default) are read
 // through the typed `get_bharatcode_*` getters registered below. The
@@ -592,6 +601,18 @@ impl Config {
     /// capabilities are active.
     pub fn agent_caps_summary(&self) -> Vec<String> {
         agent_caps::summary_lines_for_config(self)
+    }
+
+    /// Human-readable `Label: value` rows for this wave's UX / i18n preferences
+    /// (interface language, color theme, accessibility, desktop notifications,
+    /// cost dashboard, onboarding nudges), resolved env-first from this config.
+    /// Every preference defaults to its current behaviour (English, default
+    /// theme, toggles off, nudges on), so the summary on a clean config reports
+    /// all-default. Localization-agnostic English labels. Gives doctor/onboard
+    /// one coherent source of truth for these knobs. Pure read: never mutates
+    /// config.
+    pub fn ux_prefs_summary(&self) -> Vec<String> {
+        ux_prefs::summary_lines_for_config(self)
     }
 
     /// Human-readable `key = value (source: env|config|default)` rows for the

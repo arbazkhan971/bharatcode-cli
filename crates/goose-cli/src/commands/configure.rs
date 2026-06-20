@@ -34,6 +34,15 @@ use std::io::IsTerminal;
 // cursor-selected and cursor-unselected items.
 const MULTISELECT_VISIBILITY_HINT: &str = "<";
 
+// Tamil (ta) locale extension (BharatCode v81). The `i18n/mod.rs` scaffold owns
+// the `Locale::Ta` arm, the embedded `ta.json` table and the resolver; this
+// module only exposes the `active_lang_name()` helper used in the first-time
+// setup banner below. Declared inline via `#[path]` from this command file
+// (rather than a `pub mod` in the shared `i18n/mod.rs`) so the helper has a real
+// call site reachable in the running binary.
+#[path = "../i18n/ta_locale.rs"]
+mod ta_locale;
+
 pub async fn handle_configure() -> anyhow::Result<()> {
     if !std::io::stdin().is_terminal() {
         anyhow::bail!(
@@ -123,6 +132,18 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
     println!();
     println!("{}", style(crate::tr!("configure.welcome")).dim());
     println!("{}", style(crate::tr!("configure.welcome_hint")).dim());
+    // Surface the resolved interface language (BharatCode v81). With the default
+    // locale this prints "Language: English" unchanged; selecting BHARATCODE_LANG=ta
+    // (or hi) swaps the label and the language name to that locale's own script.
+    println!(
+        "{}",
+        style(format!(
+            "  {}: {}",
+            crate::tr!("lang.row_label"),
+            ta_locale::active_lang_name()
+        ))
+        .dim()
+    );
     println!();
 
     #[cfg(feature = "telemetry")]

@@ -40,6 +40,14 @@ mod catalog;
 #[path = "ci_check.rs"]
 mod ci_check;
 
+// Locale / accessibility readiness deep check (BharatCode v90). A read-only probe
+// that reports the resolved active locale (en/hi/ta), the three-way en/hi/ta
+// translation parity, and the opt-in UX toggles (BHARATCODE_A11Y / _NOTIFY /
+// _COST_DASHBOARD). Declared inline alongside the other doctor checks, same
+// posture as `index_check` above.
+#[path = "i18n_check.rs"]
+mod i18n_check;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -272,6 +280,21 @@ async fn print_deep_checks() {
     // reports the catalog total only. Rendered in the same shape as the
     // index/repo readiness rows above.
     let (st, msg) = catalog::catalog_readiness();
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
+    // Locale / accessibility readiness: a read-only, always-visible row reporting
+    // the resolved active locale (en/hi/ta), the three-way en/hi/ta translation
+    // parity, and the opt-in UX toggles (BHARATCODE_A11Y / BHARATCODE_NOTIFY /
+    // BHARATCODE_COST_DASHBOARD) so the operator can verify their UX configuration
+    // at a glance. Rendered in the same shape as the index/repo readiness rows
+    // above; warns on a parity gap or when an accessibility/notification toggle is
+    // active.
+    let (st, msg) = i18n_check::i18n_readiness();
     let glyph = match st {
         Status::Ok => crate::theme::success(st.glyph()),
         Status::Warn => crate::theme::warning(st.glyph()),
