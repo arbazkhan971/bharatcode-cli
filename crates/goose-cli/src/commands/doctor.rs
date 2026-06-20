@@ -14,6 +14,25 @@ mod index_check;
 #[path = "repo_profile.rs"]
 mod repo_profile;
 
+// Session-DB integrity & fragmentation deep check (BharatCode v65). Declared
+// inline alongside the other doctor checks, same posture as `index_check` above.
+#[path = "db_integrity.rs"]
+mod db_integrity;
+
+// Ecosystem health deep check (BharatCode v73). Reports installed plugins,
+// configured MCP extensions, and plugin tool-use hooks. Declared inline
+// alongside the other doctor checks, same posture as `index_check` above.
+#[path = "ecosystem_check.rs"]
+mod ecosystem_check;
+
+// Extension catalog readiness deep check (BharatCode v74). Surfaces how many
+// curated catalog entries are present and how many are currently active. The
+// catalog module is shared with the `catalog` subcommand (wired in cli.rs);
+// declared inline here, same posture as `index_check` above, so the doctor row
+// reuses the same embedded catalog without a separate `pub mod`.
+#[path = "catalog.rs"]
+mod catalog;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -181,6 +200,49 @@ async fn print_deep_checks() {
     // tunable thresholds. Reuses the cwd resolved above.
     let profile = repo_profile::profile(&cwd);
     let (st, msg) = repo_profile::readiness_line(&profile);
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
+    // Session-DB integrity & fragmentation: a read-only, best-effort probe that
+    // runs SQLite `PRAGMA quick_check` plus a freelist/page-count read on
+    // sessions.db, reporting OK / integrity issue / vacuum recommended. Opens its
+    // own short-lived read-only connection (never the live session pool); a
+    // missing DB reports a benign "no DB yet".
+    let (st, msg) = db_integrity::check().await;
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
+    // Ecosystem health: a read-only, always-visible report of the user's
+    // extensibility surface — installed plugins, configured MCP extensions, and
+    // plugin tool-use hooks — so they can confirm it is actually wired. Each row
+    // carries its own status; nothing here ever gates the doctor run.
+    println!(
+        "{}",
+        crate::theme::heading(label("ecosystem.title", "Ecosystem"))
+    );
+    for row in ecosystem_check::ecosystem_rows() {
+        let glyph = match row.status {
+            Status::Ok => crate::theme::success(row.status.glyph()),
+            Status::Warn => crate::theme::warning(row.status.glyph()),
+            Status::Fail => crate::theme::error(row.status.glyph()),
+        };
+        println!("  {} {}: {}", glyph, row.label, row.detail);
+    }
+
+    // Extension catalog readiness: a read-only, always-visible row reporting how
+    // many curated catalog entries are present and how many are currently
+    // active. Best-effort — if the enabled-extension list cannot be read it
+    // reports the catalog total only. Rendered in the same shape as the
+    // index/repo readiness rows above.
+    let (st, msg) = catalog::catalog_readiness();
     let glyph = match st {
         Status::Ok => crate::theme::success(st.glyph()),
         Status::Warn => crate::theme::warning(st.glyph()),

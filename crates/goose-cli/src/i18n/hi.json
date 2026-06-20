@@ -47,5 +47,6 @@
   "privacy.egress_enforcing": "स्थापित (लागू किया जा रहा है)",
   "privacy.egress_passthrough": "स्थापित (पास-थ्रू)",
   "privacy.locked_down": "सभी स्तंभ सुरक्षित: strict residency, ऑफ़लाइन, redaction चालू, टेलीमेट्री बंद, लोकल provider।",
-  "privacy.hint": "स्थिति कड़ी करें: BHARATCODE_OFFLINE=1, BHARATCODE_RESIDENCY=strict, BHARATCODE_REDACT=1, BHARATCODE_AUDIT=1।"
+  "privacy.hint": "स्थिति कड़ी करें: BHARATCODE_OFFLINE=1, BHARATCODE_RESIDENCY=strict, BHARATCODE_REDACT=1, BHARATCODE_AUDIT=1।",
+  "db.preflight.hint": "चेतावनी: session डेटाबेस संभवतः क्षतिग्रस्त है।"
 }

@@ -23,6 +23,25 @@ use tokio::task::JoinSet;
 #[path = "migrate.rs"]
 mod migrate;
 
+// Declared here (not in the contended `session/mod.rs`) for the same reason as
+// `migrate` above: builder.rs is the file that wires the startup session-DB
+// integrity quick-check into the session build path.
+#[path = "db_preflight.rs"]
+mod db_preflight;
+
+// Opt-in recipe import/export round-trip hardening lives in an owned crate-root
+// module. It is wired in from builder.rs (the session-build path) via an
+// explicit `#[path]`, avoiding edits to `cli.rs`/`lib.rs`.
+#[path = "../recipe_lock.rs"]
+mod recipe_lock;
+
+// Opt-in deeper-git-context injection (BHARATCODE_GIT_CONTEXT). Lives next to
+// `git_helper.rs` under `commands/`, but `commands/mod.rs` is owned by a sibling
+// in this wave, so it is declared here (the file that wires it into the session
+// build path) via an explicit `#[path]`.
+#[path = "../commands/git_context.rs"]
+mod git_context;
+
 const EXTENSION_HINT_MAX_LEN: usize = 5;
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
@@ -504,6 +523,12 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     #[cfg(feature = "telemetry")]
     goose::posthog::set_session_context("cli", session_config.resume);
 
+    // Best-effort, non-blocking physical-integrity quick-check of the session
+    // database before the agent/session is constructed. A healthy DB or a check
+    // that cannot run is silent; corruption warns (and, with
+    // BHARATCODE_DB_PREFLIGHT set, points the user at `bharatcode db --vacuum`).
+    let _ = db_preflight::preflight().await;
+
     let config = Config::global();
     let agent: Agent = Agent::new();
 
@@ -667,6 +692,32 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 migrate::advisory_block(&spec),
             )
             .await;
+    }
+
+    // Opt-in deeper git awareness: when BHARATCODE_GIT_CONTEXT is set, inject a
+    // compact, read-only `# Git context` block (worktrees, branch/upstream
+    // ahead-behind, and recent blame ownership of changed files). Default
+    // (unset) leaves the prompt byte-identical and runs no git subprocess.
+    if git_context::is_enabled() {
+        let cwd = git_context::current_dir();
+        if let Some(block) = git_context::git_context_block(&git_context::collect(&cwd)) {
+            agent_ptr
+                .extend_system_prompt("bharatcode_git_context".to_string(), block)
+                .await;
+        }
+    }
+
+    // Opt-in recipe round-trip hardening: when BHARATCODE_RECIPE_LOCK points at a
+    // recipe file, canonicalize and hash it into a `.bharatcode/recipe.lock`
+    // sidecar so shared/imported recipes are reproducible, warning on drift.
+    // Default (unset) is a no-op.
+    if recipe_lock::is_enabled() {
+        if let Some(lock_path) = recipe_lock::recipe_path() {
+            match recipe_lock::lock_recipe(&lock_path) {
+                Ok(outcome) => tracing::info!(?outcome, "recipe lock"),
+                Err(e) => tracing::warn!(%e, "recipe lock failed"),
+            }
+        }
     }
 
     let edit_mode = config

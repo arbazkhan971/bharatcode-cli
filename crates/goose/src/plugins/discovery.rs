@@ -345,13 +345,14 @@ mod tests {
             r#"{"enabledPlugins":["demo"]}"#,
         );
 
-        let prev = std::env::var("BHARATCODE_PATH_ROOT").ok();
-        unsafe { std::env::set_var("BHARATCODE_PATH_ROOT", fake_home.path()) };
+        // Hold the shared workspace env lock (the same one memory_store /
+        // providers::init use) so this test's BHARATCODE_PATH_ROOT mutation never
+        // races a concurrent test that reads the path root via Paths::*.
+        let _guard = env_lock::lock_env([(
+            "BHARATCODE_PATH_ROOT",
+            Some(fake_home.path().to_str().unwrap()),
+        )]);
         let found = discover(project);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BHARATCODE_PATH_ROOT", v) },
-            None => unsafe { std::env::remove_var("BHARATCODE_PATH_ROOT") },
-        }
 
         assert!(
             found.iter().any(|p| p.name == "demo"),

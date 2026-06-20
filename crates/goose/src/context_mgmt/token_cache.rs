@@ -113,15 +113,39 @@ fn cache_len() -> usize {
         .len()
 }
 
+/// Whether the cache currently holds an entry for `msg`'s content hash. Used by
+/// tests to assert per-message presence without depending on the *total* map
+/// size, which other (production-path) callers in the same process may grow
+/// concurrently.
+#[cfg(test)]
+fn cache_contains(msg: &Message) -> bool {
+    TOKEN_CACHE
+        .lock()
+        .expect("token cache mutex poisoned")
+        .contains_key(&content_hash(msg))
+}
+
+/// Process-wide serialization point for every test that touches the global
+/// [`TOKEN_CACHE`]. The in-memory `token_cache` tests and the `token_cache_disk`
+/// gate-off pass-through test both mutate the same global map, so they must run
+/// under this single guard to stay independent. Poison-tolerant on purpose: an
+/// earlier test panicking while holding the lock must not cascade into
+/// `PoisonError` failures across the others.
+#[cfg(test)]
+pub(crate) static GLOBAL_CACHE_TEST_GUARD: Mutex<()> = Mutex::new(());
+
+/// Acquire [`GLOBAL_CACHE_TEST_GUARD`], recovering from a poisoned lock.
+#[cfg(test)]
+pub(crate) fn lock_cache_tests() -> std::sync::MutexGuard<'static, ()> {
+    GLOBAL_CACHE_TEST_GUARD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::token_counter::TokenCounter;
-    use std::sync::Mutex as StdMutex;
-
-    // The cache is process-global, so serialize the tests that assert on its
-    // size to keep them independent of one another.
-    static TEST_GUARD: StdMutex<()> = StdMutex::new(());
 
     async fn counter() -> TokenCounter {
         TokenCounter::new()
@@ -131,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     async fn same_message_counted_once() {
-        let _guard = TEST_GUARD.lock().unwrap();
+        let _guard = super::lock_cache_tests();
         clear();
 
         let counter = counter().await;
@@ -141,40 +165,57 @@ mod tests {
         let second = count_cached(&counter, &msg);
 
         assert_eq!(first, second);
-        assert_eq!(cache_len(), 1, "equal content must reuse one cache entry");
+        // Assert on this message's own entry rather than the absolute map size:
+        // the global cache is also populated by the production compaction path,
+        // so a concurrent test exercising it could otherwise inflate `cache_len`.
+        assert!(
+            cache_contains(&msg),
+            "equal content must be memoized under one entry"
+        );
     }
 
     #[tokio::test]
     async fn distinct_messages_get_distinct_entries() {
-        let _guard = TEST_GUARD.lock().unwrap();
+        let _guard = super::lock_cache_tests();
         clear();
 
         let counter = counter().await;
         let a = Message::user().with_text("first distinct message");
         let b = Message::user().with_text("second distinct message");
 
+        assert_ne!(
+            content_hash(&a),
+            content_hash(&b),
+            "distinct content must hash to distinct keys"
+        );
+
         count_cached(&counter, &a);
         count_cached(&counter, &b);
 
-        assert_eq!(cache_len(), 2, "different content must create two entries");
+        // Each distinct message must get its own entry. Assert on per-message
+        // presence rather than the absolute map size, which other (production)
+        // callers in the process may also grow.
+        assert!(cache_contains(&a), "first message must be cached");
+        assert!(cache_contains(&b), "second message must be cached");
     }
 
     #[tokio::test]
     async fn clear_empties_cache() {
-        let _guard = TEST_GUARD.lock().unwrap();
+        let _guard = super::lock_cache_tests();
         clear();
 
         let counter = counter().await;
-        count_cached(&counter, &Message::user().with_text("anything"));
-        assert!(cache_len() > 0);
+        let msg = Message::user().with_text("anything");
+        count_cached(&counter, &msg);
+        assert!(cache_contains(&msg), "entry present before clear");
 
         clear();
-        assert_eq!(cache_len(), 0);
+        assert!(!cache_contains(&msg), "clear must drop the entry");
     }
 
     #[tokio::test]
     async fn eviction_caps_the_map() {
-        let _guard = TEST_GUARD.lock().unwrap();
+        let _guard = super::lock_cache_tests();
         clear();
 
         let counter = counter().await;
@@ -190,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn cached_sum_equals_direct_sum() {
-        let _guard = TEST_GUARD.lock().unwrap();
+        let _guard = super::lock_cache_tests();
         clear();
 
         let counter = counter().await;

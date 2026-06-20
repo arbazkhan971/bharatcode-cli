@@ -38,6 +38,14 @@ mod semantic_index;
 #[path = "../stream_meter.rs"]
 mod stream_meter;
 
+// Opt-in editor/IDE bridge breadcrumb (BHARATCODE_IDE_BRIDGE). Registered here
+// via `#[path]` so the feature stays confined to the shared provider-streaming
+// path (the moment a reply actually starts streaming) and its own file. When
+// the switch is off no breadcrumb is written, so default behaviour is
+// unchanged.
+#[path = "../ide_bridge.rs"]
+mod ide_bridge;
+
 /// Wrap a provider stream so that, on successful completion, the fully-assembled
 /// assistant message and final usage are written to the prompt cache under `key`.
 ///
@@ -485,6 +493,24 @@ impl Agent {
         // before surfacing the failure. With no chain configured this is exactly
         // one attempt against the primary provider (unchanged behaviour).
         debug!("WAITING_LLM_STREAM_START");
+
+        // Opt-in editor/IDE bridge breadcrumb (BHARATCODE_IDE_BRIDGE). At the
+        // moment a reply starts streaming, drop a tiny machine-readable file at
+        // `<cwd>/.bharatcode/ide-bridge.json` that an editor extension can poll
+        // to surface "BharatCode is working here". Best-effort and guarded:
+        // nothing is written unless the switch is enabled, so default behaviour
+        // is unchanged.
+        if ide_bridge::is_enabled() {
+            if let Ok(cwd) = std::env::current_dir() {
+                ide_bridge::write_breadcrumb(
+                    session_id,
+                    &model_config.model_name,
+                    "streaming",
+                    &cwd,
+                );
+            }
+        }
+
         let stream_result = stream_with_fallback(
             &provider,
             &model_config,

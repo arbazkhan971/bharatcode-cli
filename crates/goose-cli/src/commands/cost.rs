@@ -23,6 +23,24 @@ use crate::commands::cost_ledger::{self, format_inr, format_inr_compact, Session
 #[path = "patch_stats.rs"]
 mod patch_stats;
 
+// Session-store storage health, declared inline next to its only caller (the
+// `cost` footer) so the helper does not widen the `commands` module surface.
+// Renders a read-only DB size / session / message / WAL footer below.
+#[path = "db_health.rs"]
+mod db_health;
+
+// Opt-in "Extensions in use" attribution footer (BHARATCODE_COST_EXTENSIONS).
+// Declared inline next to its only call site so wiring it does not widen the
+// `commands` module surface. Default OFF => cost output unchanged.
+#[path = "cost_extensions.rs"]
+mod cost_extensions;
+
+// CI-only machine-readable footer + GitHub Actions annotation, declared inline
+// next to its only call site (the `cost` footer). Emitted only under CI; with
+// no CI signal the cost output is byte-identical to before.
+#[path = "ci_report.rs"]
+mod ci_report;
+
 /// Options for the `cost` subcommand.
 pub struct CostOptions {
     /// Show every session with a recorded cost instead of just the most recent.
@@ -219,6 +237,52 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
                 style(label("cost.patch_activity", "Recent patch activity:")).bold(),
                 crate::theme::muted(patch_stats::render_diffstat(&stats)),
             );
+        }
+    }
+
+    // Opt-in "Extensions in use" attribution footer (BHARATCODE_COST_EXTENSIONS).
+    // Lists installed plugins + configured MCP extensions by name only so a user
+    // can see what third-party surface their spend ran through. Disabled by
+    // default and silent when nothing is installed => cost output unchanged.
+    if let Some(f) = cost_extensions::extensions_footer() {
+        println!("{f}");
+    }
+
+    // Optional storage-health footer. Rendered only when the session store
+    // (`sessions.db`) exists and is non-empty; absent or empty, nothing is
+    // printed, keeping the default cost output byte-identical. Read-only: it
+    // stats the DB + its WAL sidecar and queries the session read API.
+    if let Some(line) = db_health::storage_footer().await {
+        println!("  {}", crate::theme::muted(line));
+    }
+
+    // CI-only machine-readable footer + GitHub Actions annotation. Emitted only
+    // under CI (env CI / GITHUB_ACTIONS / BHARATCODE_CI); with no CI signal this
+    // whole block is skipped and the human output above is byte-identical.
+    if ci_report::is_ci() {
+        // The ₹ budget cap, read the same way the budget gate does (config key
+        // or matching env var); absent / non-positive => no cap.
+        let budget_inr =
+            match Config::global().get_param::<f64>(crate::commands::budget::BUDGET_INR_KEY) {
+                Ok(v) if v.is_finite() && v > 0.0 => Some(v),
+                _ => None,
+            };
+        let day_inr = ledger.today_inr();
+        let month_inr = ledger.this_month_inr();
+        let over_budget = budget_inr.map(|cap| day_inr > cap).unwrap_or(false);
+
+        println!(
+            "{}",
+            ci_report::ci_footer_json(day_inr, month_inr, budget_inr)
+        );
+        let msg = label(
+            "cost.ci_summary",
+            "BharatCode spend: today {day}, month {month}",
+        )
+        .replace("{day}", &format_inr(day_inr))
+        .replace("{month}", &format_inr(month_inr));
+        if let Some(annotation) = ci_report::github_annotation(over_budget, &msg) {
+            println!("{annotation}");
         }
     }
 

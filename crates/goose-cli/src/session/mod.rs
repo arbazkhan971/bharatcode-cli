@@ -1,4 +1,5 @@
 mod builder;
+mod cancel_flush;
 mod completion;
 mod editor;
 mod elicitation;
@@ -1297,6 +1298,10 @@ impl CliSession {
         let mut progress_bars = output::McpSpinners::new();
         let cancel_token_clone = cancel_token.clone();
         let mut markdown_buffer = streaming_buffer::MarkdownBuffer::new();
+        // v66: partial assistant text streamed this turn. Empty unless the model
+        // has emitted text; consulted only by the cancellation arm so the normal
+        // completion path is unaffected.
+        let mut accumulated_text = String::new();
         let mut prompted_credits_urls: HashSet<String> = HashSet::new();
         let mut thinking_header_shown = false;
         let run_started = Instant::now();
@@ -1418,6 +1423,9 @@ impl CliSession {
                                 }
                             } else {
                                 log_tool_metrics(&message, &self.messages);
+                                if message_has_text(&message) {
+                                    accumulated_text.push_str(&message.as_concat_text());
+                                }
                                 self.messages.push(message.clone());
 
                                 if interactive { output::hide_thinking() };
@@ -1473,6 +1481,14 @@ impl CliSession {
                 }
                 _ = cancel_token_clone.cancelled() => {
                     drop(stream);
+                    // v66: flush any partial assistant text the renderer is still
+                    // holding and print a one-line 'interrupted — partial response
+                    // saved' marker (once, and only if text was streamed) so the
+                    // turn ends on a clean, resumable boundary instead of a silent
+                    // truncation. Inert on the normal completion path.
+                    if !is_json_mode && !is_stream_json_mode {
+                        cancel_flush::on_interrupt(&accumulated_text, &mut markdown_buffer);
+                    }
                     if let Err(e) = self.handle_interrupted_messages(true).await {
                         eprintln!("Error handling interruption: {}", e);
                     }
@@ -1620,6 +1636,30 @@ impl CliSession {
                 turns,
             );
             recovery::record(&point);
+        }
+
+        // BharatCode v70: periodic turn-checkpoint. Optional, default OFF — when
+        // BHARATCODE_CHECKPOINT is on, write a tiny rolling checkpoint (session
+        // id, turn index, last-saved message id, IST/UTC timestamp) on a
+        // throttled interval so a hard crash mid-turn leaves a precise resume
+        // marker. Complements the one-shot recovery sidecar with intra-turn
+        // progress. The writer self-throttles and is best-effort: it never
+        // blocks or fails the turn, and is a zero-I/O no-op when disabled.
+        {
+            let turn_index = self
+                .messages
+                .messages()
+                .iter()
+                .filter(|m| m.role == rmcp::model::Role::User)
+                .count() as u64;
+            let last_message_id = self
+                .messages
+                .messages()
+                .iter()
+                .rev()
+                .find_map(|m| m.id.clone())
+                .unwrap_or_default();
+            goose::turn_checkpoint::record(&self.session_id, turn_index, &last_message_id);
         }
 
         Ok(())

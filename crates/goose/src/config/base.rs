@@ -30,6 +30,31 @@ pub(crate) mod agent_caps;
 #[path = "../resource_limits.rs"]
 pub mod resource_limits;
 
+// Ecosystem-extensibility toggles (wave-v71-v80: catalog, scripts, CI,
+// external-advisory, recipe lockfiles, cost extensions) are read through the
+// typed `get_bharatcode_*` getters registered below. The reader/summary helpers
+// live in `ecosystem_config.rs`, wired in here (rather than via lib.rs) so the
+// module is reachable from the running binary alongside its config keys.
+#[path = "../ecosystem_config.rs"]
+pub(crate) mod ecosystem_config;
+
+// Ecosystem config surface (this wave's extensibility toggles: plugin summary,
+// git context, ext digest, MCP-registry pin, automation default-script path) is
+// read through the typed `get_bharatcode_*` getters registered below. The
+// reader/summary helper lives in `ecosystem_caps.rs`, wired in here (rather than
+// via lib.rs) so the module is reachable from the running binary alongside its
+// config keys, and surfaced through `Config::ecosystem_caps_summary`.
+#[path = "../ecosystem_caps.rs"]
+pub(crate) mod ecosystem_caps;
+
+// Streaming/render perf-tuning getters (v68) are read through the typed
+// `get_bharatcode_stream_*` / `get_bharatcode_max_code_block_lines` getters
+// registered below. The reader/summary helpers live in `streaming_perf.rs`,
+// wired in here (rather than via lib.rs) so the module is reachable from the
+// running binary alongside its config keys.
+#[path = "../streaming_perf.rs"]
+pub(crate) mod streaming_perf;
+
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -560,6 +585,26 @@ impl Config {
         agent_caps::summary_lines_for_config(self)
     }
 
+    /// Human-readable `key = on/off` rows for the wave-v71-v80 ecosystem
+    /// toggles (catalog, scripts, CI, external-advisory, recipe lockfiles, cost
+    /// extensions), resolved from this config via the typed `get_bharatcode_*`
+    /// getters. Used by `bharatcode configure`/doctor to surface which parts of
+    /// the extensibility surface are active. Pure read: never mutates config.
+    pub fn ecosystem_summary(&self) -> Vec<String> {
+        ecosystem_config::summary_lines_for_config(self)
+    }
+
+    /// Human-readable `label: value` rows for this wave's ecosystem config
+    /// surface (plugin summary, git context, ext digest, MCP-registry pin,
+    /// automation default-script path), resolved env-first from this config via
+    /// the typed `get_bharatcode_*` getters. Every setting defaults to
+    /// empty/off, so the summary reads "all ecosystem features default-off"
+    /// until one is set. Gives doctor/privacy one source of truth for these
+    /// toggles. Pure read: never mutates config.
+    pub fn ecosystem_caps_summary(&self) -> Vec<String> {
+        ecosystem_caps::summary_lines_for_config(self)
+    }
+
     /// Human-readable rows for the v66 per-turn / per-session resource ceilings
     /// (max tool calls per turn, max turn wall-clock seconds, max session
     /// tokens), resolved from this config. Each ceiling defaults to unlimited
@@ -568,6 +613,16 @@ impl Config {
     /// turn-budget guard.
     pub fn resource_limits_summary(&self) -> Vec<String> {
         resource_limits::from_config(self).summary_lines()
+    }
+
+    /// Human-readable rows for the v68 streaming/render perf tunables (flush
+    /// cadence in ms, max code-block render lines, render-coalesce batch size),
+    /// resolved from this config. Each tunable defaults to its documented value
+    /// when unset, so the summary always shows one effective row per tunable.
+    /// Gives doctor/info one validated, env-first, clamped source of truth that
+    /// the CLI streaming buffer's render reads can share.
+    pub fn streaming_perf_summary(&self) -> Vec<String> {
+        streaming_perf::summary_lines_for_config(self)
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
@@ -1185,6 +1240,33 @@ config_value!(BHARATCODE_DIFF_COMPACT, String);
 config_value!(BHARATCODE_PLANNER_MODEL, String);
 config_value!(BHARATCODE_MIGRATE, String);
 
+// Ecosystem-extensibility toggles (wave-v71-v80). Registered as first-class
+// typed getters so `bharatcode configure`/doctor can read them via the standard
+// accessor path (which layers env over the config file) instead of raw env
+// lookups. All default-empty (off), so default behaviour is unchanged. The
+// resolver/summary helpers live in `ecosystem_config` (wired via the `#[path]`
+// mod decl above).
+config_value!(BHARATCODE_CATALOG, String);
+config_value!(BHARATCODE_SCRIPTS, String);
+config_value!(BHARATCODE_CI, String);
+config_value!(BHARATCODE_EXT_ADVISORY, String);
+config_value!(BHARATCODE_RECIPE_LOCK, String);
+config_value!(BHARATCODE_COST_EXTENSIONS, String);
+
+// Ecosystem config surface (this wave). Plugin summary / git context / ext
+// digest are boolean toggles; MCP-registry pin and automation default-script
+// path are free-form strings. Registered as first-class typed getters so
+// doctor/privacy can read them via the standard accessor path (which layers env
+// over the config file) instead of raw env lookups. All default-empty (off), so
+// default behaviour is unchanged. The resolver/summary helper lives in
+// `ecosystem_caps` (wired via the `#[path]` mod decl above) and is surfaced
+// through `Config::ecosystem_caps_summary`.
+config_value!(BHARATCODE_PLUGIN_SUMMARY, String);
+config_value!(BHARATCODE_GIT_CONTEXT, String);
+config_value!(BHARATCODE_EXT_DIGEST, String);
+config_value!(BHARATCODE_MCP_REGISTRY_PIN, Option<String>);
+config_value!(BHARATCODE_AUTOMATION_SCRIPT, Option<String>);
+
 // Per-turn / per-session resource ceilings (v66). Registered as first-class
 // typed getters so `bharatcode configure`/doctor can read them via the standard
 // accessor path (which layers env over the config file). All default to `None`
@@ -1195,6 +1277,18 @@ config_value!(BHARATCODE_MIGRATE, String);
 config_value!(BHARATCODE_MAX_TOOL_CALLS_PER_TURN, Option<u32>);
 config_value!(BHARATCODE_MAX_TURN_SECS, Option<u64>);
 config_value!(BHARATCODE_MAX_SESSION_TOKENS, Option<u64>);
+
+// Streaming/render perf tunables (v68). Registered as first-class typed getters
+// so doctor/info can read them via the standard accessor path (which layers env
+// over the config file). All default to `None` (caller keeps its documented
+// default), so default behaviour is unchanged. The resolver/summary helpers live
+// in `streaming_perf` (wired via the `#[path]` mod decl above), and the
+// validated, env-first, clamped reads are surfaced through
+// `Config::streaming_perf_summary` - the single typed source the CLI streaming
+// buffer's `parse_positive_lines` / `max_code_block_lines` env reads can call.
+config_value!(BHARATCODE_STREAM_FLUSH_MS, Option<u64>);
+config_value!(BHARATCODE_MAX_CODE_BLOCK_LINES, Option<usize>);
+config_value!(BHARATCODE_STREAM_COALESCE_LINES, Option<usize>);
 
 impl Config {
     pub fn get_bharatcode_context_limit(&self) -> Result<Option<usize>, ConfigError> {

@@ -77,6 +77,12 @@ pub mod verify;
 #[path = "../testgen.rs"]
 pub mod testgen;
 
+// Post-finalization CI / quality hook lives in crates/goose/src/ci_integration.rs.
+// It shares the same finalization point as the testgen nudge above and reuses the
+// already-computed set of changed files; off by default behind BHARATCODE_CI.
+#[path = "../ci_integration.rs"]
+pub mod ci_integration;
+
 // Parallel tool-execution governor (concurrency cap + per-tool timeout) lives in
 // crates/goose/src/tool_governor.rs. It wraps the concurrent tool fan-out built
 // just before `stream::select_all`; registering it here keeps it next to its
@@ -89,6 +95,23 @@ pub mod tool_governor;
 // transparent no-op and `wrap_stream` returns each stream untouched.
 static TOOL_GOVERNOR: std::sync::LazyLock<tool_governor::ToolGovernor> =
     std::sync::LazyLock::new(tool_governor::ToolGovernor::from_env);
+
+// Transient tool-failure auto-retry lives in crates/goose/src/tool_retry.rs.
+// It wraps the single per-request `dispatch_tool_call` await below so a tool
+// that fails transiently (internal/transport error, not a policy denial or
+// schema error) is retried with bounded backoff. Off by default; opt in via
+// BHARATCODE_TOOL_RETRY (e.g. `2:200ms`). Distinct from the governor above:
+// the governor bounds running tools, this retries already-failed dispatches.
+#[path = "../tool_retry.rs"]
+pub mod tool_retry;
+
+// End-of-session plugin summary side-channel lives in
+// crates/goose/src/plugin_summary.rs. It shares the same finalization point as
+// the verify/testgen hooks below: when enabled it builds a compact JSON session
+// summary and dispatches it to plugins via the existing SessionEnd hook plus a
+// sidecar file. Off by default behind BHARATCODE_PLUGIN_SUMMARY.
+#[path = "../plugin_summary.rs"]
+pub mod plugin_summary;
 
 const DEFAULT_MAX_TURNS: u32 = 1000;
 const DEFAULT_STOP_HOOK_BLOCK_CAP: u32 = 8;
@@ -822,14 +845,30 @@ impl Agent {
         // Handle pre-approved and read-only tools
         for request in &permission_check_result.approved {
             if let Ok(tool_call) = request.tool_call.clone() {
-                let (req_id, tool_result) = self
-                    .dispatch_tool_call(
-                        tool_call,
-                        request.id.clone(),
-                        cancel_token.clone(),
-                        session,
-                    )
-                    .await;
+                // Wrap the single dispatch so a transient (internal/transport)
+                // failure is retried with bounded backoff before surfacing.
+                // Off by default: with BHARATCODE_TOOL_RETRY unset this invokes
+                // the closure exactly once, identical to a bare dispatch. The
+                // closure transposes the `(req_id, Result)` tuple into a single
+                // `Result` so the retry layer can inspect the failure; on the
+                // terminal path `req_id` is recovered from the request id.
+                let tool_result = tool_retry::with_tool_retry(cancel_token.clone(), || {
+                    let tool_call = tool_call.clone();
+                    let request_id = request.id.clone();
+                    let cancel_token = cancel_token.clone();
+                    async move {
+                        let (req_id, result) = self
+                            .dispatch_tool_call(tool_call, request_id, cancel_token, session)
+                            .await;
+                        result.map(|r| (req_id, r))
+                    }
+                })
+                .await;
+
+                let (req_id, tool_result) = match tool_result {
+                    Ok((req_id, result)) => (req_id, Ok(result)),
+                    Err(e) => (request.id.clone(), Err(e)),
+                };
 
                 tool_futures.push((
                     req_id,
@@ -2649,16 +2688,57 @@ impl Agent {
                     );
                 }
 
-                if testgen::is_enabled() {
+                if testgen::is_enabled() || ci_integration::is_enabled() {
                     let changed_files = git_changed_files(&working_dir).await;
-                    if let Some(nudge) = testgen::suggest_testgen(&changed_files) {
-                        yield AgentEvent::Message(
-                            Message::assistant().with_system_notification(
-                                SystemNotificationType::InlineMessage,
-                                nudge,
-                            ),
-                        );
+                    if testgen::is_enabled() {
+                        if let Some(nudge) = testgen::suggest_testgen(&changed_files) {
+                            yield AgentEvent::Message(
+                                Message::assistant().with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    nudge,
+                                ),
+                            );
+                        }
                     }
+                    if ci_integration::is_enabled() {
+                        if let Some(msg) = ci_integration::run_ci(&changed_files, &working_dir).await {
+                            yield AgentEvent::Message(
+                                Message::assistant().with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    msg,
+                                ),
+                            );
+                        }
+                    }
+                }
+
+                if plugin_summary::is_enabled() {
+                    let changed = git_changed_files(&working_dir)
+                        .await
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    let tools = conversation
+                        .messages()
+                        .iter()
+                        .flat_map(|m| m.content.iter())
+                        .filter_map(|c| match c {
+                            MessageContent::ToolRequest(req) => req
+                                .tool_call
+                                .as_ref()
+                                .ok()
+                                .map(|call| call.name.to_string()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let s = plugin_summary::build_summary(
+                        &working_dir,
+                        turns_taken,
+                        &changed,
+                        &tools,
+                        None,
+                    );
+                    plugin_summary::dispatch(s, &self.hook_manager, &session_config.id).await;
                 }
             }
 
