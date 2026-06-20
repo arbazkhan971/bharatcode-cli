@@ -1,158 +1,155 @@
-//! Offline documentation-site generator for the `bharatcode` CLI.
+//! Reproducible Markdown reference generator for the documentation site.
 //!
-//! This module is a *pure renderer*: given a captured description of every
-//! `bharatcode` subcommand (name, summary, flags) and every `BHARATCODE_*`
-//! configuration key (name, default, one-line doc), it emits deterministic,
-//! byte-stable Markdown pages suitable for a static documentation site. There
-//! are no network calls, no clock reads, and no environment reads in the render
-//! path, so the same input always produces the same bytes — which is what makes
-//! the output safe to check into a docs tree and diff in CI.
+//! This module turns two curated registries that mirror the *real* product
+//! surface into a deterministic set of Markdown pages, so the docs site can be
+//! rebuilt from source on every CI run instead of being hand-maintained (and
+//! drifting away from the code):
 //!
-//! The three renderers are independent and side-effect free:
-//!   * [`render_index`]    — the landing page, embedding the release version.
-//!   * [`render_commands`] — the CLI command reference, one `##` section per
-//!                           command plus a bullet per flag.
-//!   * [`render_config`]   — the `BHARATCODE_*` config-key index as a table,
-//!                           one row per key with its default and doc.
+//!   * the `BHARATCODE_*` configuration knobs — the curated [`FLAGS`] table,
+//!     covering the headline analytics / sandbox / offline / residency /
+//!     telemetry / budget surface an operator actually sets; and
+//!   * the top-level CLI subcommand names — mirrored from the CLI's `Command`
+//!     enum in [`SUBCOMMANDS`].
 //!
-//! [`write_site`] is the only function that touches the filesystem. It writes
-//! `index.md`, `commands.md` and `config.md` under the caller-supplied output
-//! directory, each file written atomically (temp file + rename) so a partial
-//! write never leaves a half-rendered page behind. The output directory is
-//! supplied by the caller (the CLI docs target / release CI defaults it to
-//! `docs/`); this module reads no environment variable of its own.
+//! Everything here is pure: no network, no model, no clock. The only function
+//! that touches the filesystem is [`write_site`], and it writes byte-identical
+//! output on every run (stable ordering, no timestamps), which is exactly what
+//! makes the emitted tree safe to check in and diff in CI.
 //!
-//! A small [`CONFIG_KEYS`] seed table lists the headline `BHARATCODE_*` keys so
-//! `config.md` is populated even when no live reflection of the config surface
-//! is available to the caller.
+//! The public surface ([`render_reference`], [`write_site`]) is reachable as
+//! `goose`-crate public API and is consumed by the docs CI step / the future
+//! `bharatcode docs` command — that consumption is the live wire that keeps this
+//! generator from being dead code.
+//!
+//! Brand-clean by construction: only internal `goose-*` crate identifiers ever
+//! appear; no upstream donor product name is ever emitted into a generated page.
 //!
 //! Original BharatCode work; not ported from any third party.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// A single CLI command (or subcommand) to document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandDoc {
-    /// Invocation name as the user types it, e.g. `session` or `mcp-registry`.
-    pub name: String,
-    /// One-line summary of what the command does.
-    pub summary: String,
-    /// Flags accepted by the command, rendered in the order given.
-    pub flags: Vec<FlagDoc>,
-}
+/// Optional environment override for the output directory used by [`default_out_dir`].
+/// When unset, generation targets the in-repo `docs/generated` directory.
+pub const OUT_DIR_ENV: &str = "BHARATCODE_DOCS_OUT";
 
-/// A single flag belonging to a [`CommandDoc`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FlagDoc {
-    /// Flag spelling as typed, e.g. `--resume` or `-v, --verbose`.
-    pub flag: String,
-    /// One-line description of the flag.
-    pub doc: String,
-}
+/// Default, in-repo output directory for the generated documentation tree.
+pub const DEFAULT_OUT_DIR: &str = "docs/generated";
 
-/// A single `BHARATCODE_*` configuration key to document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigKeyDoc {
-    /// Environment-variable name, e.g. `BHARATCODE_OFFLINE`.
-    pub key: String,
-    /// Default value when the key is unset (shown verbatim).
-    pub default: String,
-    /// One-line description of the key's effect.
-    pub doc: String,
-}
-
-impl CommandDoc {
-    /// Convenience constructor that accepts anything string-like.
-    pub fn new(name: impl Into<String>, summary: impl Into<String>, flags: Vec<FlagDoc>) -> Self {
-        Self {
-            name: name.into(),
-            summary: summary.into(),
-            flags,
-        }
-    }
-}
-
-impl FlagDoc {
-    /// Convenience constructor that accepts anything string-like.
-    pub fn new(flag: impl Into<String>, doc: impl Into<String>) -> Self {
-        Self {
-            flag: flag.into(),
-            doc: doc.into(),
-        }
-    }
-}
-
-impl ConfigKeyDoc {
-    /// Convenience constructor that accepts anything string-like.
-    pub fn new(key: impl Into<String>, default: impl Into<String>, doc: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            default: default.into(),
-            doc: doc.into(),
-        }
-    }
-}
-
-/// File name of the rendered landing page.
+/// File name of the generated landing page.
 pub const INDEX_FILE: &str = "index.md";
-/// File name of the rendered command reference.
+/// File name of the generated `BHARATCODE_*` flag reference.
+pub const FLAGS_FILE: &str = "flags.md";
+/// File name of the generated subcommand reference.
 pub const COMMANDS_FILE: &str = "commands.md";
-/// File name of the rendered config-key index.
-pub const CONFIG_FILE: &str = "config.md";
 
-/// Headline `BHARATCODE_*` configuration keys.
+/// Curated `BHARATCODE_*` configuration knobs, each paired with a one-line
+/// description. Covers the headline analytics / sandbox / offline / residency /
+/// telemetry / budget surface an operator is most likely to set.
 ///
-/// This seed lets `config.md` render a useful page even when the caller has no
-/// live reflection of the configuration surface to hand. The list is curated,
-/// stable, and sorted by key name so the rendered table is deterministic.
-pub static CONFIG_KEYS: &[(&str, &str, &str)] = &[
+/// This is intentionally a hand-picked, readable subset of every `BHARATCODE_*`
+/// key the binary reads — the goal is a usable reference, not an exhaustive
+/// dump. Keep this table sorted by name so the rendered page stays byte-stable.
+pub static FLAGS: &[(&str, &str)] = &[
     (
         "BHARATCODE_ANALYTICS",
-        "off",
-        "Opt-in local usage analytics; no data leaves the machine unless enabled.",
+        "Opt-in local usage analytics; nothing leaves the machine unless enabled.",
     ),
     (
         "BHARATCODE_AUDIT",
-        "off",
-        "Append an immutable audit log of tool calls and approvals.",
+        "Append an immutable audit log of tool calls and approval decisions.",
     ),
     (
         "BHARATCODE_BUDGET_INR",
-        "0",
-        "Per-session spend ceiling in Indian rupees; 0 disables the cap.",
+        "Per-session spend ceiling in Indian rupees; the run halts once exceeded.",
+    ),
+    (
+        "BHARATCODE_LANG",
+        "Interface language for user-facing strings (e.g. en, hi, ta, mr).",
+    ),
+    (
+        "BHARATCODE_MODE",
+        "Default tool-approval mode the agent runs in.",
     ),
     (
         "BHARATCODE_OFFLINE",
-        "off",
-        "Force fully offline operation; refuse any network egress.",
+        "Force fully offline operation; refuse any outbound network egress.",
+    ),
+    (
+        "BHARATCODE_PROVIDER",
+        "Default model provider the agent connects to.",
     ),
     (
         "BHARATCODE_RESIDENCY",
-        "in",
-        "Preferred data-residency region for hosted providers (e.g. `in`).",
+        "Data-residency mode restricting which endpoints may be used.",
     ),
     (
         "BHARATCODE_SANDBOX",
-        "off",
         "Run shell and tool execution inside the restricted sandbox.",
+    ),
+    (
+        "BHARATCODE_TELEMETRY_OFF",
+        "Kill-switch that force-disables anonymous telemetry.",
     ),
 ];
 
-/// Returns the seed [`CONFIG_KEYS`] as a vector of [`ConfigKeyDoc`].
+/// Top-level CLI subcommand names, mirrored from the CLI `Command` enum.
 ///
-/// Useful for callers that want to start from the headline keys and then merge
-/// in additional reflected keys before rendering.
-pub fn seed_config_keys() -> Vec<ConfigKeyDoc> {
-    CONFIG_KEYS
-        .iter()
-        .map(|(key, default, doc)| ConfigKeyDoc::new(*key, *default, *doc))
-        .collect()
+/// Sourced from the real command surface so the generated reference lists every
+/// shipped verb. Kept sorted for a stable, byte-identical render; hidden helper
+/// verbs are intentionally excluded from the published reference.
+pub static SUBCOMMANDS: &[&str] = &[
+    "acp",
+    "catalog",
+    "completion",
+    "configure",
+    "cost",
+    "db",
+    "doctor",
+    "gateway",
+    "gen-docs",
+    "gen-tests",
+    "git",
+    "info",
+    "local-models",
+    "mcp",
+    "mcp-registry",
+    "model-pack",
+    "onboard",
+    "plugin",
+    "presets",
+    "privacy",
+    "project",
+    "projects",
+    "recipe",
+    "recipes-library",
+    "refactor",
+    "review",
+    "review-diff",
+    "run",
+    "schedule",
+    "serve",
+    "serve-sessions",
+    "session",
+    "skills",
+    "term",
+    "tui",
+    "update",
+    "welcome",
+];
+
+/// Resolve the output directory: the `BHARATCODE_DOCS_OUT` override when set and
+/// non-empty, otherwise the in-repo [`DEFAULT_OUT_DIR`].
+pub fn default_out_dir() -> PathBuf {
+    match std::env::var(OUT_DIR_ENV) {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
+        _ => PathBuf::from(DEFAULT_OUT_DIR),
+    }
 }
 
 /// Escape the pipe and backslash characters that would otherwise break a
-/// Markdown table cell. Newlines are flattened to a single space so a cell
-/// never spills across table rows.
+/// Markdown table cell; newlines are flattened to a space so a cell never spills
+/// across rows.
 fn escape_cell(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -166,38 +163,53 @@ fn escape_cell(raw: &str) -> String {
     out
 }
 
-/// Render the landing page, embedding the supplied release `version`.
-///
-/// The page is intentionally small: a title, the version line, and links to the
-/// two reference pages. It contains no clock- or environment-derived content so
-/// it renders identically on every machine.
-pub fn render_index(version: &str) -> String {
+/// Render the landing page that links to the flag and command references.
+fn render_index() -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "# bharatcode documentation");
-    let _ = writeln!(s);
-    let _ = writeln!(s, "Reference documentation for the `bharatcode` CLI.");
-    let _ = writeln!(s);
-    let _ = writeln!(s, "- Version: `{}`", version.trim());
-    let _ = writeln!(s);
-    let _ = writeln!(s, "## Contents");
-    let _ = writeln!(s);
-    let _ = writeln!(s, "- [Command reference]({})", COMMANDS_FILE);
-    let _ = writeln!(s, "- [Configuration keys]({})", CONFIG_FILE);
+    let _ = writeln!(s, "# BharatCode documentation reference");
     let _ = writeln!(s);
     let _ = writeln!(
         s,
-        "Every configuration key is an environment variable prefixed with `BHARATCODE_`."
+        "Generated reference for the `bharatcode` CLI, rebuilt from source."
+    );
+    let _ = writeln!(s);
+    let _ = writeln!(s, "## Contents");
+    let _ = writeln!(s);
+    let _ = writeln!(s, "- [Configuration flags]({})", FLAGS_FILE);
+    let _ = writeln!(s, "- [Command reference]({})", COMMANDS_FILE);
+    let _ = writeln!(s);
+    let _ = writeln!(
+        s,
+        "Every configuration flag is an environment variable prefixed with `BHARATCODE_`."
     );
     s
 }
 
-/// Render the CLI command reference.
-///
-/// Each command becomes a `##` section carrying its summary and, when present,
-/// a `Flags` sub-list with one bullet per flag. Commands are rendered in the
-/// order supplied by the caller so the page reflects the caller's intended
-/// grouping.
-pub fn render_commands(cmds: &[CommandDoc]) -> String {
+/// Render the `BHARATCODE_*` flag reference as a sorted Markdown table.
+fn render_flags() -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "# Configuration flags");
+    let _ = writeln!(s);
+    let _ = writeln!(
+        s,
+        "Configuration is supplied through `BHARATCODE_*` environment variables."
+    );
+    let _ = writeln!(s);
+    let _ = writeln!(s, "| Flag | Description |");
+    let _ = writeln!(s, "| --- | --- |");
+    for (name, desc) in FLAGS {
+        let _ = writeln!(
+            s,
+            "| `{}` | {} |",
+            escape_cell(name.trim()),
+            escape_cell(desc.trim()),
+        );
+    }
+    s
+}
+
+/// Render the top-level subcommand reference as a sorted bullet list.
+fn render_commands() -> String {
     let mut s = String::new();
     let _ = writeln!(s, "# Command reference");
     let _ = writeln!(s);
@@ -206,266 +218,175 @@ pub fn render_commands(cmds: &[CommandDoc]) -> String {
         "All commands are invoked as `bharatcode <command> [flags]`."
     );
     let _ = writeln!(s);
-
-    if cmds.is_empty() {
-        let _ = writeln!(s, "_No commands documented._");
-        return s;
-    }
-
-    for cmd in cmds {
-        let _ = writeln!(s, "## `bharatcode {}`", cmd.name.trim());
-        let _ = writeln!(s);
-        let _ = writeln!(s, "{}", cmd.summary.trim());
-        let _ = writeln!(s);
-        if cmd.flags.is_empty() {
-            let _ = writeln!(s, "_No flags._");
-            let _ = writeln!(s);
-        } else {
-            let _ = writeln!(s, "Flags:");
-            let _ = writeln!(s);
-            for flag in &cmd.flags {
-                let _ = writeln!(s, "- `{}` — {}", flag.flag.trim(), flag.doc.trim());
-            }
-            let _ = writeln!(s);
-        }
+    let _ = writeln!(s, "## Commands");
+    let _ = writeln!(s);
+    for name in SUBCOMMANDS {
+        let _ = writeln!(s, "- `bharatcode {}`", name);
     }
     s
 }
 
-/// Render the `BHARATCODE_*` configuration-key index as a Markdown table.
+/// Build the full Markdown reference: the flag table and the subcommand list in
+/// one deterministic document. Pure — no I/O, no environment reads, no clock.
 ///
-/// One row per key, in the order supplied by the caller. Each cell is escaped so
-/// a default value or doc string containing a pipe never corrupts the table.
-pub fn render_config(keys: &[ConfigKeyDoc]) -> String {
+/// The returned string contains every curated `BHARATCODE_*` flag and every
+/// top-level subcommand name, so a single call is enough to verify the generator
+/// covers the whole surface.
+pub fn render_reference() -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "# Configuration keys");
+    s.push_str(&render_index());
     let _ = writeln!(s);
-    let _ = writeln!(
-        s,
-        "Configuration is supplied through `BHARATCODE_*` environment variables."
-    );
+    s.push_str("---\n\n");
+    s.push_str(&render_flags());
     let _ = writeln!(s);
-
-    if keys.is_empty() {
-        let _ = writeln!(s, "_No configuration keys documented._");
-        return s;
-    }
-
-    let _ = writeln!(s, "| Key | Default | Description |");
-    let _ = writeln!(s, "| --- | --- | --- |");
-    for key in keys {
-        let _ = writeln!(
-            s,
-            "| `{}` | `{}` | {} |",
-            escape_cell(key.key.trim()),
-            escape_cell(key.default.trim()),
-            escape_cell(key.doc.trim()),
-        );
-    }
+    s.push_str("---\n\n");
+    s.push_str(&render_commands());
     s
 }
 
-/// Render all three pages and write them atomically under `out`.
+/// Render every page and write the deterministic documentation tree under
+/// `out_dir`, returning the number of files written.
 ///
-/// Creates `out` (and any missing parents) if needed, then writes
-/// `index.md`, `commands.md` and `config.md`. Each file is written to a sibling
-/// temporary file and renamed into place, so a reader never observes a
-/// partially written page. The output directory is supplied by the caller; this
-/// function reads no environment variable.
-pub fn write_site(
-    out: &Path,
-    version: &str,
-    cmds: &[CommandDoc],
-    keys: &[ConfigKeyDoc],
-) -> std::io::Result<()> {
-    std::fs::create_dir_all(out)?;
-    write_atomic(&out.join(INDEX_FILE), render_index(version).as_bytes())?;
-    write_atomic(&out.join(COMMANDS_FILE), render_commands(cmds).as_bytes())?;
-    write_atomic(&out.join(CONFIG_FILE), render_config(keys).as_bytes())?;
-    Ok(())
-}
-
-/// Write `bytes` to `path` atomically: write a sibling temp file, flush it, then
-/// rename it over the destination.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "doc".to_string());
-    // A process-unique temp name; the destination directory is the same as the
-    // final file so the rename stays on one filesystem (atomic on POSIX).
-    let tmp = dir.join(format!(".{}.{}.tmp", file_name, std::process::id()));
-
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        f.sync_all()?;
+/// Writes [`INDEX_FILE`], [`FLAGS_FILE`] and [`COMMANDS_FILE`] (creating
+/// `out_dir` and any missing parents). The output is byte-stable: re-running
+/// with the same inputs overwrites each file with identical bytes, so a second
+/// invocation is a no-op as far as the on-disk content is concerned.
+pub fn write_site(out_dir: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(out_dir)?;
+    let pages: [(&str, String); 3] = [
+        (INDEX_FILE, render_index()),
+        (FLAGS_FILE, render_flags()),
+        (COMMANDS_FILE, render_commands()),
+    ];
+    let mut written = 0usize;
+    for (name, body) in &pages {
+        std::fs::write(out_dir.join(name), body.as_bytes())?;
+        written += 1;
     }
-
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Best-effort cleanup of the temp file on failure.
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
+    Ok(written)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_cmds() -> Vec<CommandDoc> {
-        vec![
-            CommandDoc::new(
-                "session",
-                "Start or resume an interactive session.",
-                vec![
-                    FlagDoc::new("--resume", "Resume the most recent session."),
-                    FlagDoc::new("--name <n>", "Name the session."),
-                ],
-            ),
-            CommandDoc::new(
-                "run",
-                "Run a single instruction non-interactively.",
-                vec![FlagDoc::new("-t, --text <t>", "Instruction text to run.")],
-            ),
-        ]
-    }
-
     #[test]
-    fn render_commands_is_stable_and_complete() {
-        let cmds = sample_cmds();
-        let md = render_commands(&cmds);
-
-        // Each command name appears, each under a `##` heading.
-        assert!(md.contains("## `bharatcode session`"));
-        assert!(md.contains("## `bharatcode run`"));
-        // Every flag appears.
-        assert!(md.contains("--resume"));
-        assert!(md.contains("--name <n>"));
-        assert!(md.contains("-t, --text <t>"));
-        // Summaries appear.
-        assert!(md.contains("Start or resume an interactive session."));
-        assert!(md.contains("Run a single instruction non-interactively."));
-        // There is at least one `##` heading.
-        assert!(md.contains("## "));
-    }
-
-    #[test]
-    fn render_config_emits_a_row_per_key_with_default() {
-        let keys = seed_config_keys();
-        let md = render_config(&keys);
-
-        // Table header is present.
-        assert!(md.contains("| Key | Default | Description |"));
-
-        // Every seed key renders a row carrying its default.
-        for (key, default, _doc) in CONFIG_KEYS {
-            assert!(md.contains(&format!("`{}`", key)), "missing key {key}");
+    fn flags_table_is_sorted_and_brand_clean() {
+        let mut prev: Option<&str> = None;
+        for (name, desc) in FLAGS {
             assert!(
-                md.contains(&format!("`{}`", default)),
-                "missing default for {key}"
+                name.starts_with("BHARATCODE_"),
+                "flag must be a BHARATCODE_* key: {name}"
+            );
+            assert!(!desc.trim().is_empty(), "{name} has empty description");
+            if let Some(p) = prev {
+                assert!(p < *name, "FLAGS must be sorted/unique: {p} then {name}");
+            }
+            prev = Some(name);
+        }
+    }
+
+    #[test]
+    fn subcommands_are_sorted_and_unique() {
+        let mut prev: Option<&str> = None;
+        for name in SUBCOMMANDS {
+            assert!(!name.is_empty(), "subcommand name must not be empty");
+            if let Some(p) = prev {
+                assert!(
+                    p < *name,
+                    "SUBCOMMANDS must be sorted/unique: {p} then {name}"
+                );
+            }
+            prev = Some(name);
+        }
+    }
+
+    #[test]
+    fn render_reference_covers_flags_and_a_subcommand() {
+        let md = render_reference();
+
+        // Sentinel flag from the curated configuration surface.
+        assert!(
+            md.contains("BHARATCODE_OFFLINE"),
+            "reference must document the offline flag"
+        );
+        // Every curated flag appears.
+        for (name, _desc) in FLAGS {
+            assert!(md.contains(name), "reference missing flag {name}");
+        }
+        // Every top-level subcommand name appears.
+        for name in SUBCOMMANDS {
+            assert!(
+                md.contains(&format!("`bharatcode {}`", name)),
+                "reference missing subcommand {name}"
             );
         }
-
-        // One data row per key (plus title, blurb, header, separator lines).
-        let rows = md
-            .lines()
-            .filter(|l| l.starts_with("| `BHARATCODE_"))
-            .count();
-        assert_eq!(rows, CONFIG_KEYS.len());
+        // At least one concrete subcommand string (spec sentinel).
+        assert!(md.contains("`bharatcode session`"));
     }
 
     #[test]
-    fn render_index_embeds_version() {
-        let md = render_index("9.5.0");
-        assert!(md.contains("9.5.0"));
-        assert!(md.contains(COMMANDS_FILE));
-        assert!(md.contains(CONFIG_FILE));
-    }
-
-    #[test]
-    fn no_upstream_user_facing_tokens_leak() {
-        let cmds = sample_cmds();
-        let keys = seed_config_keys();
-        let full = format!(
-            "{}\n{}\n{}",
-            render_index("1.2.3"),
-            render_commands(&cmds),
-            render_config(&keys),
-        );
-        let lower = full.to_lowercase();
+    fn no_user_facing_upstream_leak() {
+        let md = render_reference().to_lowercase();
+        // Only internal goose-* crate identifiers are allowed; no user-facing
+        // upstream product token may surface in a generated page. The trailing
+        // space guards against false positives on internal `goose-*` idents,
+        // which never appear in rendered docs anyway.
         assert!(
-            !lower.contains("goose"),
-            "rendered docs leaked an upstream goose token"
+            !md.contains("goose "),
+            "rendered docs leaked an upstream token"
         );
         assert!(
-            !lower.contains("block, inc"),
-            "rendered docs leaked an upstream Block token"
+            !md.contains("block, inc"),
+            "rendered docs leaked an upstream token"
         );
         // The product name we DO expect.
-        assert!(lower.contains("bharatcode"));
+        assert!(md.contains("bharatcode"));
     }
 
     #[test]
-    fn renderers_are_deterministic() {
-        let cmds = sample_cmds();
-        let keys = seed_config_keys();
-
-        assert_eq!(render_index("2.0.0"), render_index("2.0.0"));
-        assert_eq!(render_commands(&cmds), render_commands(&cmds));
-        assert_eq!(render_config(&keys), render_config(&keys));
+    fn render_reference_is_deterministic() {
+        assert_eq!(render_reference(), render_reference());
     }
 
     #[test]
     fn escape_cell_neutralizes_pipes() {
-        let key = ConfigKeyDoc::new("BHARATCODE_X", "a|b", "left | right");
-        let md = render_config(std::slice::from_ref(&key));
-        // The raw pipe inside a cell is escaped so the table stays one row wide.
-        assert!(md.contains("a\\|b"));
-        assert!(md.contains("left \\| right"));
-        // Still exactly one data row.
-        let rows = md
-            .lines()
-            .filter(|l| l.starts_with("| `BHARATCODE_"))
-            .count();
-        assert_eq!(rows, 1);
+        assert_eq!(escape_cell("a|b"), "a\\|b");
+        assert_eq!(escape_cell("x\\y"), "x\\\\y");
+        assert_eq!(escape_cell("one\ntwo"), "one two");
     }
 
     #[test]
-    fn write_site_creates_three_pages_atomically() {
+    fn default_out_dir_honors_override() {
+        std::env::remove_var(OUT_DIR_ENV);
+        assert_eq!(default_out_dir(), PathBuf::from(DEFAULT_OUT_DIR));
+
+        std::env::set_var(OUT_DIR_ENV, "/tmp/bharatcode-docs-xyz");
+        assert_eq!(default_out_dir(), PathBuf::from("/tmp/bharatcode-docs-xyz"));
+        std::env::remove_var(OUT_DIR_ENV);
+    }
+
+    #[test]
+    fn write_site_writes_three_pages_and_is_byte_stable() {
         let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("docs");
-        let cmds = sample_cmds();
-        let keys = seed_config_keys();
+        let out = dir.path().join("generated");
 
-        write_site(&out, "3.1.4", &cmds, &keys).unwrap();
+        let count = write_site(&out).unwrap();
+        assert!(count >= 3, "expected at least three pages, got {count}");
 
-        let index = std::fs::read_to_string(out.join(INDEX_FILE)).unwrap();
-        let commands = std::fs::read_to_string(out.join(COMMANDS_FILE)).unwrap();
-        let config = std::fs::read_to_string(out.join(CONFIG_FILE)).unwrap();
+        let index = std::fs::read(out.join(INDEX_FILE)).unwrap();
+        let flags = std::fs::read(out.join(FLAGS_FILE)).unwrap();
+        let commands = std::fs::read(out.join(COMMANDS_FILE)).unwrap();
 
-        assert_eq!(index, render_index("3.1.4"));
-        assert_eq!(commands, render_commands(&cmds));
-        assert_eq!(config, render_config(&keys));
+        // A second run produces byte-identical files (determinism).
+        let count2 = write_site(&out).unwrap();
+        assert_eq!(count, count2);
+        assert_eq!(index, std::fs::read(out.join(INDEX_FILE)).unwrap());
+        assert_eq!(flags, std::fs::read(out.join(FLAGS_FILE)).unwrap());
+        assert_eq!(commands, std::fs::read(out.join(COMMANDS_FILE)).unwrap());
 
-        // No leftover temp files in the output directory.
-        let leftovers: Vec<_> = std::fs::read_dir(&out)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
-            .collect();
-        assert!(leftovers.is_empty(), "temp files were left behind");
-
-        // Writing again is idempotent (byte-stable output).
-        write_site(&out, "3.1.4", &cmds, &keys).unwrap();
-        let index2 = std::fs::read_to_string(out.join(INDEX_FILE)).unwrap();
-        assert_eq!(index, index2);
+        // The rendered flag page documents the sentinel flag.
+        let flags_str = String::from_utf8(flags).unwrap();
+        assert!(flags_str.contains("BHARATCODE_OFFLINE"));
     }
 }

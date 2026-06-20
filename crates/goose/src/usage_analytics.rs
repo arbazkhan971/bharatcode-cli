@@ -60,15 +60,20 @@ fn ist_offset() -> FixedOffset {
 
 /// Whether the local usage tally is enabled for this process.
 ///
-/// Reads `BHARATCODE_ANALYTICS` straight from the environment and accepts the
-/// usual truthy spellings (`1`, `true`, `yes`, `on`); anything else — including
-/// absence — is OFF. The raw-env read (rather than the typed config layer)
-/// mirrors the recovery sidecar / checkpoint gate.
+/// Reads the RAW `BHARATCODE_ANALYTICS` environment variable FIRST and accepts
+/// the usual truthy spellings (`1`, `true`, `yes`, `on`); anything else falls
+/// through to the typed config value of the same name. Absence in both places
+/// is OFF (default). Reading the raw string first (rather than going straight
+/// through the typed config layer) deliberately mirrors `memory_store::is_enabled`
+/// so a bare `1` in the config file is not mis-coerced to a number and dropped.
 pub fn is_enabled() -> bool {
-    match std::env::var(ANALYTICS_ENABLED_KEY) {
-        Ok(raw) => is_truthy(&raw),
-        Err(_) => false,
+    if let Ok(raw) = std::env::var(ANALYTICS_ENABLED_KEY) {
+        return is_truthy(&raw);
     }
+    crate::config::Config::global()
+        .get_param::<String>(ANALYTICS_ENABLED_KEY)
+        .map(|raw| is_truthy(&raw))
+        .unwrap_or(false)
 }
 
 fn is_truthy(v: &str) -> bool {
@@ -340,8 +345,7 @@ impl Default for AnalyticsRollup {
 impl AnalyticsRollup {
     fn ensure_bucket_widths(&mut self) {
         if self.token_buckets.len() != TOKEN_BUCKET_BOUNDS.len() + 1 {
-            self.token_buckets
-                .resize(TOKEN_BUCKET_BOUNDS.len() + 1, 0);
+            self.token_buckets.resize(TOKEN_BUCKET_BOUNDS.len() + 1, 0);
         }
         if self.cost_inr_buckets.len() != COST_INR_BUCKET_BOUNDS.len() + 1 {
             self.cost_inr_buckets
@@ -448,7 +452,9 @@ pub fn record(event: &UsageEvent) {
 /// Gate-independent read (mirrors [`load`]).
 pub fn summary_lines() -> Vec<String> {
     match AnalyticsStore::load() {
-        None => vec!["Usage analytics: off (local-only, opt-in via BHARATCODE_ANALYTICS)".to_string()],
+        None => {
+            vec!["Usage analytics: off (local-only, opt-in via BHARATCODE_ANALYTICS)".to_string()]
+        }
         Some(r) => {
             let busy_token_buckets = r.token_buckets.iter().filter(|&&c| c > 0).count();
             let busy_cost_buckets = r.cost_inr_buckets.iter().filter(|&&c| c > 0).count();
@@ -458,6 +464,248 @@ pub fn summary_lines() -> Vec<String> {
             )]
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// v92: in-memory aggregator + monthly-rotating flush (`Analytics`)
+//
+// A second public surface that satisfies the v92 contract directly: an
+// in-memory accumulator (`Analytics`) whose `record_turn` bumps coarse counters
+// without touching disk, and whose `flush` writes a single fully-aggregated,
+// k-anonymized (counts only) JSON snapshot to a MONTHLY-rotating file under the
+// config dir (`<config_dir>/bharatcode/analytics/usage-YYYYMM.json`).
+//
+// Privacy is structural: the schema has no field that can carry a prompt, a
+// model output, a file path, a tool name, or any argument. The only "model"
+// signal kept is a count of DISTINCT model labels seen — never the labels
+// themselves — so even the model identifier never reaches disk. Per-turn token
+// magnitudes are coarse-bucketed via [`token_bucket`] (<1k / <10k / <100k /
+// overflow), so an exact token figure never leaks either.
+//
+// Same gate as the rest of the module (`BHARATCODE_ANALYTICS`, default OFF):
+// `flush` writes nothing (and creates no file) unless [`is_enabled`] is true.
+// Local only — there is no network code in this module by construction.
+// ---------------------------------------------------------------------------
+
+/// Sub-directory (under the config dir) holding the monthly snapshots.
+const ANALYTICS_MONTHLY_SUBDIR: &str = "analytics";
+
+/// Coarse, named token magnitude buckets for [`token_bucket`]. A per-turn token
+/// count is filed by the first bound it does not exceed; anything larger is the
+/// overflow bucket. Only bucket *counts* are ever persisted, so an exact token
+/// figure never leaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TokenBucket {
+    /// `< 1_000` tokens.
+    Under1k,
+    /// `< 10_000` tokens.
+    Under10k,
+    /// `< 100_000` tokens.
+    Under100k,
+    /// `>= 100_000` tokens.
+    Over100k,
+}
+
+impl TokenBucket {
+    /// Stable, content-free JSON key for this bucket (used as the map key in the
+    /// flushed snapshot). Carries no Goose/Block identifiers.
+    pub fn key(self) -> &'static str {
+        match self {
+            TokenBucket::Under1k => "under_1k",
+            TokenBucket::Under10k => "under_10k",
+            TokenBucket::Under100k => "under_100k",
+            TokenBucket::Over100k => "over_100k",
+        }
+    }
+
+    /// Every bucket, smallest first — for zero-initializing the histogram so the
+    /// snapshot always carries the full, deterministic set of keys.
+    pub fn all() -> [TokenBucket; 4] {
+        [
+            TokenBucket::Under1k,
+            TokenBucket::Under10k,
+            TokenBucket::Under100k,
+            TokenBucket::Over100k,
+        ]
+    }
+}
+
+/// Coarse-bucket a per-turn token count into a named [`TokenBucket`] so the
+/// exact figure never reaches disk: `< 1k`, `< 10k`, `< 100k`, else overflow.
+pub fn token_bucket(tokens: u64) -> TokenBucket {
+    if tokens < 1_000 {
+        TokenBucket::Under1k
+    } else if tokens < 10_000 {
+        TokenBucket::Under10k
+    } else if tokens < 100_000 {
+        TokenBucket::Under100k
+    } else {
+        TokenBucket::Over100k
+    }
+}
+
+/// The flushed, fully-aggregated, k-anonymized snapshot. Every field is a count
+/// or a histogram of counts — there is no content field anywhere, by
+/// construction. `token_buckets` maps each [`TokenBucket::key`] to how many
+/// turns fell into it; `distinct_models` is a *count* of distinct model labels
+/// seen, never the labels themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalyticsSnapshot {
+    /// On-disk schema version of this snapshot.
+    #[serde(default = "default_schema")]
+    pub schema: u32,
+    /// IST calendar month this snapshot rolls up (`YYYY-MM`).
+    #[serde(default)]
+    pub month: String,
+    /// Completed agent turns recorded into this snapshot.
+    #[serde(default)]
+    pub turns: u64,
+    /// Tool invocations summed across those turns.
+    #[serde(default)]
+    pub tool_calls: u64,
+    /// Number of *distinct* model labels observed — a count, never the labels.
+    #[serde(default)]
+    pub distinct_models: u64,
+    /// Histogram of per-turn token magnitudes, keyed by [`TokenBucket::key`].
+    #[serde(default)]
+    pub token_buckets: BTreeMap<String, u64>,
+}
+
+/// Opt-in, **local-only** in-memory usage aggregator with a monthly-rotating
+/// flush. Counts only — never any content. Default OFF: [`Analytics::flush`]
+/// writes nothing (and creates no file) unless [`is_enabled`] is true.
+#[derive(Debug, Clone, Default)]
+pub struct Analytics {
+    turns: u64,
+    tool_calls: u64,
+    /// Distinct model labels seen this session, kept ONLY to derive a count.
+    /// Never serialized — only its cardinality reaches disk.
+    models: std::collections::BTreeSet<String>,
+    /// Per-bucket turn counts, indexed parallel to [`TokenBucket::all`].
+    token_buckets: BTreeMap<String, u64>,
+}
+
+impl Analytics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold one completed turn into the in-memory counters. Pure (no I/O): the
+    /// snapshot is only written on [`flush`](Analytics::flush). `model` is used
+    /// solely to grow a distinct-model *count*; it is never persisted. `bucket`
+    /// is the coarse token magnitude from [`token_bucket`]. Counts saturate so a
+    /// pathological run can never roll a counter back to zero.
+    pub fn record_turn(&mut self, model: &str, tool_count: u64, bucket: TokenBucket) {
+        self.turns = self.turns.saturating_add(1);
+        self.tool_calls = self.tool_calls.saturating_add(tool_count);
+        let trimmed = model.trim();
+        if !trimmed.is_empty() {
+            self.models.insert(trimmed.to_string());
+        }
+        let slot = self
+            .token_buckets
+            .entry(bucket.key().to_string())
+            .or_insert(0);
+        *slot = slot.saturating_add(1);
+    }
+
+    /// In-memory turn count accumulated so far (not yet necessarily flushed).
+    pub fn turns(&self) -> u64 {
+        self.turns
+    }
+
+    /// In-memory tool-call count accumulated so far.
+    pub fn tool_calls(&self) -> u64 {
+        self.tool_calls
+    }
+
+    /// Build the aggregated, k-anonymized snapshot for the given IST `month`
+    /// (`YYYY-MM`). Counts only — the distinct-model set is collapsed to its
+    /// cardinality and the raw labels are dropped.
+    fn snapshot_for(&self, month: &str) -> AnalyticsSnapshot {
+        let mut token_buckets: BTreeMap<String, u64> = BTreeMap::new();
+        for b in TokenBucket::all() {
+            token_buckets.insert(b.key().to_string(), 0);
+        }
+        for (k, v) in &self.token_buckets {
+            token_buckets.insert(k.clone(), *v);
+        }
+        AnalyticsSnapshot {
+            schema: default_schema(),
+            month: month.to_string(),
+            turns: self.turns,
+            tool_calls: self.tool_calls,
+            distinct_models: self.models.len() as u64,
+            token_buckets,
+        }
+    }
+
+    /// Write the aggregated snapshot to this month's rotating file under the
+    /// config dir, merging into any snapshot already present for the same month.
+    ///
+    /// No-op (zero I/O, no file created) when analytics is disabled — so the
+    /// default build never writes. Returns `Ok(None)` in that case; on success
+    /// while enabled, returns the path written. The write is atomic (unique temp
+    /// file + rename) so a concurrent reader never sees a half-written file.
+    pub fn flush(&self) -> std::io::Result<Option<PathBuf>> {
+        if !is_enabled() {
+            return Ok(None);
+        }
+        let month = this_month_ist();
+        let path = monthly_path(&month);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut snapshot = self.snapshot_for(&month);
+        if let Some(existing) = read_snapshot(&path) {
+            if existing.month == snapshot.month {
+                snapshot.turns = snapshot.turns.saturating_add(existing.turns);
+                snapshot.tool_calls = snapshot.tool_calls.saturating_add(existing.tool_calls);
+                snapshot.distinct_models = snapshot.distinct_models.max(existing.distinct_models);
+                for (k, v) in existing.token_buckets {
+                    let slot = snapshot.token_buckets.entry(k).or_insert(0);
+                    *slot = slot.saturating_add(v);
+                }
+            }
+        }
+
+        let content = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp = path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&tmp, &content)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(Some(path))
+    }
+}
+
+/// Current IST calendar month as `YYYY-MM`, the rotation key for the snapshot.
+fn this_month_ist() -> String {
+    let now: DateTime<Utc> = Utc::now();
+    now.with_timezone(&ist_offset()).format("%Y-%m").to_string()
+}
+
+/// Absolute path of the monthly snapshot for IST `month` (`YYYY-MM`):
+/// `<config_dir>/bharatcode/analytics/usage-YYYYMM.json`.
+fn monthly_path(month: &str) -> PathBuf {
+    let compact: String = month.chars().filter(|c| *c != '-').collect();
+    Paths::config_dir()
+        .join(ANALYTICS_SUBDIR)
+        .join(ANALYTICS_MONTHLY_SUBDIR)
+        .join(format!("usage-{compact}.json"))
+}
+
+/// Read a monthly snapshot back, or `None` when absent / unreadable / unparsable.
+fn read_snapshot(path: &PathBuf) -> Option<AnalyticsSnapshot> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 #[cfg(test)]
@@ -580,7 +828,10 @@ mod tests {
     fn rollup_record_writes_only_aggregated_counters() {
         let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, Some("1"))]);
 
-        assert!(AnalyticsStore::load().is_none(), "no rollup before recording");
+        assert!(
+            AnalyticsStore::load().is_none(),
+            "no rollup before recording"
+        );
 
         let store = AnalyticsStore::new();
         store.record(&UsageEvent::new(3, 1_200, 7));
@@ -649,7 +900,10 @@ mod tests {
             !AnalyticsStore::path().exists(),
             "disabled rollup must not create a file"
         );
-        assert!(AnalyticsStore::load().is_none(), "disabled run leaves no rollup");
+        assert!(
+            AnalyticsStore::load().is_none(),
+            "disabled run leaves no rollup"
+        );
 
         let lines = summary_lines();
         assert_eq!(lines.len(), 1);
@@ -658,5 +912,108 @@ mod tests {
             "summary must report off when no rollup: {}",
             lines[0]
         );
+    }
+
+    // ---- v92: in-memory `Analytics` aggregator + monthly flush ----
+
+    #[test]
+    fn token_bucket_boundaries() {
+        assert_eq!(token_bucket(0), TokenBucket::Under1k);
+        assert_eq!(token_bucket(999), TokenBucket::Under1k);
+        assert_eq!(token_bucket(1_000), TokenBucket::Under10k);
+        assert_eq!(token_bucket(9_999), TokenBucket::Under10k);
+        assert_eq!(token_bucket(10_000), TokenBucket::Under100k);
+        assert_eq!(token_bucket(99_999), TokenBucket::Under100k);
+        assert_eq!(token_bucket(100_000), TokenBucket::Over100k);
+        assert_eq!(token_bucket(u64::MAX), TokenBucket::Over100k);
+    }
+
+    #[test]
+    fn flush_writes_nothing_when_disabled() {
+        let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, None::<&str>)]);
+        std::env::remove_var(ANALYTICS_ENABLED_KEY);
+
+        let mut a = Analytics::new();
+        a.record_turn("some-model", 3, token_bucket(500));
+        // record_turn is pure in-memory; counters move even while disabled.
+        assert_eq!(a.turns(), 1);
+
+        let written = a.flush().expect("flush never errors");
+        assert!(written.is_none(), "disabled flush returns no path");
+        assert!(
+            !monthly_path(&this_month_ist()).exists(),
+            "disabled flush must not create a file"
+        );
+    }
+
+    #[test]
+    fn record_three_turns_flush_and_reread_counts_only() {
+        // A sentinel that stands in for a model prompt / file path. It is passed
+        // as the `model` label, and must NEVER appear in the flushed JSON — the
+        // snapshot keeps a distinct-model COUNT, never the labels.
+        const SENTINEL: &str = "SECRET-PROMPT-AND-PATH-/home/u/secret.txt";
+
+        let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, Some("1"))]);
+
+        let mut a = Analytics::new();
+        a.record_turn(SENTINEL, 2, token_bucket(500)); // under_1k
+        a.record_turn(SENTINEL, 1, token_bucket(5_000)); // under_10k
+        a.record_turn("another-model", 4, token_bucket(50_000)); // under_100k
+
+        let path = a
+            .flush()
+            .expect("flush ok")
+            .expect("path written when enabled");
+        assert!(path.exists(), "enabled flush must create the monthly file");
+        // Monthly rotation: the file name encodes the IST YYYYMM.
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with("usage-") && name.ends_with(".json"),
+            "rotating monthly file name: {name}"
+        );
+
+        let raw = std::fs::read_to_string(&path).expect("read snapshot");
+
+        // Aggregated counts must round-trip exactly.
+        let snap: AnalyticsSnapshot = serde_json::from_str(&raw).expect("parse snapshot");
+        assert_eq!(snap.turns, 3, "three recorded turns");
+        assert_eq!(snap.tool_calls, 2 + 1 + 4);
+        assert_eq!(snap.distinct_models, 2, "two distinct model labels seen");
+        assert_eq!(snap.token_buckets["under_1k"], 1);
+        assert_eq!(snap.token_buckets["under_10k"], 1);
+        assert_eq!(snap.token_buckets["under_100k"], 1);
+        assert_eq!(snap.token_buckets["over_100k"], 0);
+
+        // k-anonymity: counts only. No raw model/prompt/path strings on disk.
+        assert!(
+            !raw.contains(SENTINEL),
+            "flushed snapshot must not carry the raw model/prompt/path label"
+        );
+        assert!(!raw.contains("another-model"));
+        for forbidden in ["prompt", "message", "content", "path", "arg", "text"] {
+            assert!(
+                !raw.to_ascii_lowercase().contains(forbidden),
+                "snapshot must not carry a {forbidden:?} field: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn flush_merges_into_same_month_snapshot() {
+        let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, Some("1"))]);
+
+        let mut first = Analytics::new();
+        first.record_turn("m", 1, token_bucket(100));
+        first.flush().expect("first flush").expect("path");
+
+        let mut second = Analytics::new();
+        second.record_turn("m", 2, token_bucket(100));
+        let path = second.flush().expect("second flush").expect("path");
+
+        let raw = std::fs::read_to_string(&path).expect("read merged");
+        let snap: AnalyticsSnapshot = serde_json::from_str(&raw).expect("parse merged");
+        assert_eq!(snap.turns, 2, "two flushes into the same month accumulate");
+        assert_eq!(snap.tool_calls, 3);
+        assert_eq!(snap.token_buckets["under_1k"], 2);
     }
 }

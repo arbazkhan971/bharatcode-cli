@@ -413,8 +413,43 @@ impl McpClientTrait for DeveloperClient {
                 }
                 match Self::parse_args::<ShellParams>(arguments) {
                     Ok(params) => {
+                        let mut advisory: Option<String> = None;
+                        if crate::security::shell_harden::mode()
+                            != crate::security::shell_harden::Mode::Off
+                        {
+                            let harden_cwd = working_dir
+                                .map(std::path::Path::to_path_buf)
+                                .unwrap_or_else(|| {
+                                    std::env::current_dir()
+                                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                                });
+                            match crate::security::shell_harden::assess(
+                                &params.command,
+                                &harden_cwd,
+                            ) {
+                                crate::security::shell_harden::Risk::Block(reason) => {
+                                    return Ok(ShellTool::error_result(
+                                        &format!(
+                                            "Command blocked by security pre-flight: {reason}. \
+                                             Set BHARATCODE_HARDEN=warn to downgrade to an \
+                                             advisory, or BHARATCODE_HARDEN=off to disable."
+                                        ),
+                                        None,
+                                    ));
+                                }
+                                crate::security::shell_harden::Risk::Warn(reason) => {
+                                    advisory = Some(format!("Security advisory: {reason}."));
+                                }
+                                crate::security::shell_harden::Risk::Safe => {}
+                            }
+                        }
                         let result = self.shell_tool.shell_with_cwd(params, working_dir).await;
-                        let result = Self::redact_shell_result(result);
+                        let mut result = Self::redact_shell_result(result);
+                        if let Some(note) = advisory {
+                            result
+                                .content
+                                .insert(0, Content::text(note).with_priority(0.0));
+                        }
                         if result_cache::arguments_are_read_only(&cache_args) {
                             result_cache::store_if_read_only(name, &cache_args, &result);
                         } else {

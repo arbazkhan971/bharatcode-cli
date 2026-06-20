@@ -628,8 +628,16 @@ impl Config {
     /// toggles, resolved from this config via the typed `get_bharatcode_*`
     /// getters. Used by `bharatcode configure`/doctor to surface which
     /// capabilities are active.
+    ///
+    /// The v92 privacy-preserving, LOCAL-ONLY aggregated usage rollup is
+    /// appended here (via [`Config::analytics_summary`]) so it rides the exact
+    /// same config-summary surface doctor / info already render, rather than
+    /// living as an unreachable module. The appended row(s) carry coarse counts
+    /// only — never any content — and read "off" until the feature is enabled.
     pub fn agent_caps_summary(&self) -> Vec<String> {
-        agent_caps::summary_lines_for_config(self)
+        let mut lines = agent_caps::summary_lines_for_config(self);
+        lines.extend(self.analytics_summary());
+        lines
     }
 
     /// Human-readable `Label: value` rows for this wave's UX / i18n preferences
@@ -734,6 +742,16 @@ impl Config {
     /// `*_summary` rows.
     pub fn analytics_summary(&self) -> Vec<String> {
         usage_analytics::summary_lines()
+    }
+
+    /// Whether the v92 privacy-preserving, LOCAL-ONLY usage analytics feature is
+    /// enabled, read through the standard typed accessor so configure/doctor
+    /// consult the live module rather than a hard-coded constant. Resolves the
+    /// `BHARATCODE_ANALYTICS` gate raw-env-first then config (see
+    /// [`usage_analytics::is_enabled`]); default OFF, so default behaviour is
+    /// unchanged. Pure read: never mutates config and never enables anything.
+    pub fn analytics_enabled(&self) -> bool {
+        usage_analytics::is_enabled()
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {

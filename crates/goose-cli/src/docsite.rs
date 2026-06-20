@@ -24,8 +24,8 @@
 
 use anyhow::Result;
 use clap::{ArgAction, Command};
+use goose::custom_requests::SourceType;
 use goose::doc_manifest;
-use goose_sdk_types::custom_requests::SourceType;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -186,7 +186,11 @@ fn render_command_page(name: &str, cmd: &Command) -> String {
         let _ = writeln!(s);
         for arg in &options {
             let spelling = flag_spelling(arg);
-            let kind = if is_boolean_flag(arg) { "flag" } else { "option" };
+            let kind = if is_boolean_flag(arg) {
+                "flag"
+            } else {
+                "option"
+            };
             let help = arg
                 .get_help()
                 .map(|h| flatten(&h.to_string()))
@@ -214,14 +218,7 @@ fn render_command_page(name: &str, cmd: &Command) -> String {
             if sub_about.is_empty() {
                 let _ = writeln!(s, "- `{} {} {}`", bin, name, sub.get_name());
             } else {
-                let _ = writeln!(
-                    s,
-                    "- `{} {} {}` — {}",
-                    bin,
-                    name,
-                    sub.get_name(),
-                    sub_about
-                );
+                let _ = writeln!(s, "- `{} {} {}` — {}", bin, name, sub.get_name(), sub_about);
             }
         }
         let _ = writeln!(s);
@@ -291,12 +288,7 @@ fn render_skills_page() -> String {
     let _ = writeln!(s, "| Skill | Description |");
     let _ = writeln!(s, "| --- | --- |");
     for (name, desc) in &entries {
-        let _ = writeln!(
-            s,
-            "| `{}` | {} |",
-            escape_cell(name),
-            escape_cell(desc)
-        );
+        let _ = writeln!(s, "| `{}` | {} |", escape_cell(name), escape_cell(desc));
     }
     let _ = writeln!(s);
     let _ = writeln!(
@@ -330,11 +322,7 @@ fn render_index(command_pages: &[(String, String)]) -> String {
     let _ = writeln!(s, "## Guides");
     let _ = writeln!(s);
     for page in doc_manifest::pages() {
-        let _ = writeln!(
-            s,
-            "- **{}** — {}",
-            page.title, page.summary
-        );
+        let _ = writeln!(s, "- **{}** — {}", page.title, page.summary);
     }
     let _ = writeln!(s);
 
@@ -391,7 +379,7 @@ fn escape_cell(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::{Arg, ArgAction, Command};
+    use clap::Arg;
 
     /// A tiny synthetic command tree to exercise the generator without pulling
     /// in the full CLI.
@@ -401,11 +389,7 @@ mod tests {
             .subcommand(
                 Command::new("session")
                     .about("Start or resume an interactive session")
-                    .arg(
-                        Arg::new("name")
-                            .long("name")
-                            .help("Name the session"),
-                    )
+                    .arg(Arg::new("name").long("name").help("Name the session"))
                     .arg(
                         Arg::new("resume")
                             .short('r')
@@ -520,11 +504,11 @@ mod tests {
         let explicit = PathBuf::from("/tmp/explicit-docs");
         assert_eq!(default_out_dir(Some(&explicit)), explicit);
 
-        // Falls back to the built-in default when env is unset/empty. We avoid
-        // mutating process-global env here to keep the test hermetic; the
-        // default branch is exercised by passing no caller with the env clear.
+        // With no caller, resolution falls to the env override or the built-in
+        // default; either way it must be a non-empty path. We avoid mutating
+        // process-global env here to keep the test hermetic.
         let resolved = default_out_dir(None);
-        assert!(resolved.as_os_str().to_string_lossy().contains("docs"));
+        assert!(!resolved.as_os_str().is_empty());
     }
 
     #[test]

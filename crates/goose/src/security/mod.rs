@@ -5,6 +5,7 @@ pub mod hardening;
 pub mod patterns;
 pub mod scanner;
 pub mod security_inspector;
+pub mod shell_harden;
 
 use crate::config::Config;
 use crate::conversation::message::{Message, ToolRequest};

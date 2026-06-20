@@ -1,290 +1,412 @@
-//! `bharatcode bench` — an offline benchmark / eval harness.
+//! `bharatcode-bench` — a deterministic, offline benchmark / eval harness.
 //!
-//! This module ships a deterministic, fully-offline eval harness. A fixed set
-//! of embedded [`BenchCase`]s — each an `id`, a `prompt`, and an objective
-//! [`Grader`] — is run through one headless agent turn against the active local
-//! provider. The assistant text for each case is graded (substring-present,
-//! regex-match, or non-empty), the turn is timed, and a scored [`BenchReport`]
-//! is produced: pass/fail per case, an aggregate pass-rate, and p50/p95
-//! wall-times.
+//! This module ships a small, fully-offline eval harness whose entire purpose
+//! is to make regressions in core helpers *catchable*. It runs a fixed,
+//! embedded [`SUITE`] of scorable [`BenchCase`]s, each of which exercises a
+//! shipped pure function (no model call, no network, no file writes) and checks
+//! the result against an expected output. [`run_suite`] scores the cases and
+//! returns a [`BenchReport`] with `{ total, passed, score }`.
 //!
-//! The deliberate split here is *data vs. execution*. The cases, the graders,
-//! the percentile math, the pass-rate computation, and both report renderers
-//! are pure and provider-independent, so the whole grading surface is
-//! unit-testable without ever spinning up a provider. Only [`handle_bench`]
-//! touches the agent.
+//! The design is deliberately *data vs. execution*: the cases are plain data,
+//! the checker per [`CaseKind`] is a pure function over shipped code, and the
+//! report renderer is the only thing that touches styling. Nothing here reads
+//! the network or mutates state, so the whole harness is exercised by this
+//! module's own unit tests.
 //!
-//! Per-case wall-time is clamped by the `BHARATCODE_BENCH_TIMEOUT_SECS`
-//! environment variable (default 60s). Grading itself is ungated and has no
-//! side effects.
+//! Why these cases? Each one re-runs a *shipped* pure helper so a regression in
+//! the real code path fails the bench:
 //!
-//! This is also the library entry point for the serve-sessions / eval
-//! consumers, which call [`handle_bench`] directly; the embedded
-//! `recipes/bench.yaml` data artifact documents the contract and surfaces the
-//! harness the same way the recipe library surfaces its templates.
+//!   * `exec_policy::ExecPolicy::{from_json, check}` — the allow/deny command
+//!     splitter that screens shell commands (deny-prefix match, allow-list
+//!     miss/hit, chained-segment boundaries).
+//!   * `cost_ledger::format_inr` — the ₹ formatter, including the paise-carry
+//!     boundary (`0.999 -> ₹1.00`) and Indian digit grouping.
+//!   * `cost_ledger::format_inr_compact` — the compact ₹ magnitude *bucket*
+//!     boundaries (k / L / Cr thresholds), the offline analog of a token-bucket
+//!     boundary table.
+//!
+//! By default the harness is *parse-only*: no model is ever invoked. The
+//! `--live` flag is reserved for future model-backed scoring; today it is a
+//! documented stub that reports every case as [`CaseStatus::Skipped`] without
+//! contacting any provider. `--list` prints the case ids and exits without
+//! running anything.
+//!
+//! There is no env gate: the harness is read-only and has no side effects, so
+//! running it never changes default behavior. It is surfaced through the thin
+//! `bharatcode-bench` binary, which calls [`handle_bench`].
 
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::session::{build_session, SessionBuilderConfig};
+use goose::exec_policy::{Decision, ExecPolicy};
 
-/// The embedded `recipes/bench.yaml` data artifact, surfaced so the recipe
-/// contract that documents this harness is reachable as crate API (mirroring
-/// how the recipe library embeds its templates via `include_str!`).
-pub const BENCH_RECIPE_YAML: &str = include_str!("../../../../recipes/bench.yaml");
+use crate::commands::cost_ledger::{format_inr, format_inr_compact};
 
-/// Default per-case wall-time clamp, in seconds, when
-/// `BHARATCODE_BENCH_TIMEOUT_SECS` is unset or unparseable.
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
-
-/// Upper bound for the per-case wall-time clamp. A benchmark case should never
-/// be allowed to hang a run for more than a few minutes regardless of what the
-/// environment requests.
-const MAX_TIMEOUT_SECS: u64 = 600;
-
-/// An objective, deterministic grader for a single benchmark case.
+/// Which shipped pure helper a [`BenchCase`] exercises.
 ///
-/// Every variant is a pure predicate over the captured assistant text; given
-/// the same output, a grader always returns the same verdict. This is what
-/// keeps the harness reproducible and testable without a provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Grader {
-    /// Pass when the output contains the given substring (case-sensitive).
-    SubstringPresent(String),
-    /// Pass when the output matches the given regular expression anywhere.
-    ///
-    /// An invalid pattern never panics: it simply fails the case.
-    RegexMatch(String),
-    /// Pass when the output, trimmed of surrounding whitespace, is non-empty.
-    NonEmpty,
+/// Every variant maps to a single offline, deterministic function in the
+/// shipped code base; this is what makes a bench failure a real regression
+/// signal rather than a synthetic one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseKind {
+    /// Screen `input` (a `policy_json || command_line` pair, split on the first
+    /// ` || `) through [`ExecPolicy::check`] and compare the [`Decision`]
+    /// against `expected` (`"allow"` or `"deny"`).
+    ExecPolicy,
+    /// Format `input` (a rupee amount, parsed as `f64`) through [`format_inr`]
+    /// and compare the string against `expected`.
+    CostInr,
+    /// Format `input` (a rupee amount, parsed as `f64`) through
+    /// [`format_inr_compact`] and compare the string against `expected`.
+    CostInrCompact,
 }
 
-/// A single embedded benchmark case: a stable id, the prompt sent through one
-/// headless agent turn, and the objective grader applied to the result.
+impl CaseKind {
+    /// Stable, lowercase tag used in reports and JSON.
+    pub fn tag(self) -> &'static str {
+        match self {
+            CaseKind::ExecPolicy => "exec_policy",
+            CaseKind::CostInr => "cost_inr",
+            CaseKind::CostInrCompact => "cost_inr_compact",
+        }
+    }
+}
+
+/// A single embedded, scorable benchmark case.
+///
+/// A case is plain data: a stable `id`, the `kind` (which shipped helper to
+/// run), the `input` it is fed, and the `expected` output its checker must
+/// produce. The checker itself lives in [`check_case`] so cases stay
+/// declarative.
 #[derive(Debug, Clone)]
 pub struct BenchCase {
-    /// Stable, unique identifier used for filtering (`--case <id>`) and report
-    /// rows.
+    /// Stable, unique identifier used by `--list` and report rows.
     pub id: &'static str,
-    /// The prompt sent to the agent for this case.
-    pub prompt: &'static str,
-    /// The objective grader applied to the captured assistant text.
-    pub grader: Grader,
+    /// Which shipped pure helper this case exercises.
+    pub kind: CaseKind,
+    /// The input fed to the helper (encoding depends on `kind`).
+    pub input: &'static str,
+    /// The expected output the checker compares against.
+    pub expected: &'static str,
 }
 
 /// The embedded benchmark suite.
 ///
-/// Cases are intentionally small, self-contained, and brand-free: each one asks
-/// the model to do something with an objectively checkable answer (echo a
-/// token, perform trivial arithmetic, follow a simple format instruction) so a
-/// regex / substring / non-empty grader can verify it deterministically. Ids
-/// are unique; this is asserted in the tests.
+/// Cases are small, self-contained, and brand-free. Each one drives a shipped
+/// pure function across a meaningful boundary so a regression in that function
+/// fails the bench. Ids are unique (asserted in the tests).
 ///
-/// `Grader` carries owned `String` patterns, so the table is built once on
-/// first access via [`LazyLock`] rather than as a plain `const`/`static`
-/// initializer (which cannot allocate). It is otherwise immutable, embedded,
-/// and side-effect free — the same shape callers expect from a `static` slice.
-pub static CASES: LazyLock<Vec<BenchCase>> = LazyLock::new(|| {
+/// `BenchCase` is `'static`-data only, so this could be a plain `static`; it is
+/// built once via [`LazyLock`] purely to keep the table next to its checker and
+/// leave room for owned data later. It is immutable and side-effect free.
+pub static SUITE: LazyLock<Vec<BenchCase>> = LazyLock::new(|| {
     vec![
+        // ---- exec_policy splitter / allow-deny boundaries ----
         BenchCase {
-            id: "echo-token",
-            prompt: "Reply with exactly this token and nothing else: ALPHA-7421",
-            grader: Grader::SubstringPresent("ALPHA-7421".to_string()),
+            id: "exec-deny-prefix",
+            kind: CaseKind::ExecPolicy,
+            input: r#"{"deny":["rm -rf"]} || rm -rf /tmp/x"#,
+            expected: "deny",
         },
         BenchCase {
-            id: "arithmetic-sum",
-            prompt: "What is 17 plus 25? Answer with just the number.",
-            grader: Grader::RegexMatch(r"\b42\b".to_string()),
+            id: "exec-allow-miss",
+            kind: CaseKind::ExecPolicy,
+            input: r#"{"allow":["ls"]} || cat /etc/hosts"#,
+            expected: "deny",
         },
         BenchCase {
-            id: "yes-no-format",
-            prompt: "Is the integer 10 an even number? Answer with a single word: Yes or No.",
-            grader: Grader::RegexMatch(r"(?i)\byes\b".to_string()),
+            id: "exec-allow-hit",
+            kind: CaseKind::ExecPolicy,
+            input: r#"{"allow":["ls"]} || ls -la"#,
+            expected: "allow",
         },
         BenchCase {
-            id: "list-three-colors",
-            prompt: "List exactly three primary colors, separated by commas.",
-            grader: Grader::RegexMatch(r"(?i)red".to_string()),
+            id: "exec-chained-segment-deny",
+            kind: CaseKind::ExecPolicy,
+            input: r#"{"deny":["curl"]} || echo hi && curl http://x"#,
+            expected: "deny",
         },
         BenchCase {
-            id: "non-empty-reply",
-            prompt: "Write one short sentence describing what a compiler does.",
-            grader: Grader::NonEmpty,
+            id: "exec-empty-policy-allows",
+            kind: CaseKind::ExecPolicy,
+            input: r#"{} || anything goes here"#,
+            expected: "allow",
+        },
+        // ---- cost ledger ₹ rounding boundaries ----
+        BenchCase {
+            id: "inr-paise-carry",
+            kind: CaseKind::CostInr,
+            // 0.999 rupees rounds paise to 100, which must carry into ₹1.00.
+            input: "0.999",
+            expected: "₹1.00",
         },
         BenchCase {
-            id: "json-key",
-            prompt:
-                "Output a JSON object with a single key \"status\" whose value is the string \"ok\".",
-            grader: Grader::RegexMatch(r#"(?i)"status"\s*:\s*"ok""#.to_string()),
+            id: "inr-indian-grouping",
+            kind: CaseKind::CostInr,
+            input: "1234567.5",
+            expected: "₹12,34,567.50",
+        },
+        BenchCase {
+            id: "inr-small-amount",
+            kind: CaseKind::CostInr,
+            input: "42.25",
+            expected: "₹42.25",
+        },
+        // ---- cost ledger compact magnitude (bucket) boundaries ----
+        BenchCase {
+            id: "inr-compact-thousand",
+            kind: CaseKind::CostInrCompact,
+            input: "1500",
+            expected: "₹1.5k",
+        },
+        BenchCase {
+            id: "inr-compact-lakh",
+            kind: CaseKind::CostInrCompact,
+            input: "250000",
+            expected: "₹2.50L",
+        },
+        BenchCase {
+            id: "inr-compact-crore",
+            kind: CaseKind::CostInrCompact,
+            input: "30000000",
+            expected: "₹3.00Cr",
         },
     ]
 });
 
-/// Options accepted by [`handle_bench`].
-#[derive(Debug, Clone, Default)]
-pub struct BenchOptions {
-    /// When `Some`, run only the case whose id matches; otherwise run the full
-    /// suite.
-    pub case: Option<String>,
-    /// When `true`, emit the machine-readable JSON report; otherwise render the
-    /// human-readable table.
-    pub json: bool,
+/// The status of a single case after scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseStatus {
+    /// The checker produced the expected output.
+    Passed,
+    /// The checker produced something other than the expected output.
+    Failed,
+    /// The case was not run (e.g. `--live` model-backed scoring, not yet
+    /// implemented). Skipped cases never count toward the score.
+    Skipped,
 }
 
-/// The graded outcome of a single benchmark case.
-#[derive(Debug, Clone, PartialEq)]
+impl CaseStatus {
+    /// Stable, lowercase tag for JSON / diagnostics.
+    pub fn tag(self) -> &'static str {
+        match self {
+            CaseStatus::Passed => "passed",
+            CaseStatus::Failed => "failed",
+            CaseStatus::Skipped => "skipped",
+        }
+    }
+}
+
+/// The scored outcome of a single case.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaseResult {
     /// The id of the case this result is for.
     pub id: String,
-    /// Whether the case passed its grader.
-    pub passed: bool,
-    /// Wall-time of the headless turn, in milliseconds.
-    pub duration_ms: u64,
-    /// An optional note (e.g. an error or a timeout) for diagnostics. Empty on
-    /// a clean pass/fail.
-    pub note: String,
+    /// The kind tag (which shipped helper ran).
+    pub kind: &'static str,
+    /// The scoring status.
+    pub status: CaseStatus,
+    /// What the checker actually produced (empty for skipped cases).
+    pub actual: String,
+    /// What the case expected.
+    pub expected: String,
 }
 
 /// A scored benchmark report: per-case results plus aggregates.
+///
+/// `score` is the pass fraction over the cases that actually *ran* (skipped
+/// cases are excluded from the denominator), in `0.0..=1.0`. A run with no
+/// runnable cases scores `0.0`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchReport {
-    /// One [`CaseResult`] per case that ran, in run order.
+    /// One [`CaseResult`] per case, in suite order.
     pub results: Vec<CaseResult>,
-    /// Fraction of cases that passed, in `0.0..=1.0`. `0.0` for an empty run.
-    pub pass_rate: f64,
-    /// 50th-percentile wall-time across cases, in milliseconds.
-    pub p50_ms: u64,
-    /// 95th-percentile wall-time across cases, in milliseconds.
-    pub p95_ms: u64,
+    /// Total number of cases in the run.
+    pub total: usize,
+    /// Number of cases that passed.
+    pub passed: usize,
+    /// Pass fraction over non-skipped cases, in `0.0..=1.0`.
+    pub score: f64,
 }
 
-/// Pure grader: returns whether `output` satisfies grader `g`.
+/// Run the [`ExecPolicy`] checker for an `exec_policy`-kind case.
 ///
-/// This is the single source of truth for case verdicts and is deliberately
-/// free of I/O so it can be exhaustively unit-tested. An invalid regex pattern
-/// fails closed (returns `false`) rather than panicking.
-pub fn grade(output: &str, g: &Grader) -> bool {
-    match g {
-        Grader::SubstringPresent(needle) => output.contains(needle.as_str()),
-        Grader::RegexMatch(pattern) => regex::Regex::new(pattern)
-            .map(|re| re.is_match(output))
-            .unwrap_or(false),
-        Grader::NonEmpty => !output.trim().is_empty(),
+/// `input` is `policy_json || command_line`. Returns `"allow"` / `"deny"` to
+/// match against `expected`, or `Err` if the embedded policy JSON is malformed
+/// (which would itself be a regression worth catching).
+fn check_exec_policy(input: &str) -> std::result::Result<&'static str, String> {
+    let (policy_json, command) = input
+        .split_once(" || ")
+        .ok_or_else(|| "exec_policy case input must be `policy_json || command`".to_string())?;
+    let policy = ExecPolicy::from_json(policy_json.trim())?;
+    Ok(match policy.check(command.trim()) {
+        Decision::Allow => "allow",
+        Decision::Deny { .. } => "deny",
+    })
+}
+
+/// Run the checker for a single case and return its concrete output.
+///
+/// This is the pure heart of the harness: it dispatches on [`CaseKind`], calls
+/// the shipped helper, and yields the string the report compares against
+/// `expected`. It never performs I/O.
+pub fn check_case(case: &BenchCase) -> std::result::Result<String, String> {
+    match case.kind {
+        CaseKind::ExecPolicy => check_exec_policy(case.input).map(|s| s.to_string()),
+        CaseKind::CostInr => {
+            let amount: f64 = case
+                .input
+                .trim()
+                .parse()
+                .map_err(|_| format!("cost_inr case input is not a number: {}", case.input))?;
+            Ok(format_inr(amount))
+        }
+        CaseKind::CostInrCompact => {
+            let amount: f64 = case.input.trim().parse().map_err(|_| {
+                format!("cost_inr_compact case input is not a number: {}", case.input)
+            })?;
+            Ok(format_inr_compact(amount))
+        }
     }
 }
 
-/// Compute the `pct`-th percentile (e.g. `50.0`, `95.0`) over a slice of
-/// durations, in milliseconds, using the nearest-rank method.
+/// Score an embedded suite of cases, returning a [`BenchReport`].
 ///
-/// Returns `0` for an empty input. The slice is sorted internally, so callers
-/// need not pre-sort. Nearest-rank keeps the result a value that actually
-/// occurred, which is the right shape for "p50/p95 wall-time" reporting.
-pub fn percentile_ms(durations: &[u64], pct: f64) -> u64 {
-    if durations.is_empty() {
-        return 0;
+/// This is the central, deterministic entry point named by the spec: given a
+/// slice of cases it runs each checker, compares the output to `expected`, and
+/// aggregates `{ total, passed, score }`. It performs no I/O and is fully
+/// unit-testable; a checker error fails its case rather than aborting the run.
+pub fn run_suite(cases: &[BenchCase]) -> BenchReport {
+    let mut results = Vec::with_capacity(cases.len());
+    let mut passed = 0usize;
+
+    for case in cases {
+        let (status, actual) = match check_case(case) {
+            Ok(out) if out == case.expected => {
+                passed += 1;
+                (CaseStatus::Passed, out)
+            }
+            Ok(out) => (CaseStatus::Failed, out),
+            Err(err) => (CaseStatus::Failed, err),
+        };
+        results.push(CaseResult {
+            id: case.id.to_string(),
+            kind: case.kind.tag(),
+            status,
+            actual,
+            expected: case.expected.to_string(),
+        });
     }
-    let mut sorted: Vec<u64> = durations.to_vec();
-    sorted.sort_unstable();
-    let n = sorted.len();
-    // Nearest-rank: rank = ceil(pct/100 * n), 1-based, clamped to [1, n].
-    let rank = ((pct / 100.0) * n as f64).ceil() as usize;
-    let idx = rank.clamp(1, n) - 1;
-    sorted[idx]
+
+    let total = cases.len();
+    let ran = results
+        .iter()
+        .filter(|r| r.status != CaseStatus::Skipped)
+        .count();
+    let score = if ran == 0 {
+        0.0
+    } else {
+        passed as f64 / ran as f64
+    };
+
+    BenchReport {
+        results,
+        total,
+        passed,
+        score,
+    }
 }
 
-/// Compute the pass-rate (fraction of passing results) over `results`.
+/// Build a report for a `--live` run.
 ///
-/// Returns `0.0` for an empty slice.
-pub fn pass_rate(results: &[CaseResult]) -> f64 {
-    if results.is_empty() {
-        return 0.0;
+/// Model-backed scoring is not implemented yet, so every case is reported as
+/// [`CaseStatus::Skipped`] and the score is `0.0`. This keeps the `--live`
+/// surface documented and reachable without ever contacting a provider.
+fn run_suite_live(cases: &[BenchCase]) -> BenchReport {
+    let results = cases
+        .iter()
+        .map(|case| CaseResult {
+            id: case.id.to_string(),
+            kind: case.kind.tag(),
+            status: CaseStatus::Skipped,
+            actual: String::new(),
+            expected: case.expected.to_string(),
+        })
+        .collect();
+    BenchReport {
+        results,
+        total: cases.len(),
+        passed: 0,
+        score: 0.0,
     }
-    let passed = results.iter().filter(|r| r.passed).count();
-    passed as f64 / results.len() as f64
 }
 
 impl BenchReport {
-    /// Build a report from a vector of per-case results, computing the
-    /// aggregates (pass-rate and p50/p95 wall-time).
-    pub fn from_results(results: Vec<CaseResult>) -> Self {
-        let durations: Vec<u64> = results.iter().map(|r| r.duration_ms).collect();
-        let pass_rate = pass_rate(&results);
-        let p50_ms = percentile_ms(&durations, 50.0);
-        let p95_ms = percentile_ms(&durations, 95.0);
-        BenchReport {
-            results,
-            pass_rate,
-            p50_ms,
-            p95_ms,
-        }
-    }
+    /// Render the report as a styled, human-readable block.
+    ///
+    /// Styling is routed through [`crate::theme`] so the harness honors the
+    /// active palette. Failing rows show the expected-vs-actual diff for quick
+    /// triage. Output is deterministic for a given suite.
+    pub fn render_report(&self) -> String {
+        use crate::theme;
 
-    /// Number of cases that passed.
-    pub fn passed_count(&self) -> usize {
-        self.results.iter().filter(|r| r.passed).count()
-    }
-
-    /// Render the report as a human-readable, aligned table.
-    pub fn render_table(&self) -> String {
         let mut out = String::new();
-        let header_case = crate::tr!("bench.col.case");
-        let header_result = crate::tr!("bench.col.result");
-        let header_ms = crate::tr!("bench.col.ms");
+        out.push_str(&format!(
+            "{}\n",
+            theme::heading(crate::tr!("bench.report.title"))
+        ));
 
-        // Width the id column to the longest id (or the header), so the table
-        // stays aligned regardless of which cases ran.
         let id_width = self
             .results
             .iter()
             .map(|r| r.id.len())
-            .chain(std::iter::once(header_case.len()))
             .max()
-            .unwrap_or(header_case.len());
-
-        out.push_str(&format!(
-            "{:<id_width$}  {:<6}  {:>8}\n",
-            header_case,
-            header_result,
-            header_ms,
-            id_width = id_width,
-        ));
-        out.push_str(&format!("{}\n", "-".repeat(id_width + 2 + 6 + 2 + 8)));
+            .unwrap_or(0)
+            .max(crate::tr!("bench.col.case").len());
 
         for r in &self.results {
-            let verdict = if r.passed {
-                crate::tr!("bench.pass")
-            } else {
-                crate::tr!("bench.fail")
+            let (mark, styled_id) = match r.status {
+                CaseStatus::Passed => (
+                    "PASS",
+                    theme::success(format!("{:<id_width$}", r.id)).to_string(),
+                ),
+                CaseStatus::Failed => (
+                    "FAIL",
+                    theme::error(format!("{:<id_width$}", r.id)).to_string(),
+                ),
+                CaseStatus::Skipped => (
+                    "SKIP",
+                    theme::muted(format!("{:<id_width$}", r.id)).to_string(),
+                ),
             };
-            out.push_str(&format!(
-                "{:<id_width$}  {:<6}  {:>8}",
-                r.id,
-                verdict,
-                r.duration_ms,
-                id_width = id_width,
-            ));
-            if !r.note.is_empty() {
-                out.push_str(&format!("  ({})", r.note));
+            out.push_str(&format!("  {mark}  {styled_id}  {}", theme::muted(r.kind)));
+            if r.status == CaseStatus::Failed {
+                out.push_str(&format!(
+                    "  ({}={:?} {}={:?})",
+                    crate::tr!("bench.col.expected"),
+                    r.expected,
+                    crate::tr!("bench.col.actual"),
+                    r.actual,
+                ));
             }
             out.push('\n');
         }
 
         out.push('\n');
-        out.push_str(&format!(
-            "{}: {}/{} ({:.0}%)\n",
-            crate::tr!("bench.pass_rate"),
-            self.passed_count(),
-            self.results.len(),
-            self.pass_rate * 100.0,
-        ));
-        out.push_str(&format!(
-            "{}: p50={}ms  p95={}ms\n",
-            crate::tr!("bench.walltime"),
-            self.p50_ms,
-            self.p95_ms,
-        ));
+        let summary = format!(
+            "{}: {}/{}  {}: {:.0}%",
+            crate::tr!("bench.passed"),
+            self.passed,
+            self.total,
+            crate::tr!("bench.score"),
+            self.score * 100.0,
+        );
+        if self.passed == self.total {
+            out.push_str(&format!("{}\n", theme::success(summary)));
+        } else {
+            out.push_str(&format!("{}\n", theme::accent(summary)));
+        }
         out
     }
 
@@ -296,367 +418,266 @@ impl BenchReport {
             .map(|r| {
                 serde_json::json!({
                     "id": r.id,
-                    "passed": r.passed,
-                    "duration_ms": r.duration_ms,
-                    "note": r.note,
+                    "kind": r.kind,
+                    "status": r.status.tag(),
+                    "expected": r.expected,
+                    "actual": r.actual,
                 })
             })
             .collect();
         let value = serde_json::json!({
             "results": cases,
-            "passed": self.passed_count(),
-            "total": self.results.len(),
-            "pass_rate": self.pass_rate,
-            "p50_ms": self.p50_ms,
-            "p95_ms": self.p95_ms,
+            "total": self.total,
+            "passed": self.passed,
+            "score": self.score,
         });
         serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
     }
 }
 
-/// Resolve the per-case wall-time clamp from `BHARATCODE_BENCH_TIMEOUT_SECS`,
-/// falling back to the default and clamping to a sane upper bound.
-fn resolve_timeout() -> Duration {
-    let secs = std::env::var("BHARATCODE_BENCH_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
-        .min(MAX_TIMEOUT_SECS);
-    Duration::from_secs(secs)
+/// Options accepted by [`handle_bench`].
+///
+/// Defaults to the offline, parse-only run. There is no env gate: every field
+/// defaults to off and the harness is read-only.
+#[derive(Debug, Clone, Default)]
+pub struct BenchOptions {
+    /// When `true`, print the case ids and exit without running anything.
+    pub list: bool,
+    /// When `true`, request future model-backed scoring. Today this is a
+    /// documented stub that reports every case as `Skipped` and contacts no
+    /// provider.
+    pub live: bool,
+    /// When `true`, emit the machine-readable JSON report instead of the styled
+    /// table.
+    pub json: bool,
 }
 
-/// The subset of cases to run, given an optional id filter.
+/// Public entry point for the `bharatcode-bench` binary.
 ///
-/// Returns the matching cases in suite order. An unknown id yields an empty
-/// slice, which the caller reports as such.
-fn select_cases(filter: Option<&str>) -> Vec<&'static BenchCase> {
-    match filter {
-        Some(id) => CASES.iter().filter(|c| c.id == id).collect(),
-        None => CASES.iter().collect(),
-    }
-}
-
-/// Run a single case through one headless agent turn and capture the assistant
-/// text, clamped to `timeout`.
-///
-/// Returns the captured text on a clean turn, or a diagnostic note on
-/// timeout/error. This is the only provider-touching function in the module.
-async fn run_case(case: &BenchCase, timeout: Duration) -> std::result::Result<String, String> {
-    let mut session = build_session(SessionBuilderConfig {
-        session_id: None,
-        no_session: true,
-        no_profile: true,
-        builtins: vec!["developer".to_string()],
-        quiet: true,
-        output_format: "text".to_string(),
-        ..SessionBuilderConfig::default()
-    })
-    .await;
-
-    let turn = tokio::time::timeout(timeout, session.headless(case.prompt.to_string())).await;
-
-    match turn {
-        Err(_) => Err(crate::tr!("bench.timeout")),
-        Ok(Err(e)) => Err(e.to_string()),
-        Ok(Ok(())) => {
-            let history = session.message_history();
-            let text = history
-                .iter()
-                .rev()
-                .find(|m| m.role == rmcp::model::Role::Assistant)
-                .map(|m| m.as_concat_text())
-                .unwrap_or_default();
-            Ok(text)
+/// Resolves [`BenchOptions`] into one of three behaviors: `--list` prints the
+/// embedded case ids and returns; `--live` runs the (stubbed) model-backed path
+/// that skips every case; otherwise the default offline parse-only suite is
+/// scored via [`run_suite`]. The report is printed as a styled table or JSON.
+pub fn handle_bench(opts: BenchOptions) -> Result<()> {
+    if opts.list {
+        for case in SUITE.iter() {
+            println!("{}\t{}", case.id, case.kind.tag());
         }
-    }
-}
-
-/// Entry point for the `bharatcode bench` surface and for the serve-sessions /
-/// eval consumers.
-///
-/// Runs each (filtered) embedded case through one headless agent turn, grades
-/// the captured assistant text, times the turn, and prints the scored report
-/// (table or JSON per `opts.json`).
-pub async fn handle_bench(opts: BenchOptions) -> Result<()> {
-    let timeout = resolve_timeout();
-    let cases = select_cases(opts.case.as_deref());
-
-    if cases.is_empty() {
-        // An explicit filter that matched nothing is a usage error worth
-        // surfacing rather than printing an empty, confusing report.
-        if let Some(id) = opts.case.as_deref() {
-            anyhow::bail!("{}: {}", crate::tr!("bench.unknown_case"), id);
-        }
-        anyhow::bail!("{}", crate::tr!("bench.no_cases"));
+        return Ok(());
     }
 
-    let mut results = Vec::with_capacity(cases.len());
-    for case in cases {
-        let start = Instant::now();
-        let outcome = run_case(case, timeout).await;
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        let (passed, note) = match outcome {
-            Ok(text) => (grade(&text, &case.grader), String::new()),
-            Err(note) => (false, note),
-        };
-
-        results.push(CaseResult {
-            id: case.id.to_string(),
-            passed,
-            duration_ms,
-            note,
-        });
-    }
-
-    let report = BenchReport::from_results(results);
+    let report = if opts.live {
+        run_suite_live(&SUITE)
+    } else {
+        run_suite(&SUITE)
+    };
 
     if opts.json {
         println!("{}", report.render_json());
     } else {
-        print!("{}", report.render_table());
+        print!("{}", report.render_report());
     }
 
     Ok(())
+}
+
+/// The ids of every embedded case, in suite order.
+///
+/// Exposed so `--list` and tests share one definition of "all ids".
+pub fn case_ids() -> Vec<&'static str> {
+    SUITE.iter().map(|c| c.id).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn result(id: &str, passed: bool, ms: u64) -> CaseResult {
-        CaseResult {
-            id: id.to_string(),
-            passed,
-            duration_ms: ms,
-            note: String::new(),
+    #[test]
+    fn suite_is_known_good_and_fully_passes() {
+        // The headline invariant: on the embedded, known-good suite, every case
+        // passes and the score is a perfect 1.0.
+        let report = run_suite(&SUITE);
+        assert_eq!(report.total, SUITE.len());
+        assert_eq!(
+            report.passed,
+            report.total,
+            "known-good suite must fully pass; failing rows: {:?}",
+            report
+                .results
+                .iter()
+                .filter(|r| r.status != CaseStatus::Passed)
+                .collect::<Vec<_>>()
+        );
+        // score >= a comfortable threshold (and in fact exactly 1.0).
+        assert!(
+            report.score >= 0.99,
+            "score below threshold: {}",
+            report.score
+        );
+        assert!((report.score - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn list_yields_all_case_ids() {
+        let ids = case_ids();
+        assert_eq!(ids.len(), SUITE.len());
+        for case in SUITE.iter() {
+            assert!(ids.contains(&case.id), "missing id from list: {}", case.id);
         }
     }
 
-    // ---- Grader truth-table: one assertion per variant, both verdicts. ----
-
     #[test]
-    fn grade_substring_present() {
-        let g = Grader::SubstringPresent("ALPHA-7421".to_string());
-        assert!(grade("the answer is ALPHA-7421 indeed", &g));
-        assert!(!grade("no token here", &g));
-        // Case-sensitive by design.
-        assert!(!grade("alpha-7421", &g));
+    fn case_ids_are_unique_and_non_empty() {
+        let mut seen = std::collections::HashSet::new();
+        for case in SUITE.iter() {
+            assert!(!case.id.is_empty(), "empty case id");
+            assert!(seen.insert(case.id), "duplicate case id: {}", case.id);
+            assert!(!case.expected.is_empty(), "empty expected for {}", case.id);
+        }
     }
 
     #[test]
-    fn grade_regex_match() {
-        let g = Grader::RegexMatch(r"\b42\b".to_string());
-        assert!(grade("the result is 42 exactly", &g));
-        assert!(!grade("the result is 420", &g));
-        assert!(!grade("no number", &g));
+    fn exec_policy_cases_exercise_shipped_splitter() {
+        // Directly assert the shipped helper agrees with the embedded expected
+        // outputs, so a regression in ExecPolicy is what fails the bench.
+        assert_eq!(
+            check_exec_policy(r#"{"deny":["rm -rf"]} || rm -rf /tmp/x"#).unwrap(),
+            "deny"
+        );
+        assert_eq!(
+            check_exec_policy(r#"{"allow":["ls"]} || ls -la"#).unwrap(),
+            "allow"
+        );
+        assert_eq!(
+            check_exec_policy(r#"{"allow":["ls"]} || cat /etc/hosts"#).unwrap(),
+            "deny"
+        );
+        assert_eq!(check_exec_policy(r#"{} || anything"#).unwrap(), "allow");
+        // A chained `&&` segment that hits a denied prefix must deny.
+        assert_eq!(
+            check_exec_policy(r#"{"deny":["curl"]} || echo hi && curl http://x"#).unwrap(),
+            "deny"
+        );
     }
 
     #[test]
-    fn grade_regex_case_insensitive_flag() {
-        let g = Grader::RegexMatch(r"(?i)\byes\b".to_string());
-        assert!(grade("Yes", &g));
-        assert!(grade("the answer is YES", &g));
-        assert!(!grade("no", &g));
+    fn cost_inr_paise_carry_boundary() {
+        // The paise-carry boundary in format_inr: 0.999 -> ₹1.00.
+        assert_eq!(format_inr(0.999), "₹1.00");
+        // And the case fed to the suite produces exactly the expected string.
+        let case = SUITE.iter().find(|c| c.id == "inr-paise-carry").unwrap();
+        assert_eq!(check_case(case).unwrap(), case.expected);
     }
 
     #[test]
-    fn grade_regex_invalid_pattern_fails_closed() {
-        // An unbalanced group is an invalid regex; it must fail, not panic.
-        let g = Grader::RegexMatch(r"(unterminated".to_string());
-        assert!(!grade("anything at all", &g));
+    fn compact_magnitude_bucket_boundaries() {
+        // k / L / Cr thresholds — the offline analog of a bucket-boundary table.
+        assert_eq!(format_inr_compact(1500.0), "₹1.5k");
+        assert_eq!(format_inr_compact(250000.0), "₹2.50L");
+        assert_eq!(format_inr_compact(30000000.0), "₹3.00Cr");
     }
 
     #[test]
-    fn grade_non_empty() {
-        let g = Grader::NonEmpty;
-        assert!(grade("x", &g));
-        assert!(grade("  hello  ", &g));
-        assert!(!grade("", &g));
-        assert!(!grade("   \n\t  ", &g));
-    }
-
-    // ---- Percentile math: feed known durations, assert p50/p95. ----
-
-    #[test]
-    fn percentile_known_durations() {
-        // 1..=10, nearest-rank: p50 -> rank ceil(0.5*10)=5 -> value 5;
-        // p95 -> rank ceil(0.95*10)=10 -> value 10.
-        let d: Vec<u64> = (1..=10).collect();
-        assert_eq!(percentile_ms(&d, 50.0), 5);
-        assert_eq!(percentile_ms(&d, 95.0), 10);
-        assert_eq!(percentile_ms(&d, 100.0), 10);
+    fn failing_case_is_scored_failed_not_panicking() {
+        // A deliberately-wrong expected value must score Failed, not panic, and
+        // must drag the score below 1.0.
+        let bad = vec![BenchCase {
+            id: "intentionally-wrong",
+            kind: CaseKind::CostInr,
+            input: "42.25",
+            expected: "₹999.99",
+        }];
+        let report = run_suite(&bad);
+        assert_eq!(report.total, 1);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.results[0].status, CaseStatus::Failed);
+        assert_eq!(report.results[0].actual, "₹42.25");
+        assert!((report.score - 0.0).abs() < 1e-9);
     }
 
     #[test]
-    fn percentile_unsorted_input() {
-        // Sorting is internal; order should not matter.
-        let d = vec![50, 10, 30, 20, 40];
-        assert_eq!(percentile_ms(&d, 50.0), 30);
-        assert_eq!(percentile_ms(&d, 95.0), 50);
+    fn malformed_exec_policy_input_fails_closed() {
+        // A checker error (bad input encoding) fails the case rather than
+        // aborting the whole run.
+        let bad = vec![BenchCase {
+            id: "no-separator",
+            kind: CaseKind::ExecPolicy,
+            input: "missing the separator",
+            expected: "allow",
+        }];
+        let report = run_suite(&bad);
+        assert_eq!(report.results[0].status, CaseStatus::Failed);
     }
 
     #[test]
-    fn percentile_single_and_empty() {
-        assert_eq!(percentile_ms(&[7], 50.0), 7);
-        assert_eq!(percentile_ms(&[7], 95.0), 7);
-        assert_eq!(percentile_ms(&[], 50.0), 0);
-        assert_eq!(percentile_ms(&[], 95.0), 0);
-    }
-
-    // ---- pass_rate over a fixed CaseResult vec. ----
-
-    #[test]
-    fn pass_rate_computation() {
-        let results = vec![
-            result("a", true, 10),
-            result("b", false, 20),
-            result("c", true, 30),
-            result("d", true, 40),
-        ];
-        // 3 of 4 passed.
-        assert!((pass_rate(&results) - 0.75).abs() < 1e-9);
+    fn live_run_skips_every_case_and_scores_zero() {
+        // --live is a documented stub: nothing runs, score is 0.0, every case is
+        // Skipped, and skipped cases are excluded from passing math.
+        let report = run_suite_live(&SUITE);
+        assert_eq!(report.total, SUITE.len());
+        assert_eq!(report.passed, 0);
+        assert!((report.score - 0.0).abs() < 1e-9);
+        assert!(report
+            .results
+            .iter()
+            .all(|r| r.status == CaseStatus::Skipped));
     }
 
     #[test]
-    fn pass_rate_all_and_none_and_empty() {
-        assert!((pass_rate(&[result("a", true, 1)]) - 1.0).abs() < 1e-9);
-        assert!((pass_rate(&[result("a", false, 1)]) - 0.0).abs() < 1e-9);
-        assert!((pass_rate(&[]) - 0.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn report_aggregates_wired() {
-        let results = vec![
-            result("a", true, 10),
-            result("b", false, 20),
-            result("c", true, 30),
-        ];
-        let report = BenchReport::from_results(results);
-        assert_eq!(report.passed_count(), 2);
-        assert!((report.pass_rate - (2.0 / 3.0)).abs() < 1e-9);
-        // durations sorted [10,20,30]: p50 rank ceil(1.5)=2 -> 20; p95 rank
-        // ceil(2.85)=3 -> 30.
-        assert_eq!(report.p50_ms, 20);
-        assert_eq!(report.p95_ms, 30);
-    }
-
-    // ---- Renderers stay non-empty and consistent with the data. ----
-
-    #[test]
-    fn render_table_contains_aggregates() {
-        let report = BenchReport::from_results(vec![
-            result("alpha", true, 12),
-            result("beta", false, 34),
-        ]);
-        let table = report.render_table();
-        assert!(table.contains("alpha"));
-        assert!(table.contains("beta"));
-        // 1 of 2 passed -> 50%.
-        assert!(table.contains("50%"));
-        assert!(table.contains("p50="));
-        assert!(table.contains("p95="));
+    fn render_report_marks_pass_and_summary() {
+        let report = run_suite(&SUITE);
+        let text = report.render_report();
+        assert!(text.contains("PASS"));
+        // Full pass -> 100%.
+        assert!(text.contains("100%"), "summary should show 100%: {text}");
+        // Every case id appears.
+        for case in SUITE.iter() {
+            assert!(text.contains(case.id), "report missing id {}", case.id);
+        }
     }
 
     #[test]
     fn render_json_is_valid_and_complete() {
-        let report = BenchReport::from_results(vec![
-            result("alpha", true, 12),
-            result("beta", false, 34),
-        ]);
+        let report = run_suite(&SUITE);
         let json = report.render_json();
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(parsed["total"], 2);
-        assert_eq!(parsed["passed"], 1);
-        assert_eq!(parsed["results"].as_array().unwrap().len(), 2);
-        assert!((parsed["pass_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
-        assert_eq!(parsed["results"][0]["id"], "alpha");
-        assert_eq!(parsed["results"][0]["passed"], true);
-    }
-
-    // ---- CASES table invariants: unique ids, brand-free prompts. ----
-
-    #[test]
-    fn cases_have_unique_ids() {
-        let mut seen = std::collections::HashSet::new();
-        for c in CASES.iter() {
-            assert!(!c.id.is_empty(), "case id must not be empty");
-            assert!(seen.insert(c.id), "duplicate case id: {}", c.id);
-        }
+        assert_eq!(parsed["total"], SUITE.len());
+        assert_eq!(parsed["passed"], SUITE.len());
+        assert!((parsed["score"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(parsed["results"].as_array().unwrap().len(), SUITE.len());
+        assert_eq!(parsed["results"][0]["status"], "passed");
     }
 
     #[test]
     fn cases_are_brand_free() {
-        // No user-facing leakage of the upstream framework brands.
+        // No user-facing leakage of upstream framework brands in case data.
         let banned = ["goose", "block", "anthropic", "openai", "codex"];
-        for c in CASES.iter() {
-            let p = c.prompt.to_lowercase();
+        for case in SUITE.iter() {
+            let hay = format!("{} {} {}", case.id, case.input, case.expected).to_lowercase();
             for b in banned {
-                assert!(
-                    !p.contains(b),
-                    "case '{}' prompt leaks banned brand '{}'",
-                    c.id,
-                    b
-                );
+                assert!(!hay.contains(b), "case '{}' leaks brand '{}'", case.id, b);
             }
         }
     }
 
     #[test]
-    fn cases_graders_are_well_formed() {
-        // Every embedded regex grader must compile; substrings must be
-        // non-empty.
-        for c in CASES.iter() {
-            match &c.grader {
-                Grader::RegexMatch(pat) => {
-                    assert!(
-                        regex::Regex::new(pat).is_ok(),
-                        "case '{}' has invalid regex: {}",
-                        c.id,
-                        pat
-                    );
-                }
-                Grader::SubstringPresent(s) => {
-                    assert!(!s.is_empty(), "case '{}' has empty substring grader", c.id);
-                }
-                Grader::NonEmpty => {}
-            }
-            assert!(!c.prompt.is_empty(), "case '{}' has empty prompt", c.id);
-        }
-    }
-
-    // ---- Case selection / timeout resolution. ----
-
-    #[test]
-    fn select_cases_filters_by_id() {
-        let one = select_cases(Some("echo-token"));
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].id, "echo-token");
-
-        let none = select_cases(Some("does-not-exist"));
-        assert!(none.is_empty());
-
-        let all = select_cases(None);
-        assert_eq!(all.len(), CASES.len());
-    }
-
-    #[test]
-    fn timeout_clamps_and_defaults() {
-        // Default when unset is covered indirectly; here assert the clamp bound.
-        // We can't easily mutate process env safely across threads, so assert
-        // the constants the resolver relies on.
-        assert_eq!(DEFAULT_TIMEOUT_SECS, 60);
-        assert!(MAX_TIMEOUT_SECS >= DEFAULT_TIMEOUT_SECS);
-    }
-
-    #[test]
-    fn recipe_yaml_is_embedded_and_branded_cleanly() {
-        // The embedded recipe artifact must be present and brand-free.
-        assert!(BENCH_RECIPE_YAML.contains("Offline Benchmark"));
-        let lower = BENCH_RECIPE_YAML.to_lowercase();
-        for b in ["goose", "block "] {
-            assert!(!lower.contains(b), "recipe yaml leaks brand: {}", b);
-        }
+    fn handle_bench_paths_do_not_error() {
+        // Smoke: the handler paths return Ok and never touch the network.
+        handle_bench(BenchOptions {
+            list: true,
+            ..BenchOptions::default()
+        })
+        .unwrap();
+        handle_bench(BenchOptions::default()).unwrap();
+        handle_bench(BenchOptions {
+            live: true,
+            ..BenchOptions::default()
+        })
+        .unwrap();
+        handle_bench(BenchOptions {
+            json: true,
+            ..BenchOptions::default()
+        })
+        .unwrap();
     }
 }

@@ -167,9 +167,9 @@ pub fn release_readiness() -> (crate::commands::doctor_checks::Status, String) {
     let version = env!("CARGO_PKG_VERSION");
     let names = expected_asset_names();
 
-    let all_well_formed = names.iter().all(|n| {
-        n.starts_with("bharatcode-") && (n.ends_with(".tar.bz2") || n.ends_with(".zip"))
-    });
+    let all_well_formed = names
+        .iter()
+        .all(|n| n.starts_with("bharatcode-") && (n.ends_with(".tar.bz2") || n.ends_with(".zip")));
     let version_ok = version_is_parseable(version);
 
     let lbl = "Release packaging";
@@ -204,10 +204,7 @@ fn version_is_parseable(version: &str) -> bool {
         _ => return false,
     };
     let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    let patch_core = patch
-        .split(['-', '+'])
-        .next()
-        .unwrap_or("");
+    let patch_core = patch.split(['-', '+']).next().unwrap_or("");
     numeric(major) && numeric(minor) && numeric(patch_core)
 }
 
@@ -235,9 +232,18 @@ mod tests {
         let sha = "abc123def456";
         let formula = homebrew_formula("9.9.9", sha);
         assert!(formula.contains(sha), "sha256 not embedded");
-        assert!(formula.contains("version \"9.9.9\""), "version not embedded");
-        assert!(formula.contains("class Bharatcode < Formula"), "formula class missing");
-        assert!(formula.contains("license \"Apache-2.0\""), "license missing");
+        assert!(
+            formula.contains("version \"9.9.9\""),
+            "version not embedded"
+        );
+        assert!(
+            formula.contains("class Bharatcode < Formula"),
+            "formula class missing"
+        );
+        assert!(
+            formula.contains("license \"Apache-2.0\""),
+            "license missing"
+        );
         assert!(formula.contains("v9.9.9/"), "release url version missing");
     }
 

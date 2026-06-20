@@ -24,6 +24,13 @@
 //! Everything here is pure (no I/O beyond an env-var read in [`should_show`]),
 //! so the release struct and the banner string are trivially unit-testable.
 
+// This module is brought in at two disjoint call sites via `#[path]`
+// (`session/builder.rs` for the startup banner, `commands/info.rs` for the
+// version surface). Each site exercises a different subset of the public API,
+// so from any single inclusion's vantage point the rest looks unused; the
+// canonical source is shared and every item is reachable across the binary.
+#![allow(dead_code)]
+
 /// The General-Availability product version. This is the *brand* version, not
 /// the internal crate version; it is intentionally pinned to the `1.0.0` GA
 /// milestone and reviewed by hand on each GA cut.
@@ -52,22 +59,81 @@ const BANNER_KEY: &str = "release.banner";
 /// interactive sessions.
 const NO_BANNER_ENV: &str = "BHARATCODE_NO_BANNER";
 
+/// Environment variable that selects the release channel at runtime. Unset (the
+/// default for the 1.0 GA wave) resolves to [`Channel::Ga`]; recognized values
+/// are `ga`/`stable`, `beta`, and `canary`/`nightly` (case-insensitive). Any
+/// unrecognized value falls back to GA, so a stray value never demotes a GA
+/// build's banner.
+const RELEASE_CHANNEL_ENV: &str = "BHARATCODE_RELEASE_CHANNEL";
+
+/// Typed release channel. The 1.0 GA wave ships on [`Channel::Ga`]; the other
+/// variants exist so pre-release builds can self-identify without a code change
+/// (they are selected via [`RELEASE_CHANNEL_ENV`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// General Availability — the stable, supported 1.0 line.
+    Ga,
+    /// Pre-release beta.
+    Beta,
+    /// Bleeding-edge canary / nightly.
+    Canary,
+}
+
+impl Channel {
+    /// The brand-facing channel badge shown to users (e.g. `GA`).
+    pub fn badge(self) -> &'static str {
+        match self {
+            Channel::Ga => "GA",
+            Channel::Beta => "Beta",
+            Channel::Canary => "Canary",
+        }
+    }
+
+    /// Resolve the active channel from [`RELEASE_CHANNEL_ENV`], defaulting to
+    /// [`Channel::Ga`] for the 1.0 wave. Unrecognized values resolve to GA so a
+    /// typo never silently demotes the banner.
+    pub fn from_env() -> Channel {
+        match std::env::var(RELEASE_CHANNEL_ENV) {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "beta" => Channel::Beta,
+                "canary" | "nightly" => Channel::Canary,
+                _ => Channel::Ga,
+            },
+            Err(_) => Channel::Ga,
+        }
+    }
+}
+
+impl std::fmt::Display for Channel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.badge())
+    }
+}
+
 /// Immutable snapshot of the current release's brand-facing identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReleaseInfo {
     /// Semantic GA product version (e.g. `1.0.0`).
     pub ga_version: &'static str,
-    /// Release channel marker (`GA`).
+    /// Semantic GA product version (alias of [`ReleaseInfo::ga_version`]). The
+    /// canonical, semver-parseable `MAJOR.MINOR.PATCH` brand version.
+    pub version: &'static str,
+    /// Release channel marker badge (`GA`).
     pub channel: &'static str,
+    /// Typed release channel for this build ([`Channel::Ga`] in the 1.0 wave).
+    pub channel_kind: Channel,
     /// Apache-2.0 compliance / upstream-attribution line.
     pub attribution: &'static str,
 }
 
 /// The release info for this build.
 pub fn current() -> ReleaseInfo {
+    let channel_kind = Channel::from_env();
     ReleaseInfo {
         ga_version: GA_VERSION,
+        version: GA_VERSION,
         channel: CHANNEL_GA,
+        channel_kind,
         attribution: ATTRIBUTION,
     }
 }
@@ -188,16 +254,87 @@ pub fn banner_line() -> String {
     )
 }
 
-/// Whether the one-time startup banner should be shown for this launch.
+/// Pure eligibility predicate for the one-time startup banner.
 ///
 /// True only for an interactive, non-quiet session that has not opted out via
 /// [`NO_BANNER_ENV`]. Non-interactive and `--quiet` launches are silent so the
-/// banner never pollutes piped/scripted output.
-pub fn should_show(interactive: bool, quiet: bool) -> bool {
+/// banner never pollutes piped/scripted output. This does **not** consume the
+/// once-per-process claim, so it is side-effect-free and safe to call
+/// repeatedly (e.g. in tests).
+pub fn is_banner_eligible(interactive: bool, quiet: bool) -> bool {
     if !interactive || quiet {
         return false;
     }
     std::env::var_os(NO_BANNER_ENV).is_none()
+}
+
+/// Whether the session-builder call site should print the one-time startup
+/// banner for this launch.
+///
+/// Combines the pure eligibility gate ([`is_banner_eligible`]) with the
+/// process-wide one-shot ([`claim_banner_once`]) so the banner is emitted by
+/// exactly one of the two call sites (the session builder here, or the
+/// interactive-loop start via [`startup_banner`]) — whichever runs first. A
+/// `true` result *consumes* the claim, so subsequent callers (including the
+/// interactive-loop site) become silent no-ops, keeping default output to a
+/// single banner line.
+pub fn should_show(interactive: bool, quiet: bool) -> bool {
+    if !is_banner_eligible(interactive, quiet) {
+        return false;
+    }
+    claim_banner_once()
+}
+
+/// Process-wide one-shot env flag used to dedup the GA banner across the two
+/// call sites (the session builder and the interactive-loop start). A runtime
+/// environment variable is used deliberately: the module is brought in via
+/// `#[path]` at multiple sites, so each inclusion has its own statics — a
+/// regular `OnceLock`/`AtomicBool` would *not* be shared between them, but the
+/// process environment is. The variable is internal plumbing (double
+/// underscore) and never read by users.
+const BANNER_CLAIM_ENV: &str = "BHARATCODE__GA_BANNER_EMITTED";
+
+/// Claim the single GA-banner emission for this process. Returns `true` for the
+/// first caller and `false` for every caller thereafter, so whichever of the
+/// two call sites runs first owns the one printed line and the other becomes a
+/// silent no-op (keeping default output to exactly one banner).
+fn claim_banner_once() -> bool {
+    if std::env::var_os(BANNER_CLAIM_ENV).is_some() {
+        return false;
+    }
+    std::env::set_var(BANNER_CLAIM_ENV, "1");
+    true
+}
+
+/// The gated, deduplicated one-time GA startup banner for an interactive
+/// session.
+///
+/// Returns `Some(line)` only when **all** of the following hold:
+///   * this build is on the GA channel ([`Channel::Ga`]),
+///   * the user has not opted out via [`NO_BANNER_ENV`], and
+///   * no other call site has already emitted the banner this process
+///     ([`claim_banner_once`]).
+///
+/// Otherwise returns `None`. This is the single decision point used by the
+/// interactive session start: the caller prints the line verbatim when `Some`
+/// and emits nothing (byte-identical to a build without this feature) when
+/// `None`.
+///
+/// Default behavior: GA channel + unset `BHARATCODE_NO_BANNER` + first emission
+/// => `Some`. Setting `BHARATCODE_NO_BANNER` (any value) => `None`. A non-GA
+/// channel (`BHARATCODE_RELEASE_CHANNEL=beta|canary`) also yields `None`,
+/// keeping the GA milestone banner exclusive to GA cuts.
+pub fn startup_banner() -> Option<String> {
+    if std::env::var_os(NO_BANNER_ENV).is_some() {
+        return None;
+    }
+    if current().channel_kind != Channel::Ga {
+        return None;
+    }
+    if !claim_banner_once() {
+        return None;
+    }
+    Some(banner_line())
 }
 
 #[cfg(test)]
@@ -316,7 +453,10 @@ mod tests {
         let ga = ga_version();
         let ga_parts: Vec<u64> = ga
             .split('.')
-            .map(|p| p.parse::<u64>().expect("GA version component must be numeric"))
+            .map(|p| {
+                p.parse::<u64>()
+                    .expect("GA version component must be numeric")
+            })
             .collect();
         assert_eq!(
             ga_parts.len(),
@@ -338,30 +478,232 @@ mod tests {
             ga, crate_version,
             "GA brand version must be a reviewed constant distinct from the internal crate version"
         );
-        // The internal crate major is a valid, comparable number; the GA
-        // milestone deliberately resets to the 1.0 line and does not inherit it.
-        assert!(crate_major >= 1, "internal crate major should be >= 1");
+        // The GA milestone is a deliberate major bump: its major component is at
+        // or above the internal crate major. This compares the parsed integers
+        // (not the strings) so the 1.0 GA marker is provably the leading version.
+        assert!(
+            ga_parts[0] >= crate_major,
+            "GA major ({}) must be >= internal crate major ({crate_major})",
+            ga_parts[0]
+        );
     }
 
     #[test]
     fn should_show_only_when_interactive_and_not_quiet() {
-        // Guard against a developer's environment having the opt-out set.
+        // Use the pure eligibility predicate (no claim side-effect) so this
+        // broad gate test never races the once-per-process banner claim that
+        // `should_show` / `startup_banner` consume.
         let suppressed = std::env::var_os(NO_BANNER_ENV).is_some();
 
-        assert!(!should_show(false, false), "non-interactive must be quiet");
-        assert!(!should_show(false, true));
-        assert!(!should_show(true, true), "--quiet must suppress");
+        assert!(
+            !is_banner_eligible(false, false),
+            "non-interactive must be quiet"
+        );
+        assert!(!is_banner_eligible(false, true));
+        assert!(!is_banner_eligible(true, true), "--quiet must suppress");
 
         if suppressed {
             assert!(
-                !should_show(true, false),
+                !is_banner_eligible(true, false),
                 "BHARATCODE_NO_BANNER must suppress even when interactive"
             );
         } else {
             assert!(
-                should_show(true, false),
+                is_banner_eligible(true, false),
                 "interactive && !quiet && not suppressed must show"
             );
+        }
+    }
+
+    #[test]
+    fn current_channel_kind_is_ga_by_default() {
+        // The default 1.0 wave resolves to the GA channel when the override env
+        // is unset. Guard against a developer environment forcing a channel.
+        if std::env::var_os(RELEASE_CHANNEL_ENV).is_none() {
+            assert_eq!(current().channel_kind, Channel::Ga);
+        }
+    }
+
+    #[test]
+    fn current_version_parses_as_semver_at_least_one_zero() {
+        let v = current().version;
+        // version is an alias of the canonical GA version.
+        assert_eq!(v, current().ga_version);
+        // Parse MAJOR.MINOR.PATCH as numeric components without a semver dep.
+        let parts: Vec<u64> = v
+            .split('.')
+            .map(|p| p.parse::<u64>().expect("semver component must be numeric"))
+            .collect();
+        assert_eq!(parts.len(), 3, "version must be MAJOR.MINOR.PATCH: {v}");
+        // version >= 1.0.0
+        assert!(parts[0] >= 1, "GA version must be at least 1.0.0, got {v}");
+    }
+
+    #[test]
+    fn channel_from_env_recognizes_values() {
+        // Pure parse over an explicit input rather than the process env so the
+        // test is hermetic. Mirrors Channel::from_env's matching.
+        let parse = |raw: &str| match raw.trim().to_ascii_lowercase().as_str() {
+            "beta" => Channel::Beta,
+            "canary" | "nightly" => Channel::Canary,
+            _ => Channel::Ga,
+        };
+        assert_eq!(parse("ga"), Channel::Ga);
+        assert_eq!(parse("stable"), Channel::Ga);
+        assert_eq!(parse(""), Channel::Ga);
+        assert_eq!(parse("BETA"), Channel::Beta);
+        assert_eq!(parse(" beta "), Channel::Beta);
+        assert_eq!(parse("canary"), Channel::Canary);
+        assert_eq!(parse("nightly"), Channel::Canary);
+        // Unrecognized value never demotes GA.
+        assert_eq!(parse("bogus"), Channel::Ga);
+    }
+
+    #[test]
+    fn channel_badge_is_brand_clean() {
+        for ch in [Channel::Ga, Channel::Beta, Channel::Canary] {
+            let badge = ch.badge();
+            assert!(!badge.is_empty());
+            let lowered = badge.to_lowercase();
+            assert!(!lowered.contains("goose"), "badge leaks upstream: {badge}");
+            assert!(!lowered.contains("block"), "badge leaks vendor: {badge}");
+        }
+        assert_eq!(Channel::Ga.badge(), "GA");
+        assert_eq!(format!("{}", Channel::Ga), "GA");
+    }
+
+    /// The banner *text* (independent of the process-wide one-shot claim) is the
+    /// brand-clean GA line. Asserted against `banner_line()` so this test is
+    /// pure and never races the claim consumed by `startup_banner`.
+    #[test]
+    fn startup_banner_text_is_brand_clean_and_complete() {
+        let banner = banner_line();
+        assert!(
+            banner.contains("1.0.0"),
+            "banner missing GA version: {banner}"
+        );
+        assert!(banner.contains("GA"), "banner missing GA channel: {banner}");
+        assert!(
+            banner.contains("Apache-2.0"),
+            "banner missing license: {banner}"
+        );
+        assert!(!banner.contains('\n'), "banner must be one line: {banner}");
+        let lowered = banner.to_lowercase();
+        assert!(
+            !lowered.contains("goose"),
+            "banner leaks upstream: {banner}"
+        );
+        assert!(!lowered.contains("block"), "banner leaks vendor: {banner}");
+    }
+
+    /// Exercises the gating + once-per-process dedup of `startup_banner` in
+    /// isolation. Serialized via a mutex (and save/restore of the relevant env
+    /// vars) so it is deterministic even though it mutates process env that
+    /// other tests read.
+    #[test]
+    fn startup_banner_gating_and_dedup() {
+        use std::sync::Mutex;
+        // Serialize the few tests that mutate the shared banner/channel env.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let saved_no_banner = std::env::var_os(NO_BANNER_ENV);
+        let saved_channel = std::env::var_os(RELEASE_CHANNEL_ENV);
+        let saved_claim = std::env::var_os(BANNER_CLAIM_ENV);
+
+        // GA default, fresh claim => Some, and exactly once.
+        std::env::remove_var(NO_BANNER_ENV);
+        std::env::remove_var(RELEASE_CHANNEL_ENV);
+        std::env::remove_var(BANNER_CLAIM_ENV);
+        let first = startup_banner();
+        assert!(first.is_some(), "GA default first call must yield a banner");
+        assert!(
+            startup_banner().is_none(),
+            "second call in-process must be a no-op (single banner)"
+        );
+
+        // BHARATCODE_NO_BANNER set => None even with a fresh claim.
+        std::env::remove_var(BANNER_CLAIM_ENV);
+        std::env::set_var(NO_BANNER_ENV, "1");
+        assert!(
+            startup_banner().is_none(),
+            "BHARATCODE_NO_BANNER must suppress the banner"
+        );
+        std::env::remove_var(NO_BANNER_ENV);
+
+        // Non-GA channel => None even with a fresh claim and no opt-out.
+        std::env::remove_var(BANNER_CLAIM_ENV);
+        std::env::set_var(RELEASE_CHANNEL_ENV, "beta");
+        assert_eq!(current().channel_kind, Channel::Beta);
+        assert!(
+            startup_banner().is_none(),
+            "non-GA channel must not show the GA banner"
+        );
+
+        // Restore prior environment.
+        std::env::remove_var(RELEASE_CHANNEL_ENV);
+        match saved_no_banner {
+            Some(v) => std::env::set_var(NO_BANNER_ENV, v),
+            None => std::env::remove_var(NO_BANNER_ENV),
+        }
+        match saved_channel {
+            Some(v) => std::env::set_var(RELEASE_CHANNEL_ENV, v),
+            None => std::env::remove_var(RELEASE_CHANNEL_ENV),
+        }
+        match saved_claim {
+            Some(v) => std::env::set_var(BANNER_CLAIM_ENV, v),
+            None => std::env::remove_var(BANNER_CLAIM_ENV),
+        }
+    }
+
+    /// The session-builder path (`should_show`) and the interactive-loop path
+    /// (`startup_banner`) must not both emit: the first to claim wins.
+    #[test]
+    fn builder_and_interactive_paths_emit_only_once() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let saved_no_banner = std::env::var_os(NO_BANNER_ENV);
+        let saved_channel = std::env::var_os(RELEASE_CHANNEL_ENV);
+        let saved_claim = std::env::var_os(BANNER_CLAIM_ENV);
+
+        std::env::remove_var(NO_BANNER_ENV);
+        std::env::remove_var(RELEASE_CHANNEL_ENV);
+
+        // Builder claims first: it shows, the interactive site then no-ops.
+        std::env::remove_var(BANNER_CLAIM_ENV);
+        assert!(
+            should_show(true, false),
+            "builder path should claim and show on a GA interactive launch"
+        );
+        assert!(
+            startup_banner().is_none(),
+            "interactive site must not double-print after the builder claimed"
+        );
+
+        // Interactive claims first: it shows, the builder site then no-ops.
+        std::env::remove_var(BANNER_CLAIM_ENV);
+        assert!(
+            startup_banner().is_some(),
+            "interactive site should claim and show when builder did not"
+        );
+        assert!(
+            !should_show(true, false),
+            "builder path must not double-print after the interactive site claimed"
+        );
+
+        match saved_no_banner {
+            Some(v) => std::env::set_var(NO_BANNER_ENV, v),
+            None => std::env::remove_var(NO_BANNER_ENV),
+        }
+        match saved_channel {
+            Some(v) => std::env::set_var(RELEASE_CHANNEL_ENV, v),
+            None => std::env::remove_var(RELEASE_CHANNEL_ENV),
+        }
+        match saved_claim {
+            Some(v) => std::env::set_var(BANNER_CLAIM_ENV, v),
+            None => std::env::remove_var(BANNER_CLAIM_ENV),
         }
     }
 }

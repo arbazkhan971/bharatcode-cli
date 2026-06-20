@@ -129,6 +129,15 @@ pub mod tool_retry;
 #[path = "../plugin_summary.rs"]
 pub mod plugin_summary;
 
+// Final release-gate aggregator lives in crates/goose/src/release_gate.rs. It
+// shares the same finalization point as the testgen/ci hooks below: when enabled
+// it composes the live posture signals (telemetry-off, offline/residency,
+// compliance files present, identity leak-free) into one readiness verdict and
+// surfaces a single end-of-turn notification. Off by default behind
+// BHARATCODE_RELEASE_GATE.
+#[path = "../release_gate.rs"]
+pub mod release_gate;
+
 const DEFAULT_MAX_TURNS: u32 = 1000;
 const DEFAULT_STOP_HOOK_BLOCK_CAP: u32 = 8;
 const COMPACTION_THINKING_TEXT: &str = "bharatcode is compacting the conversation...";
@@ -2730,6 +2739,15 @@ impl Agent {
                             );
                         }
                     }
+                }
+
+                if release_gate::is_enabled() {
+                    yield AgentEvent::Message(
+                        Message::assistant().with_system_notification(
+                            SystemNotificationType::InlineMessage,
+                            release_gate::evaluate().summary_line(),
+                        ),
+                    );
                 }
 
                 if plugin_summary::is_enabled() {

@@ -80,6 +80,18 @@ mod tutorials;
 #[path = "../release/package_matrix.rs"]
 pub mod package_matrix;
 
+// Release checksum-integrity deep check (BharatCode v94). A read-only,
+// always-visible row that reports whether a release `SHA256SUMS` manifest is
+// present in the release/cwd directory and self-consistent (every listed file's
+// recomputed SHA-256 matches). An absent manifest is the expected dev-build
+// state and reports benignly. The same module also exposes the packaging
+// *matrix* (`MATRIX` / `manifest_for`) consumed by release tooling, kept in
+// lockstep with the self-updater's `asset_name()`. Declared inline alongside
+// the other doctor checks, same posture as `index_check` above; the `#[path]`
+// resolves to the sibling `packaging.rs` in this directory.
+#[path = "packaging.rs"]
+mod packaging;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -361,6 +373,20 @@ async fn print_deep_checks() {
     // checksums) are invoked by release tooling, not here; this row only consumes
     // `expected_asset_names()`. Rendered in the same shape as the rows above.
     let (st, msg) = package_matrix::release_readiness();
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
+    // Release checksum integrity (BharatCode v94): a read-only row reporting
+    // whether a `SHA256SUMS` manifest is present in the cwd / release directory
+    // and self-consistent (every listed file's recomputed SHA-256 matches its
+    // recorded digest). An absent manifest — the expected dev-build state —
+    // reports a benign "not found (dev build)"; a digest mismatch reports a
+    // failure. Reuses the cwd resolved above; never reads outside it.
+    let (st, msg) = packaging::checksum_status(&cwd);
     let glyph = match st {
         Status::Ok => crate::theme::success(st.glyph()),
         Status::Warn => crate::theme::warning(st.glyph()),

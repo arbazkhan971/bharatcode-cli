@@ -57,14 +57,16 @@ pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
-// Perf-release profile (v97): one named switch (`BHARATCODE_PERF_PROFILE`)
-// resolving to a coherent, clamped bundle of the already-shipped perf tunables
-// (stream flush cadence, coalescing, parallel-tool concurrency, retry budget,
-// deadline) so the streaming/coalesce paths and doctor read one validated
-// source. Default unset = None = today's behaviour; it only reads and reports,
-// and an explicit individual BHARATCODE_* var still wins. Reachable public API,
-// same posture as the sibling `coalesce` / `deadline` / `planner_presets`
-// modules consumed by the streaming/embeddings layer.
+// Perf-release runtime profile (v97): one named switch
+// (`BHARATCODE_PERF_PROFILE`, default `balanced`) resolving to a clamped HTTP
+// connection-pool / concurrency tuning bundle (`pool_max_idle`,
+// `pool_idle_timeout_secs`, `max_concurrency`) plus per-knob overrides
+// (`BHARATCODE_HTTP_POOL_MAX` / `BHARATCODE_HTTP_IDLE_SECS`). It is wired into
+// the shared provider reqwest client built lazily in this module and consumed
+// on the real `create()` provider-construction path (see
+// `shared_provider_client` below): the `balanced` default produces a
+// byte-identical conservative client, and only a non-default profile feeds
+// `pool_max_idle_per_host` / `pool_idle_timeout` into the `ClientBuilder`.
 pub mod perf_profile;
 pub mod pi_acp;
 // Security hardening self-audit (v94): a reachable, inert, read-only inspector
@@ -104,8 +106,120 @@ pub mod xai_oauth;
 pub use coalesce::RequestCoalescer;
 pub use embeddings::EmbeddingClient;
 pub use init::{
-    cleanup_provider, create, create_with_default_model, create_with_named_model,
-    create_with_working_dir, get_from_registry, inventory_identity, providers,
-    refresh_custom_providers,
+    cleanup_provider, get_from_registry, inventory_identity, providers, refresh_custom_providers,
+};
+// `create*` are wrapped (not re-exported verbatim) so the perf-release profile
+// is applied to the shared provider client on the real provider-construction
+// path — see `shared_provider_client` and the wrappers below.
+pub use create_entrypoints::{
+    create, create_with_default_model, create_with_named_model, create_with_working_dir,
 };
 pub use retry::{retry_operation, RetryConfig};
+
+/// The shared, lazily-built provider reqwest client whose connection pool is
+/// tuned by the resolved [`perf_profile`].
+///
+/// On the default (`balanced`) profile the builder is left completely untouched,
+/// so the client is byte-for-byte identical to reqwest's stock defaults and
+/// behaviour is unchanged. Only a non-default profile feeds
+/// `pool_max_idle_per_host` / `pool_idle_timeout` into the builder. Built once
+/// and cached; the [`PerfProfile`] is resolved a single time at first use.
+///
+/// [`PerfProfile`]: perf_profile::PerfProfile
+static SHARED_PROVIDER_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(build_shared_provider_client);
+
+/// Build the shared provider client, applying the resolved performance profile.
+///
+/// Reads [`perf_profile::resolve`] (pure config resolution; clamped values) and,
+/// only when the profile diverges from the conservative `balanced` default,
+/// applies the tuned `pool_max_idle_per_host` / `pool_idle_timeout` to the
+/// `reqwest::ClientBuilder`. Falls back to the default client if a build ever
+/// fails, so this can never break provider construction.
+fn build_shared_provider_client() -> reqwest::Client {
+    let profile = perf_profile::resolve();
+
+    let mut builder = reqwest::Client::builder();
+    if profile.diverges_from_default() {
+        builder = builder
+            .pool_max_idle_per_host(profile.pool_max_idle)
+            .pool_idle_timeout(profile.pool_idle_timeout());
+        tracing::debug!(
+            profile = profile.profile().label(),
+            pool_max_idle = profile.pool_max_idle,
+            pool_idle_timeout_secs = profile.pool_idle_timeout_secs,
+            max_concurrency = profile.max_concurrency,
+            "applied perf-release runtime profile to shared provider client"
+        );
+    }
+
+    builder.build().unwrap_or_default()
+}
+
+/// Accessor for the shared, perf-profile-tuned provider client.
+///
+/// Cloning a `reqwest::Client` is cheap (it is `Arc`-backed) and shares the same
+/// underlying connection pool, so callers get the tuned pool for free.
+pub fn shared_provider_client() -> reqwest::Client {
+    SHARED_PROVIDER_CLIENT.clone()
+}
+
+/// Thin wrappers around the registry creation entry points that ensure the
+/// perf-release profile is materialised on the real, binary-reachable
+/// provider-construction path before any provider is built. Touching the shared
+/// client here force-resolves [`perf_profile`] exactly once; on the default
+/// profile this is a no-op beyond building the stock client.
+mod create_entrypoints {
+    use super::{init, shared_provider_client};
+    use crate::config::ExtensionConfig;
+    use anyhow::Result;
+    use goose_providers::model::ModelConfig;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    /// Materialise the shared, perf-tuned provider client (idempotent).
+    ///
+    /// The first call builds the client, which resolves [`super::perf_profile`]
+    /// once and applies the profile to the `reqwest::ClientBuilder`; later calls
+    /// just clone the cached client.
+    #[inline]
+    fn ensure_perf_profile_applied() {
+        let _ = shared_provider_client();
+    }
+
+    pub async fn create(
+        name: &str,
+        model: ModelConfig,
+        extensions: Vec<ExtensionConfig>,
+    ) -> Result<Arc<dyn super::base::Provider>> {
+        ensure_perf_profile_applied();
+        init::create(name, model, extensions).await
+    }
+
+    pub async fn create_with_working_dir(
+        name: &str,
+        model: ModelConfig,
+        extensions: Vec<ExtensionConfig>,
+        working_dir: PathBuf,
+    ) -> Result<Arc<dyn super::base::Provider>> {
+        ensure_perf_profile_applied();
+        init::create_with_working_dir(name, model, extensions, working_dir).await
+    }
+
+    pub async fn create_with_default_model(
+        name: impl AsRef<str>,
+        extensions: Vec<ExtensionConfig>,
+    ) -> Result<Arc<dyn super::base::Provider>> {
+        ensure_perf_profile_applied();
+        init::create_with_default_model(name, extensions).await
+    }
+
+    pub async fn create_with_named_model(
+        provider_name: &str,
+        model_name: &str,
+        extensions: Vec<ExtensionConfig>,
+    ) -> Result<Arc<dyn super::base::Provider>> {
+        ensure_perf_profile_applied();
+        init::create_with_named_model(provider_name, model_name, extensions).await
+    }
+}

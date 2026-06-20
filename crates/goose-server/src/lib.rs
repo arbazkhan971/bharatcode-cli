@@ -7,6 +7,7 @@ compile_error!("Features `rustls-tls` and `native-tls` are mutually exclusive");
 pub mod auth;
 pub mod configuration;
 pub mod error;
+pub mod multi;
 pub mod openapi;
 pub mod routes;
 pub mod session_event_bus;

@@ -1,266 +1,259 @@
-//! Named performance profile — a single switch over the already-shipped
-//! provider-layer perf tunables.
+//! Perf-release runtime profile — opt-in HTTP connection-pool / concurrency
+//! tuning for the shared provider client.
 //!
-//! Several independent perf knobs already exist, each behind its own
-//! `BHARATCODE_*` environment variable:
+//! The provider layer ships a single, conservative reqwest connection pool.
+//! That posture is right for an interactive desktop session, but a throughput-
+//! biased *release* deployment (batch evals, server fan-out) benefits from a
+//! larger keep-alive pool and a higher request-concurrency hint.
 //!
-//! * stream flush cadence (`BHARATCODE_STREAM_FLUSH_MS`, see
-//!   [`crate::streaming_perf`]),
-//! * in-flight request coalescing (`BHARATCODE_COALESCE`, see
-//!   [`super::coalesce`]),
-//! * the parallel-tool concurrency cap (`BHARATCODE_TOOL_MAX_INFLIGHT`, see
-//!   [`crate::tool_governor`]),
-//! * the central retry budget (`BHARATCODE_RETRY_MAX`, see
-//!   `goose_providers::retry`), and
-//! * the per-request deadline (`BHARATCODE_PROVIDER_DEADLINE_SECS`, see
-//!   [`super::deadline`]).
+//! This module resolves one named switch — [`ENV_VAR`]
+//! (`BHARATCODE_PERF_PROFILE`) — into a fully *clamped* [`PerfProfile`]:
 //!
-//! Tuning all five by hand to a coherent posture is fiddly. This module bundles
-//! them behind one named switch: [`ENV_VAR`] (`BHARATCODE_PERF_PROFILE`)
-//! resolves to a coherent [`PerfProfile`] whose every field is *already clamped*
-//! to the same safe range its individual tunable enforces, so a profile can
-//! never push a knob outside the range that knob already guarantees.
+//! * [`Profile::Balanced`] (the default, and the value for an unset / blank /
+//!   unrecognised variable) reproduces today's conservative defaults *exactly*,
+//!   so behaviour is byte-for-byte unchanged unless the operator opts in.
+//! * [`Profile::Release`] raises the pool size, keep-alive idle timeout and the
+//!   advisory request-concurrency hint to throughput-friendly values.
 //!
-//! ## Default OFF
+//! Two per-knob overrides let an operator tune a single dial without selecting
+//! a whole profile:
 //!
-//! [`ENV_VAR`] defaults unset. When it is unset, blank, or an unrecognised
-//! value, [`resolve`] returns `None` and nothing changes — behaviour is
-//! byte-for-byte identical to today.
+//! * `BHARATCODE_HTTP_POOL_MAX`  — overrides `pool_max_idle` (per host).
+//! * `BHARATCODE_HTTP_IDLE_SECS` — overrides `pool_idle_timeout_secs`.
 //!
-//! ## Reads and reports only — never overrides what the user set
+//! Every resolved value is **clamped to a sane range** ([`POOL_MIN`]..=
+//! [`POOL_MAX`] etc.) so neither a profile nor an out-of-range override can push
+//! a knob into a pathological setting. Resolution is *pure config*: it reads the
+//! environment and returns a value — it performs no I/O and mutates nothing.
 //!
-//! A profile is *advisory*. It is a coherent set of suggested effective values
-//! that the streaming / coalesce paths and doctor can read from one validated
-//! source. It does **not** mutate the environment, and the documented
-//! precedence is: **an explicit individual `BHARATCODE_*` tunable always wins
-//! over the profile.** [`PerfProfile::summary_lines`] reports, per field,
-//! whether an explicit per-tunable override is in effect and therefore takes
-//! precedence over the profile's suggested value.
+//! The consumer is the central shared provider client (see
+//! [`super`]: the providers module reads [`resolve`] when building the shared
+//! reqwest client and feeds `pool_max_idle`/`pool_idle_timeout_secs` into the
+//! `reqwest::ClientBuilder`, diverging from reqwest's defaults only when the
+//! profile is not `balanced`).
 //!
 //! Original BharatCode work; not ported from any third party.
 
-/// Environment variable selecting the performance profile (env-first opt-in).
+use std::time::Duration;
+
+/// Environment variable selecting the runtime performance profile (opt-in).
 ///
 /// Recognised values (case-insensitive, surrounding whitespace ignored):
-/// `release`, `balanced`, `low-latency` (also `lowlatency` / `low_latency`).
-/// Anything else — including unset or blank — leaves the feature inert.
+/// `balanced` (the default) and `release`. Anything else — including unset or
+/// blank — resolves to [`Profile::Balanced`], i.e. today's behaviour.
 pub const ENV_VAR: &str = "BHARATCODE_PERF_PROFILE";
 
-// --- Clamp bounds, kept consistent with each individual tunable's own range ---
+/// Per-knob override for the connection pool's max idle connections per host.
+pub const POOL_MAX_ENV: &str = "BHARATCODE_HTTP_POOL_MAX";
 
-/// Stream flush cadence bounds, mirroring [`crate::streaming_perf`]
-/// (`STREAM_FLUSH_MS_MIN`/`MAX`): a flush every <1ms is a busy spin and slower
-/// than 10s feels frozen.
-const STREAM_FLUSH_MS_MIN: u64 = 1;
-const STREAM_FLUSH_MS_MAX: u64 = 10_000;
+/// Per-knob override for the pool's keep-alive idle timeout, in seconds.
+pub const IDLE_SECS_ENV: &str = "BHARATCODE_HTTP_IDLE_SECS";
 
-/// Parallel-tool concurrency bounds, mirroring [`crate::tool_governor`]
-/// (`MIN_INFLIGHT`/`MAX_INFLIGHT`).
-const TOOL_MAX_INFLIGHT_MIN: usize = 1;
-const TOOL_MAX_INFLIGHT_MAX: usize = 64;
+// --- Clamp bounds -----------------------------------------------------------
 
-/// Retry-budget bounds (total attempts including the first), mirroring
-/// `goose_providers::retry::ENV_MAX_ATTEMPTS_CAP` (clamped `1..=10`).
-const RETRY_MAX_MIN: usize = 1;
-const RETRY_MAX_MAX: usize = 10;
+/// Lower / upper bound for `pool_max_idle` (idle connections kept per host).
+/// A pool of zero would disable keep-alive entirely; 256 is far above any
+/// realistic provider fan-out and guards against a runaway override.
+pub const POOL_MIN: usize = 1;
+pub const POOL_MAX: usize = 256;
 
-/// Per-request deadline ceiling (seconds), mirroring [`super::deadline`]
-/// (`MAX_DEADLINE_SECS`, 24h). The floor is 1s: a deadline of 0 disables the
-/// guard entirely, so a profile that opts into a deadline keeps it positive.
-const DEADLINE_SECS_MIN: u64 = 1;
-const DEADLINE_SECS_MAX: u64 = 24 * 60 * 60;
+/// Lower / upper bound for `pool_idle_timeout_secs`. A 1s floor keeps at least
+/// a brief keep-alive window; the 3600s (1h) ceiling stops an idle socket from
+/// being pinned open indefinitely.
+pub const IDLE_SECS_MIN: u64 = 1;
+pub const IDLE_SECS_MAX: u64 = 3600;
 
-/// The three named profiles.
+/// Lower / upper bound for the advisory `max_concurrency` hint surfaced to the
+/// provider layer. At least one in-flight request; 1024 is a generous ceiling.
+pub const CONCURRENCY_MIN: usize = 1;
+pub const CONCURRENCY_MAX: usize = 1024;
+
+// --- Documented per-profile defaults ---------------------------------------
+
+/// Conservative (`balanced`) defaults — these reproduce today's behaviour.
+/// `pool_max_idle` mirrors reqwest's own default keep-alive posture, the idle
+/// timeout matches a typical 90s keep-alive, and the concurrency hint is modest.
+pub const BALANCED_POOL_MAX_IDLE: usize = 8;
+pub const BALANCED_POOL_IDLE_TIMEOUT_SECS: u64 = 90;
+pub const BALANCED_MAX_CONCURRENCY: usize = 8;
+
+/// Throughput-biased (`release`) defaults: a larger keep-alive pool, a longer
+/// idle window so warm connections survive bursty gaps, and a higher
+/// request-concurrency hint.
+pub const RELEASE_POOL_MAX_IDLE: usize = 64;
+pub const RELEASE_POOL_IDLE_TIMEOUT_SECS: u64 = 300;
+pub const RELEASE_MAX_CONCURRENCY: usize = 64;
+
+/// The named runtime profiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileName {
-    /// Throughput-biased posture for release builds: coalesce duplicate
-    /// in-flight calls, a generous retry budget, a bounded-but-roomy tool
-    /// fan-out, a relaxed flush cadence and a long safety deadline.
-    Release,
-    /// A middle ground between throughput and interactivity.
+pub enum Profile {
+    /// Today's conservative defaults. The value for unset / blank / unrecognised
+    /// `BHARATCODE_PERF_PROFILE`, so default behaviour is unchanged.
     Balanced,
-    /// Interactivity-biased posture: the smallest flush cadence (snappiest
-    /// stream), a tight tool fan-out and a short deadline; coalescing off so a
-    /// request is never made to wait on an unrelated in-flight peer.
-    LowLatency,
+    /// Throughput-biased posture: larger pool, longer keep-alive, higher
+    /// concurrency hint.
+    Release,
 }
 
-impl ProfileName {
+impl Profile {
     /// Parse a raw profile name (case-insensitive, whitespace-trimmed).
     ///
-    /// Returns `None` for unset/blank/unrecognised input so the caller stays a
-    /// no-op. Accepts a few spellings of low-latency for convenience.
-    pub fn parse(raw: &str) -> Option<Self> {
+    /// Unrecognised / blank input falls back to [`Profile::Balanced`] so the
+    /// caller stays on today's behaviour.
+    pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "release" => Some(Self::Release),
-            "balanced" => Some(Self::Balanced),
-            "low-latency" | "lowlatency" | "low_latency" => Some(Self::LowLatency),
-            _ => None,
+            "release" => Self::Release,
+            _ => Self::Balanced,
         }
     }
 
-    /// Stable, brand-free label for this profile (used in summaries).
+    /// Stable, brand-free label for this profile.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Release => "release",
             Self::Balanced => "balanced",
-            Self::LowLatency => "low-latency",
+            Self::Release => "release",
         }
     }
 
-    /// The coherent, pre-clamped set of effective values for this profile.
-    fn profile(self) -> PerfProfile {
+    /// Whether this profile diverges from the conservative `balanced` defaults.
+    ///
+    /// The shared client build uses this to leave its `reqwest::ClientBuilder`
+    /// completely untouched on the default path.
+    pub fn diverges_from_default(self) -> bool {
+        self != Self::Balanced
+    }
+
+    /// The base (pre-override) tuned values for this profile.
+    fn defaults(self) -> PerfProfile {
         match self {
-            // Throughput first: relaxed flush, coalesce on, full retry budget,
-            // roomy tool fan-out, long safety deadline.
-            Self::Release => PerfProfile {
-                name: self,
-                stream_flush_ms: clamp_u64(120, STREAM_FLUSH_MS_MIN, STREAM_FLUSH_MS_MAX),
-                coalesce: true,
-                tool_max_inflight: clamp_usize(16, TOOL_MAX_INFLIGHT_MIN, TOOL_MAX_INFLIGHT_MAX),
-                retry_max: clamp_usize(6, RETRY_MAX_MIN, RETRY_MAX_MAX),
-                deadline_secs: Some(clamp_u64(600, DEADLINE_SECS_MIN, DEADLINE_SECS_MAX)),
-            },
-            // Middle ground.
             Self::Balanced => PerfProfile {
-                name: self,
-                stream_flush_ms: clamp_u64(50, STREAM_FLUSH_MS_MIN, STREAM_FLUSH_MS_MAX),
-                coalesce: true,
-                tool_max_inflight: clamp_usize(8, TOOL_MAX_INFLIGHT_MIN, TOOL_MAX_INFLIGHT_MAX),
-                retry_max: clamp_usize(4, RETRY_MAX_MIN, RETRY_MAX_MAX),
-                deadline_secs: Some(clamp_u64(120, DEADLINE_SECS_MIN, DEADLINE_SECS_MAX)),
+                profile: self,
+                pool_max_idle: BALANCED_POOL_MAX_IDLE,
+                pool_idle_timeout_secs: BALANCED_POOL_IDLE_TIMEOUT_SECS,
+                max_concurrency: BALANCED_MAX_CONCURRENCY,
             },
-            // Interactivity first: snappiest flush, coalescing off, tight
-            // fan-out, lean retry budget, short deadline.
-            Self::LowLatency => PerfProfile {
-                name: self,
-                stream_flush_ms: clamp_u64(10, STREAM_FLUSH_MS_MIN, STREAM_FLUSH_MS_MAX),
-                coalesce: false,
-                tool_max_inflight: clamp_usize(4, TOOL_MAX_INFLIGHT_MIN, TOOL_MAX_INFLIGHT_MAX),
-                retry_max: clamp_usize(2, RETRY_MAX_MIN, RETRY_MAX_MAX),
-                deadline_secs: Some(clamp_u64(30, DEADLINE_SECS_MIN, DEADLINE_SECS_MAX)),
+            Self::Release => PerfProfile {
+                profile: self,
+                pool_max_idle: RELEASE_POOL_MAX_IDLE,
+                pool_idle_timeout_secs: RELEASE_POOL_IDLE_TIMEOUT_SECS,
+                max_concurrency: RELEASE_MAX_CONCURRENCY,
             },
         }
     }
 }
 
-/// A coherent, fully-clamped snapshot of the provider-layer perf tunables that
-/// a named profile resolves to.
+/// A fully-resolved, fully-clamped snapshot of the runtime perf tunables.
 ///
-/// Every field is already within its individual tunable's documented safe
-/// range (see the module-level clamp constants), so reading these values can
-/// never push a knob out of range. The values are *suggested* effective
-/// values: an explicit per-tunable `BHARATCODE_*` variable, when set, takes
-/// precedence (see [`PerfProfile::summary_lines`]).
+/// Every field is guaranteed to sit within its documented clamp range, so a
+/// consumer can feed these values straight into the HTTP client builder without
+/// re-validating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PerfProfile {
     /// Which named profile produced this snapshot.
-    name: ProfileName,
-    /// Suggested stream flush cadence, ms. Clamped to `[1, 10_000]`.
-    pub stream_flush_ms: u64,
-    /// Whether the profile suggests enabling in-flight request coalescing.
-    pub coalesce: bool,
-    /// Suggested parallel-tool concurrency cap. Clamped to `[1, 64]`.
-    pub tool_max_inflight: usize,
-    /// Suggested retry budget (total attempts incl. the first). Clamped to
-    /// `[1, 10]`.
-    pub retry_max: usize,
-    /// Suggested per-request deadline, seconds. `Some` is clamped to
-    /// `[1, 86_400]`; `None` means the profile does not impose a deadline.
-    pub deadline_secs: Option<u64>,
+    profile: Profile,
+    /// Max idle keep-alive connections per host. Clamped to
+    /// [`POOL_MIN`]..=[`POOL_MAX`].
+    pub pool_max_idle: usize,
+    /// Keep-alive idle timeout, seconds. Clamped to
+    /// [`IDLE_SECS_MIN`]..=[`IDLE_SECS_MAX`].
+    pub pool_idle_timeout_secs: u64,
+    /// Advisory request-concurrency hint surfaced to the provider layer.
+    /// Clamped to [`CONCURRENCY_MIN`]..=[`CONCURRENCY_MAX`].
+    pub max_concurrency: usize,
 }
 
 impl PerfProfile {
     /// The named profile this snapshot came from.
-    pub fn name(&self) -> ProfileName {
-        self.name
+    pub fn profile(&self) -> Profile {
+        self.profile
     }
 
-    /// One human-readable row per tunable for doctor / info output.
-    ///
-    /// Each row reports the profile's suggested value and, when an explicit
-    /// individual `BHARATCODE_*` variable is set, notes that the explicit
-    /// override takes precedence over the profile — the documented precedence
-    /// rule. Reads the environment only; never mutates it. Brand-free labels.
+    /// Whether this snapshot diverges from the conservative `balanced` defaults.
+    pub fn diverges_from_default(&self) -> bool {
+        self.profile.diverges_from_default()
+    }
+
+    /// The keep-alive idle timeout as a [`Duration`], ready for
+    /// `reqwest::ClientBuilder::pool_idle_timeout`.
+    pub fn pool_idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.pool_idle_timeout_secs)
+    }
+
+    /// One human-readable, brand-free row per knob for doctor / info output.
     pub fn summary_lines(&self) -> Vec<String> {
         vec![
-            summary_row(
-                "BHARATCODE_STREAM_FLUSH_MS",
-                format!("{}ms", self.stream_flush_ms),
-                env_is_set("BHARATCODE_STREAM_FLUSH_MS"),
-            ),
-            summary_row(
-                "BHARATCODE_COALESCE",
-                if self.coalesce { "on" } else { "off" }.to_string(),
-                env_is_set("BHARATCODE_COALESCE"),
-            ),
-            summary_row(
-                "BHARATCODE_TOOL_MAX_INFLIGHT",
-                self.tool_max_inflight.to_string(),
-                env_is_set("BHARATCODE_TOOL_MAX_INFLIGHT"),
-            ),
-            summary_row(
-                "BHARATCODE_RETRY_MAX",
-                self.retry_max.to_string(),
-                env_is_set("BHARATCODE_RETRY_MAX"),
-            ),
-            summary_row(
-                "BHARATCODE_PROVIDER_DEADLINE_SECS",
-                match self.deadline_secs {
-                    Some(secs) => format!("{secs}s"),
-                    None => "none".to_string(),
-                },
-                env_is_set("BHARATCODE_PROVIDER_DEADLINE_SECS"),
-            ),
+            format!("{ENV_VAR} = {}", self.profile.label()),
+            format!("{POOL_MAX_ENV} = {}", self.pool_max_idle),
+            format!("{IDLE_SECS_ENV} = {}s", self.pool_idle_timeout_secs),
+            format!("max_concurrency = {}", self.max_concurrency),
         ]
     }
 }
 
-/// Resolve the configured performance profile, if any.
+/// Resolve the effective runtime perf profile from the environment.
 ///
-/// Reads [`ENV_VAR`] (env-first). Returns `None` when the variable is unset,
-/// blank, or unrecognised — keeping the feature inert (no behaviour change) by
-/// default. When a recognised value is set, returns the coherent, fully-clamped
-/// [`PerfProfile`] for that profile.
-pub fn resolve() -> Option<PerfProfile> {
-    let raw = std::env::var(ENV_VAR).ok()?;
-    resolve_value(&raw)
+/// Reads [`ENV_VAR`] to pick the base profile (defaulting to
+/// [`Profile::Balanced`]), then applies the optional per-knob overrides
+/// [`POOL_MAX_ENV`] / [`IDLE_SECS_ENV`]. Every field of the returned
+/// [`PerfProfile`] is clamped to its documented bound. Pure config resolution:
+/// reads the environment, performs no I/O, mutates nothing.
+///
+/// With no environment set this returns the exact `balanced` defaults, so the
+/// shared client build is byte-for-byte unchanged.
+pub fn resolve() -> PerfProfile {
+    let profile = match std::env::var(ENV_VAR) {
+        Ok(raw) => Profile::parse(&raw),
+        Err(_) => Profile::Balanced,
+    };
+    let pool_override = env_usize(POOL_MAX_ENV);
+    let idle_override = env_u64(IDLE_SECS_ENV);
+    resolve_from(profile, pool_override, idle_override)
 }
 
-/// Pure resolver over an explicit value (testable without touching the env).
+/// Pure resolver over explicit inputs (testable without touching the env).
 ///
-/// Mirrors [`resolve`]: blank / unrecognised => `None`; a recognised name =>
-/// its clamped [`PerfProfile`].
-pub fn resolve_value(raw: &str) -> Option<PerfProfile> {
-    ProfileName::parse(raw).map(ProfileName::profile)
-}
+/// Mirrors [`resolve`]: starts from the profile defaults, applies any present
+/// per-knob override, and clamps every field to its documented range.
+pub fn resolve_from(
+    profile: Profile,
+    pool_override: Option<usize>,
+    idle_override: Option<u64>,
+) -> PerfProfile {
+    let mut p = profile.defaults();
 
-/// Render one `KEY = value` summary row. When the individual tunable's own
-/// environment variable is set, the row notes that the explicit value takes
-/// precedence over the profile's suggestion.
-fn summary_row(key: &str, value: String, explicit_override: bool) -> String {
-    if explicit_override {
-        format!("{key} = {value} (explicit {key} set; overrides profile)")
-    } else {
-        format!("{key} = {value} (from profile)")
+    if let Some(pool) = pool_override {
+        p.pool_max_idle = pool;
     }
+    if let Some(idle) = idle_override {
+        p.pool_idle_timeout_secs = idle;
+    }
+
+    // Clamp every field, regardless of whether it came from a profile default
+    // or an override, so nothing can escape its documented bound.
+    p.pool_max_idle = p.pool_max_idle.clamp(POOL_MIN, POOL_MAX);
+    p.pool_idle_timeout_secs = p.pool_idle_timeout_secs.clamp(IDLE_SECS_MIN, IDLE_SECS_MAX);
+    p.max_concurrency = p.max_concurrency.clamp(CONCURRENCY_MIN, CONCURRENCY_MAX);
+    p
 }
 
-/// Whether `key` is set to a non-blank value in the environment.
-fn env_is_set(key: &str) -> bool {
-    std::env::var(key)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
+/// Read a `usize` from `key`, returning `None` for unset / blank / unparsable.
+fn env_usize(key: &str) -> Option<usize> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok()
 }
 
-/// `clamp` for `u64` that does not require an `Ord` import at the call site.
-fn clamp_u64(value: u64, min: u64, max: u64) -> u64 {
-    value.clamp(min, max)
-}
-
-/// `clamp` for `usize`.
-fn clamp_usize(value: usize, min: usize, max: usize) -> usize {
-    value.clamp(min, max)
+/// Read a `u64` from `key`, returning `None` for unset / blank / unparsable.
+fn env_u64(key: &str) -> Option<u64> {
+    let raw = std::env::var(key).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<u64>().ok()
 }
 
 #[cfg(test)]
@@ -273,130 +266,148 @@ mod tests {
         LOCK.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Assert every field of a resolved profile sits within the documented
-    /// clamp bounds, so a profile can never push a tunable out of range.
+    fn clear_all_env() {
+        std::env::remove_var(ENV_VAR);
+        std::env::remove_var(POOL_MAX_ENV);
+        std::env::remove_var(IDLE_SECS_ENV);
+    }
+
     fn assert_within_bounds(p: &PerfProfile) {
         assert!(
-            (STREAM_FLUSH_MS_MIN..=STREAM_FLUSH_MS_MAX).contains(&p.stream_flush_ms),
-            "stream_flush_ms {} out of bounds",
-            p.stream_flush_ms
+            (POOL_MIN..=POOL_MAX).contains(&p.pool_max_idle),
+            "pool_max_idle {} out of bounds",
+            p.pool_max_idle
         );
         assert!(
-            (TOOL_MAX_INFLIGHT_MIN..=TOOL_MAX_INFLIGHT_MAX).contains(&p.tool_max_inflight),
-            "tool_max_inflight {} out of bounds",
-            p.tool_max_inflight
+            (IDLE_SECS_MIN..=IDLE_SECS_MAX).contains(&p.pool_idle_timeout_secs),
+            "pool_idle_timeout_secs {} out of bounds",
+            p.pool_idle_timeout_secs
         );
         assert!(
-            (RETRY_MAX_MIN..=RETRY_MAX_MAX).contains(&p.retry_max),
-            "retry_max {} out of bounds",
-            p.retry_max
+            (CONCURRENCY_MIN..=CONCURRENCY_MAX).contains(&p.max_concurrency),
+            "max_concurrency {} out of bounds",
+            p.max_concurrency
         );
-        if let Some(secs) = p.deadline_secs {
-            assert!(
-                (DEADLINE_SECS_MIN..=DEADLINE_SECS_MAX).contains(&secs),
-                "deadline_secs {secs} out of bounds"
-            );
-        }
     }
 
     #[test]
-    fn resolve_inert_when_env_unset() {
+    fn resolve_with_no_env_returns_balanced_defaults() {
         let _guard = env_guard();
-        std::env::remove_var(ENV_VAR);
-        assert_eq!(resolve(), None);
-    }
+        clear_all_env();
 
-    #[test]
-    fn resolve_value_none_for_blank_and_garbage() {
-        assert_eq!(resolve_value(""), None);
-        assert_eq!(resolve_value("   "), None);
-        assert_eq!(resolve_value("turbo"), None);
-        assert_eq!(resolve_value("fastest-ever"), None);
-        assert_eq!(resolve_value("0"), None);
-    }
-
-    #[test]
-    fn resolve_value_parses_each_known_profile() {
-        assert_eq!(
-            resolve_value("release").map(|p| p.name()),
-            Some(ProfileName::Release)
-        );
-        assert_eq!(
-            resolve_value("  Balanced  ").map(|p| p.name()),
-            Some(ProfileName::Balanced)
-        );
-        assert_eq!(
-            resolve_value("LOW-LATENCY").map(|p| p.name()),
-            Some(ProfileName::LowLatency)
-        );
-        // Convenience spellings of low-latency.
-        assert_eq!(
-            resolve_value("lowlatency").map(|p| p.name()),
-            Some(ProfileName::LowLatency)
-        );
-        assert_eq!(
-            resolve_value("low_latency").map(|p| p.name()),
-            Some(ProfileName::LowLatency)
-        );
-    }
-
-    #[test]
-    fn every_profile_field_is_within_clamp_bounds() {
-        for raw in ["release", "balanced", "low-latency"] {
-            let p = resolve_value(raw).expect("known profile resolves");
-            assert_within_bounds(&p);
-        }
-    }
-
-    #[test]
-    fn low_latency_flushes_faster_than_balanced() {
-        let low = resolve_value("low-latency").unwrap();
-        let balanced = resolve_value("balanced").unwrap();
-        assert!(
-            low.stream_flush_ms < balanced.stream_flush_ms,
-            "low-latency flush {} should be smaller than balanced flush {}",
-            low.stream_flush_ms,
-            balanced.stream_flush_ms
-        );
-    }
-
-    #[test]
-    fn release_enables_coalesce_low_latency_does_not() {
-        assert!(resolve_value("release").unwrap().coalesce);
-        assert!(!resolve_value("low-latency").unwrap().coalesce);
-    }
-
-    #[test]
-    fn resolve_reads_env_first() {
-        let _guard = env_guard();
-        std::env::set_var(ENV_VAR, "release");
-        let p = resolve().expect("env-set profile resolves");
-        assert_eq!(p.name(), ProfileName::Release);
+        let p = resolve();
+        // Exactly the pre-existing conservative defaults.
+        assert_eq!(p.profile(), Profile::Balanced);
+        assert_eq!(p.pool_max_idle, BALANCED_POOL_MAX_IDLE);
+        assert_eq!(p.pool_idle_timeout_secs, BALANCED_POOL_IDLE_TIMEOUT_SECS);
+        assert_eq!(p.max_concurrency, BALANCED_MAX_CONCURRENCY);
+        assert!(!p.diverges_from_default());
         assert_within_bounds(&p);
-        std::env::remove_var(ENV_VAR);
     }
 
     #[test]
-    fn summary_lines_one_row_per_tunable_and_brand_free() {
+    fn balanced_yields_exact_preexisting_defaults() {
+        // Independent of the environment: the balanced profile is the documented
+        // conservative baseline and must never change without an explicit bump.
+        let p = resolve_from(Profile::Balanced, None, None);
+        assert_eq!(p.pool_max_idle, 8);
+        assert_eq!(p.pool_idle_timeout_secs, 90);
+        assert_eq!(p.max_concurrency, 8);
+        assert_eq!(p.pool_idle_timeout(), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn release_profile_returns_higher_pool() {
         let _guard = env_guard();
-        // Clear every per-tunable override so the profile values are reported as
-        // coming from the profile (not overridden).
-        for key in [
-            "BHARATCODE_STREAM_FLUSH_MS",
-            "BHARATCODE_COALESCE",
-            "BHARATCODE_TOOL_MAX_INFLIGHT",
-            "BHARATCODE_RETRY_MAX",
-            "BHARATCODE_PROVIDER_DEADLINE_SECS",
-        ] {
-            std::env::remove_var(key);
-        }
-        let lines = resolve_value("release").unwrap().summary_lines();
-        assert_eq!(lines.len(), 5, "one row per bundled tunable");
+        clear_all_env();
+        std::env::set_var(ENV_VAR, "release");
+
+        let p = resolve();
+        assert_eq!(p.profile(), Profile::Release);
+        assert!(
+            p.pool_max_idle > resolve_from(Profile::Balanced, None, None).pool_max_idle,
+            "release pool {} should exceed balanced pool",
+            p.pool_max_idle
+        );
+        assert_eq!(p.pool_max_idle, RELEASE_POOL_MAX_IDLE);
+        assert!(p.diverges_from_default());
+        assert_within_bounds(&p);
+
+        clear_all_env();
+    }
+
+    #[test]
+    fn release_is_case_and_whitespace_insensitive() {
+        let _guard = env_guard();
+        clear_all_env();
+        std::env::set_var(ENV_VAR, "  RELEASE  ");
+        assert_eq!(resolve().profile(), Profile::Release);
+        clear_all_env();
+    }
+
+    #[test]
+    fn out_of_range_pool_override_clamps_to_max() {
+        let _guard = env_guard();
+        clear_all_env();
+        std::env::set_var(POOL_MAX_ENV, "99999");
+
+        let p = resolve();
+        assert_eq!(
+            p.pool_max_idle, POOL_MAX,
+            "an out-of-range pool override must clamp to the max bound"
+        );
+        assert_within_bounds(&p);
+
+        clear_all_env();
+    }
+
+    #[test]
+    fn zero_pool_override_clamps_to_min() {
+        let p = resolve_from(Profile::Release, Some(0), None);
+        assert_eq!(p.pool_max_idle, POOL_MIN);
+        assert_within_bounds(&p);
+    }
+
+    #[test]
+    fn idle_override_applies_and_clamps() {
+        // An in-range override is taken verbatim.
+        let mid = resolve_from(Profile::Balanced, None, Some(120));
+        assert_eq!(mid.pool_idle_timeout_secs, 120);
+        // A wildly large override clamps to the ceiling.
+        let high = resolve_from(Profile::Balanced, None, Some(u64::MAX));
+        assert_eq!(high.pool_idle_timeout_secs, IDLE_SECS_MAX);
+        // Zero clamps up to the floor.
+        let low = resolve_from(Profile::Balanced, None, Some(0));
+        assert_eq!(low.pool_idle_timeout_secs, IDLE_SECS_MIN);
+    }
+
+    #[test]
+    fn unrecognised_profile_falls_back_to_balanced() {
+        assert_eq!(Profile::parse("turbo"), Profile::Balanced);
+        assert_eq!(Profile::parse(""), Profile::Balanced);
+        assert_eq!(Profile::parse("   "), Profile::Balanced);
+    }
+
+    #[test]
+    fn blank_or_garbage_override_is_ignored() {
+        let _guard = env_guard();
+        clear_all_env();
+        std::env::set_var(POOL_MAX_ENV, "   ");
+        std::env::set_var(IDLE_SECS_ENV, "not-a-number");
+
+        let p = resolve();
+        // Falls back to balanced defaults — the overrides are not applied.
+        assert_eq!(p.pool_max_idle, BALANCED_POOL_MAX_IDLE);
+        assert_eq!(p.pool_idle_timeout_secs, BALANCED_POOL_IDLE_TIMEOUT_SECS);
+
+        clear_all_env();
+    }
+
+    #[test]
+    fn summary_lines_are_brand_free() {
+        let lines = resolve_from(Profile::Release, None, None).summary_lines();
+        assert!(!lines.is_empty());
         for line in &lines {
-            assert!(
-                line.contains("(from profile)"),
-                "with no override the row should be tagged from-profile: {line:?}"
-            );
             let lower = line.to_ascii_lowercase();
             assert!(
                 !lower.contains("goose") && !lower.contains("block"),
@@ -406,67 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn summary_reports_explicit_override_taking_precedence() {
-        let _guard = env_guard();
-        // An explicit per-tunable variable must be reported as overriding the
-        // profile (documented precedence), and the other rows must not be.
-        for key in [
-            "BHARATCODE_STREAM_FLUSH_MS",
-            "BHARATCODE_COALESCE",
-            "BHARATCODE_TOOL_MAX_INFLIGHT",
-            "BHARATCODE_RETRY_MAX",
-            "BHARATCODE_PROVIDER_DEADLINE_SECS",
-        ] {
-            std::env::remove_var(key);
-        }
-        std::env::set_var("BHARATCODE_STREAM_FLUSH_MS", "7");
-
-        let lines = resolve_value("release").unwrap().summary_lines();
-        let flush_row = lines
-            .iter()
-            .find(|l| l.starts_with("BHARATCODE_STREAM_FLUSH_MS"))
-            .expect("flush row present");
-        assert!(
-            flush_row.contains("overrides profile"),
-            "explicit flush override should be reported as taking precedence: {flush_row:?}"
-        );
-
-        // A row whose tunable was NOT explicitly set stays from-profile.
-        let retry_row = lines
-            .iter()
-            .find(|l| l.starts_with("BHARATCODE_RETRY_MAX"))
-            .expect("retry row present");
-        assert!(
-            retry_row.contains("(from profile)"),
-            "un-overridden retry row should remain from-profile: {retry_row:?}"
-        );
-
-        std::env::remove_var("BHARATCODE_STREAM_FLUSH_MS");
-    }
-
-    #[test]
-    fn blank_explicit_var_is_not_treated_as_override() {
-        let _guard = env_guard();
-        for key in [
-            "BHARATCODE_STREAM_FLUSH_MS",
-            "BHARATCODE_COALESCE",
-            "BHARATCODE_TOOL_MAX_INFLIGHT",
-            "BHARATCODE_RETRY_MAX",
-            "BHARATCODE_PROVIDER_DEADLINE_SECS",
-        ] {
-            std::env::remove_var(key);
-        }
-        // A blank value is not a real override.
-        std::env::set_var("BHARATCODE_COALESCE", "   ");
-        let lines = resolve_value("balanced").unwrap().summary_lines();
-        let coalesce_row = lines
-            .iter()
-            .find(|l| l.starts_with("BHARATCODE_COALESCE"))
-            .expect("coalesce row present");
-        assert!(
-            coalesce_row.contains("(from profile)"),
-            "blank explicit var must not be treated as an override: {coalesce_row:?}"
-        );
-        std::env::remove_var("BHARATCODE_COALESCE");
+    fn override_wins_over_profile_default() {
+        // A per-knob override applies even when a profile is selected.
+        let p = resolve_from(Profile::Release, Some(20), Some(45));
+        assert_eq!(p.pool_max_idle, 20);
+        assert_eq!(p.pool_idle_timeout_secs, 45);
+        // The un-overridden knob keeps the profile's value.
+        assert_eq!(p.max_concurrency, RELEASE_MAX_CONCURRENCY);
     }
 }

@@ -54,6 +54,16 @@ mod desktop_notify;
 #[path = "release_gate.rs"]
 mod release_gate;
 
+// BharatCode v98: canonical 1.0 GA release descriptor + one-line GA banner. The
+// module lives at the crate root and is pulled in here via #[path] (the same
+// out-of-tree-module precedent as `release_gate` above); its only call site in
+// the interactive loop is the start of `interactive()` below, which prints the
+// gated `release_info::startup_banner()` once. Default-quiet: `Some` only on a
+// GA channel with `BHARATCODE_NO_BANNER` unset, `None` (byte-identical to today)
+// otherwise.
+#[path = "../release_info.rs"]
+mod release_info;
+
 use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
 };
@@ -571,6 +581,15 @@ impl CliSession {
             } else {
                 eprintln!("  {}", console::style(line).yellow().dim());
             }
+        }
+
+        // BharatCode v98: one-line GA milestone banner, printed once at the start
+        // of an interactive session before the ready banner. Default-quiet: shown
+        // only on the GA channel with BHARATCODE_NO_BANNER unset; when suppressed
+        // (or on a non-GA channel) `startup_banner()` is `None` and output is
+        // byte-identical to today. Routed through the active theme's muted style.
+        if let Some(banner) = release_info::startup_banner() {
+            println!("  {}", crate::theme::muted(banner));
         }
 
         let result = self.run_interactive(prompt).await;

@@ -85,18 +85,25 @@ pub use tutorials::{catalog as tutorials_list, get as tutorial, Tutorial, TUTORI
 // only env var is `BHARATCODE_EVAL_TIMEOUT_SECS`, which clamps per-case wall
 // time, so default behavior is unchanged. The CLI dispatch (`bharatcode eval`)
 // is the one-line wiring added in `cli.rs`, owned by a sibling in this wave,
-// which calls `handle_eval` with the parsed `EvalOptions`.
+// which calls `handle_eval` with the parsed `EvalOptions`. The grader enum is
+// re-exported as `EvalGrader` so the bare `Grader` name stays free for the
+// sibling `bench` harness; the canonical path remains `commands::eval::Grader`.
 pub use eval::{
-    grade_reply, handle_eval, load_cases, EvalCase, EvalOptions, EvalResult, Grader, ScoreCard,
+    grade_reply, handle_eval, load_cases, EvalCase, EvalOptions, EvalResult, Grader as EvalGrader,
+    ScoreCard,
 };
 
 // Re-export the offline benchmark / eval harness entry point so it is reachable
-// as crate API. `handle_bench` runs each embedded `BenchCase` through one headless
-// turn via the shared session builder, grades the assistant reply with a pure
-// objective `Grader`, and reports an aggregate `BenchReport` (pass rate, p50/p95
-// latency) as a table or `--json`. Grading is pure and the only env var is the
-// per-case timeout clamp, so default behavior is unchanged.
+// as crate API and from the thin `bharatcode-bench` binary (the real call site
+// in a running binary). `run_suite` scores the embedded `SUITE` of `BenchCase`s
+// — each exercising a shipped pure helper (exec-policy command splitting, ₹ cost
+// formatting / magnitude buckets) against an expected output — and returns a
+// `BenchReport { total, passed, score }`. The default run is offline parse-only
+// (no model, no network, no side effects); `--list` prints case ids and `--live`
+// is a documented stub that skips every case. There is no env gate, so default
+// behavior is unchanged. `handle_bench(BenchOptions)` is the public entry the
+// binary calls.
 pub use bench::{
-    grade, handle_bench, BenchCase, BenchOptions, BenchReport, CaseResult, Grader,
-    BENCH_RECIPE_YAML, CASES,
+    case_ids, check_case, handle_bench, run_suite, BenchCase, BenchOptions, BenchReport, CaseKind,
+    CaseResult, CaseStatus, SUITE,
 };
