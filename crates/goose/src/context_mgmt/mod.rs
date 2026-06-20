@@ -25,6 +25,10 @@ use tracing::log::warn;
 
 mod diff_compact;
 mod token_cache;
+// Opt-in cross-turn persistent token-count cache. Declared inline so the disk
+// LRU lives beside its only call site without adding a top-level `pub mod`.
+#[path = "token_cache_disk.rs"]
+mod token_cache_disk;
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
@@ -222,7 +226,7 @@ pub async fn check_if_compaction_needed(
             let token_counts: Vec<_> = messages
                 .iter()
                 .filter(|m| m.is_agent_visible())
-                .map(|msg| token_cache::count_cached(&token_counter, msg))
+                .map(|msg| token_cache_disk::count_cached_persistent(&token_counter, msg))
                 .collect();
 
             (token_counts.iter().sum(), "estimated")

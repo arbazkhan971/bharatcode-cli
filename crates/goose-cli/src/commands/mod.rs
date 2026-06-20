@@ -14,6 +14,7 @@ pub mod presets;
 pub mod privacy;
 pub mod project;
 pub mod recipe;
+pub mod recipe_share;
 pub mod recipes_library;
 pub mod review;
 pub mod review_cmd;
@@ -30,3 +31,11 @@ pub mod update;
 // reachable as crate API. The CLI dispatch lives in `cli.rs` (owned by a
 // sibling in this wave) and wires `bharatcode gen-docs` to this handler.
 pub use gen_docs::{doc_guide_section, handle_gen_docs, GenDocsOptions};
+
+// Re-export the `recipe-share` entry point so the recipe export/import bundle
+// flow is reachable as crate API. The CLI dispatch lives in `cli.rs` (owned by
+// a sibling in this wave) and wires `bharatcode recipe-share <export|import>` to
+// this handler; `recipe_share::run` applies the `BHARATCODE_RECIPE_SHARE` opt-in
+// gate so default behavior is unchanged.
+pub use recipe_share::{export as recipe_share_export, import as recipe_share_import};
+pub use recipe_share::{run as run_recipe_share, RecipeBundle};

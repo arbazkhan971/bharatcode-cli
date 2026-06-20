@@ -64,6 +64,18 @@ mod refactor;
 #[path = "commands/db.rs"]
 mod db_cmd;
 
+// Same rationale as the modules above: the read-only extension catalog
+// subcommand (`bharatcode catalog`) is declared here, from cli.rs, via an
+// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
+#[path = "commands/catalog.rs"]
+pub mod catalog_cmd;
+
+// Same rationale as the modules above: the read-only MCP-server registry
+// subcommand (`bharatcode mcp-registry`) is declared here, from cli.rs, via an
+// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
+#[path = "commands/mcp_registry.rs"]
+pub mod mcp_registry_cmd;
+
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -743,6 +755,30 @@ enum SkillsCommand {
 }
 
 #[derive(Subcommand)]
+enum McpRegistryAction {
+    /// List every MCP server in the registry
+    #[command(about = "List every MCP server in the registry")]
+    List,
+
+    /// Filter the registry by id, name, or category
+    #[command(about = "Filter the registry by id, name, or category (case-insensitive)")]
+    Search {
+        #[arg(
+            value_name = "QUERY",
+            help = "Substring matched against id, name, or category"
+        )]
+        query: String,
+    },
+
+    /// Show one server's details and a ready-to-paste config snippet
+    #[command(about = "Show one server's details and a ready-to-paste extension-config snippet")]
+    Show {
+        #[arg(value_name = "ID", help = "Id of the MCP server to show")]
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum RecipeCommand {
     /// Validate a recipe file
     #[command(about = "Validate a recipe")]
@@ -910,6 +946,38 @@ enum Command {
         /// Show the read-only statistics block (shown by default)
         #[arg(long, help = "Show read-only size and integrity statistics")]
         stats: bool,
+    },
+
+    /// Browse the curated, offline catalog of installable extensions
+    #[command(
+        about = "List a curated catalog of installable extensions (MCP servers, plugins, recipes)"
+    )]
+    Catalog {
+        /// Print the full install details for a single entry by its id
+        #[arg(
+            long,
+            value_name = "ID",
+            help = "Print the install details for the entry with this id"
+        )]
+        show: Option<String>,
+
+        /// Restrict the listing to a single kind (mcp, plugin, recipe)
+        #[arg(
+            long,
+            value_name = "KIND",
+            help = "Filter the listing by kind (mcp, plugin, recipe)"
+        )]
+        kind: Option<String>,
+    },
+
+    /// Browse the curated, offline registry of MCP servers
+    #[command(
+        about = "Search a curated registry of MCP servers and emit ready-to-paste config",
+        visible_alias = "mcp-reg"
+    )]
+    McpRegistry {
+        #[command(subcommand)]
+        action: McpRegistryAction,
     },
 
     /// Manage system prompts and behaviors
@@ -1500,6 +1568,8 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Cost { .. }) => "cost",
         Some(Command::Privacy { .. }) => "privacy",
         Some(Command::Db { .. }) => "db",
+        Some(Command::Catalog { .. }) => "catalog",
+        Some(Command::McpRegistry { .. }) => "mcp-registry",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
@@ -2309,6 +2379,17 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Privacy {}) => crate::commands::privacy::handle_privacy().await,
         Some(Command::Db { vacuum, stats }) => {
             db_cmd::handle_db(db_cmd::DbOptions { vacuum, stats }).await
+        }
+        Some(Command::Catalog { show, kind }) => catalog_cmd::handle_catalog(show, kind),
+        Some(Command::McpRegistry { action }) => {
+            let action = match action {
+                McpRegistryAction::List => mcp_registry_cmd::McpRegistryAction::List,
+                McpRegistryAction::Search { query } => {
+                    mcp_registry_cmd::McpRegistryAction::Search { query }
+                }
+                McpRegistryAction::Show { id } => mcp_registry_cmd::McpRegistryAction::Show { id },
+            };
+            mcp_registry_cmd::handle_mcp_registry(action)
         }
         Some(Command::Info { verbose, check }) => handle_info(verbose, check).await,
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,

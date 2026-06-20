@@ -41,6 +41,20 @@ pub mod plan_mode;
 #[path = "../repo_digest.rs"]
 pub mod repo_digest;
 
+// Installed-extensions advisory (opt-in via BHARATCODE_EXT_ADVISORY). Declared
+// inline via `#[path]` so the wiring stays confined to the prompt-assembly path
+// and its own file, keeping lib.rs untouched.
+#[path = "../ext_advisory.rs"]
+mod ext_advisory;
+
+// Active-extension digest (opt-in via BHARATCODE_EXT_DIGEST). Declared as a
+// child module of prompt_manager via `#[path]`, mirroring the repo_digest decl,
+// so the wiring stays confined to the prompt-assembly path without touching
+// lib.rs. The renderer is pure over the descriptors derived from the
+// extensions already visible to the builder.
+#[path = "../ext_digest.rs"]
+pub mod ext_digest;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -212,6 +226,14 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             system_prompt_extras.insert("bharatcode_model_caps".to_string(), caps);
         }
 
+        // Installed-extensions advisory (opt-in via BHARATCODE_EXT_ADVISORY).
+        // Lists installed plugin skills + configured MCP servers by name so the
+        // model knows which third-party tools it can lean on. When disabled or
+        // nothing is installed this is None and the prompt is byte-identical.
+        if let Some(block) = ext_advisory::advisory_block() {
+            system_prompt_extras.insert("bharatcode_ext_advisory".to_string(), block);
+        }
+
         // Codebase semantic index (opt-in via BHARATCODE_CODEBASE_INDEX). The
         // empty query makes the index derive a deterministic, repo-layout based
         // query so the injected block stays cache-stable across sessions. When
@@ -240,6 +262,35 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
                 if let Some(block) = repo_digest::digest_block(&cwd) {
                     system_prompt_extras.insert("bharatcode_repo_digest".to_string(), block);
                 }
+            }
+        }
+
+        // Active-extension digest (opt-in via BHARATCODE_EXT_DIGEST). Lists the
+        // MCP servers / extensions active this turn (name + one-line role) so
+        // the model picks the right tool group. Descriptors are derived from the
+        // extensions already visible to the builder; the renderer is pure and
+        // returns None when there are none, keeping the prompt byte-identical.
+        if ext_digest::is_enabled() {
+            let descriptors: Vec<ext_digest::ExtDescriptor> = context
+                .extensions
+                .iter()
+                .map(|ext| {
+                    let summary = ext
+                        .instructions
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty())
+                        .unwrap_or_default();
+                    let kind = if ext.has_resources {
+                        "mcp"
+                    } else {
+                        "extension"
+                    };
+                    ext_digest::ExtDescriptor::new(&ext.name, kind, summary)
+                })
+                .collect();
+            if let Some(b) = ext_digest::ext_digest_block(&descriptors) {
+                system_prompt_extras.insert("bharatcode_ext_digest".into(), b);
             }
         }
 

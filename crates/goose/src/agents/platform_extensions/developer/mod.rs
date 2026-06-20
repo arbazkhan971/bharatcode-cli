@@ -1,10 +1,13 @@
 pub mod apply_patch;
 pub mod delegate;
 pub mod edit;
+pub mod editor_locator;
 pub mod image;
 pub mod read_lines;
 pub mod redact;
 pub mod refactor;
+pub mod result_cache;
+pub mod run_script;
 pub mod shell;
 pub mod tree;
 pub mod vision_guard;
@@ -18,6 +21,7 @@ use apply_patch::ApplyPatchParams;
 use async_trait::async_trait;
 use delegate::{DelegateParams, DelegateTool};
 use edit::{EditTools, FileEditParams, FileWriteParams};
+use editor_locator::EditorLocatorParams;
 use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
 use read_lines::{ReadLinesParams, ReadLinesTool};
@@ -173,7 +177,7 @@ impl DeveloperClient {
     }
 
     pub(crate) fn get_tools() -> Vec<Tool> {
-        vec![
+        let mut tools = vec![
             Tool::new(
                 "write".to_string(),
                 "Create a new file or overwrite an existing file. Creates parent directories if needed.".to_string(),
@@ -265,6 +269,23 @@ impl DeveloperClient {
                 Some(false),
             )),
             Tool::new(
+                "editor_locator".to_string(),
+                "Build editor/IDE jump targets for a file path and optional 1-based line/column: \
+                 a VS Code `vscode://file/...` URI and `code -g` CLI form, a JetBrains CLI form, \
+                 and a generic `file:line` form, plus the resolved absolute path. Read-only: it \
+                 only formats link strings and never opens an editor or reads file contents. \
+                 Out-of-range line/column values are clamped."
+                    .to_string(),
+                Self::schema::<EditorLocatorParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Editor Locator".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
                 "read_image".to_string(),
                 "Read an image from a local file path or http(s) URL and return it as image content for the model to inspect. Supports png, jpeg, gif, and webp.".to_string(),
                 Self::schema::<ImageReadParams>(),
@@ -326,7 +347,13 @@ impl DeveloperClient {
                 Some(false),
                 Some(true),
             )),
-        ]
+        ];
+
+        if run_script::is_enabled() {
+            tools.push(run_script::script_tool());
+        }
+
+        tools
     }
 }
 
@@ -354,29 +381,50 @@ impl McpClientTrait for DeveloperClient {
     ) -> Result<CallToolResult, Error> {
         let working_dir = ctx.working_dir.as_deref();
         match name {
-            "shell" => match Self::parse_args::<ShellParams>(arguments) {
-                Ok(params) => {
-                    let result = self.shell_tool.shell_with_cwd(params, working_dir).await;
-                    Ok(Self::redact_shell_result(result))
+            "shell" => {
+                let cache_args = arguments.clone();
+                if let Some(hit) = result_cache::lookup(name, &cache_args) {
+                    return Ok(hit);
                 }
-                Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
-            },
+                match Self::parse_args::<ShellParams>(arguments) {
+                    Ok(params) => {
+                        let result = self.shell_tool.shell_with_cwd(params, working_dir).await;
+                        let result = Self::redact_shell_result(result);
+                        if result_cache::arguments_are_read_only(&cache_args) {
+                            result_cache::store_if_read_only(name, &cache_args, &result);
+                        } else {
+                            result_cache::invalidate_all();
+                        }
+                        Ok(result)
+                    }
+                    Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
+                }
+            }
             "write" => match Self::parse_args::<FileWriteParams>(arguments) {
-                Ok(params) => Ok(self.edit_tools.file_write_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    result_cache::invalidate_all();
+                    Ok(self.edit_tools.file_write_with_cwd(params, working_dir))
+                }
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))
                 .with_priority(0.0)])),
             },
             "edit" => match Self::parse_args::<FileEditParams>(arguments) {
-                Ok(params) => Ok(self.edit_tools.file_edit_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    result_cache::invalidate_all();
+                    Ok(self.edit_tools.file_edit_with_cwd(params, working_dir))
+                }
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))
                 .with_priority(0.0)])),
             },
             "apply_patch" => match Self::parse_args::<ApplyPatchParams>(arguments) {
-                Ok(params) => Ok(apply_patch::apply_patch_with_cwd(params, working_dir)),
+                Ok(params) => {
+                    result_cache::invalidate_all();
+                    Ok(apply_patch::apply_patch_with_cwd(params, working_dir))
+                }
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))
@@ -406,6 +454,17 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "editor_locator" => {
+                let params = arguments.map(Value::Object).unwrap_or(Value::Null);
+                match editor_locator::editor_locator(params, working_dir) {
+                    Ok(result) => Ok(result),
+                    Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Error: {}",
+                        error.message
+                    ))
+                    .with_priority(0.0)])),
+                }
+            }
             "read_image" => match Self::parse_args::<ImageReadParams>(arguments) {
                 Ok(params) => {
                     let result = self
@@ -440,6 +499,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "run_script" => match Self::parse_args::<run_script::RunScriptParams>(arguments) {
+                Ok(params) => Ok(run_script::run(params, working_dir).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -462,6 +528,14 @@ mod tests {
 
     #[test]
     fn developer_tools_are_flat() {
+        // The opt-in `run_script` tool is gated on BHARATCODE_SCRIPTS and must be
+        // absent from the default tool list. Share run_script's env lock so this
+        // never races the `BHARATCODE_SCRIPTS`-mutating tests in that module.
+        let _lock = run_script::SCRIPTS_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(run_script::SCRIPTS_ENV);
+
         let names: Vec<String> = DeveloperClient::get_tools()
             .into_iter()
             .map(|t| t.name.to_string())
@@ -476,12 +550,29 @@ mod tests {
                 "shell",
                 "tree",
                 "read_lines",
+                "editor_locator",
                 "read_image",
                 "web_search",
                 "rename_symbol",
                 "delegate"
             ]
         );
+        assert!(!names.iter().any(|n| n == "run_script"));
+    }
+
+    #[test]
+    fn run_script_tool_present_when_enabled() {
+        let _lock = run_script::SCRIPTS_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(run_script::SCRIPTS_ENV, "1");
+        let names: Vec<String> = DeveloperClient::get_tools()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        std::env::remove_var(run_script::SCRIPTS_ENV);
+
+        assert!(names.iter().any(|n| n == "run_script"));
     }
 
     fn test_context(data_dir: std::path::PathBuf) -> PlatformExtensionContext {

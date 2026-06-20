@@ -21,6 +21,7 @@ pub mod chatgpt_codex;
 pub mod claude_acp;
 pub mod claude_code;
 pub(crate) mod cli_common;
+pub mod coalesce;
 pub mod codex;
 pub mod codex_acp;
 pub mod copilot_acp;
@@ -47,6 +48,7 @@ pub mod kimicode;
 pub mod litellm;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
+pub mod mcp_registry;
 pub mod nanogpt;
 pub mod oauth;
 pub mod oauth_device_flow;
@@ -73,6 +75,7 @@ pub mod utils;
 pub mod xai;
 pub mod xai_oauth;
 
+pub use coalesce::RequestCoalescer;
 pub use embeddings::EmbeddingClient;
 pub use init::{
     cleanup_provider, create, create_with_default_model, create_with_named_model,
