@@ -92,6 +92,18 @@ pub mod package_matrix;
 #[path = "packaging.rs"]
 mod packaging;
 
+// Packaging-matrix verifier deep check (BharatCode v94). A read-only,
+// always-visible row that confirms the release packaging matrix (targets x
+// formats: deb/rpm/tar.bz2/zip/brew, each mapped to its `bharatcode-<triple>`
+// asset name) is internally consistent. When a local dist dir is present
+// (`BHARATCODE_DIST_DIR`, else `./dist`) it cross-checks each declared artifact
+// against a `SHA256SUMS` file; an absent dist dir reports a benign Ok naming the
+// matrix target count. It reports Ok/Warn but never Fail — a packaging
+// inconsistency is surfaced, never blocking. Declared inline alongside the other
+// doctor checks, same posture as `index_check` above.
+#[path = "packaging_check.rs"]
+mod packaging_check;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -387,6 +399,22 @@ async fn print_deep_checks() {
     // reports a benign "not found (dev build)"; a digest mismatch reports a
     // failure. Reuses the cwd resolved above; never reads outside it.
     let (st, msg) = packaging::checksum_status(&cwd);
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
+    // Packaging-matrix verifier (BharatCode v94): a read-only, always-visible
+    // row confirming the release packaging matrix (targets x deb/rpm/tar.bz2/zip/
+    // brew, each mapped to its `bharatcode-<triple>` asset name) is internally
+    // consistent. When a local dist directory is present (`BHARATCODE_DIST_DIR`,
+    // else `./dist`) it cross-checks each declared artifact against a SHA256SUMS
+    // file; an absent dist directory reports a benign Ok naming the matrix target
+    // count. Reports Ok/Warn but never Fail, so it never blocks the doctor run.
+    // Reuses the same Status::glyph() type the sibling checks use.
+    let (st, msg) = packaging_check::packaging_readiness();
     let glyph = match st {
         Status::Ok => crate::theme::success(st.glyph()),
         Status::Warn => crate::theme::warning(st.glyph()),

@@ -264,7 +264,10 @@ pub fn check_case(case: &BenchCase) -> std::result::Result<String, String> {
         }
         CaseKind::CostInrCompact => {
             let amount: f64 = case.input.trim().parse().map_err(|_| {
-                format!("cost_inr_compact case input is not a number: {}", case.input)
+                format!(
+                    "cost_inr_compact case input is not a number: {}",
+                    case.input
+                )
             })?;
             Ok(format_inr_compact(amount))
         }

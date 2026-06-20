@@ -63,6 +63,13 @@ pub mod providers;
 pub mod quickstart;
 pub mod recipe;
 pub mod recipe_deeplink;
+// BharatCode v98: canonical 1.0 GA release identity. `release::resolve()` is the
+// single source of truth for the product semantic version, the release channel
+// (stable|beta|nightly, gated by `BHARATCODE_RELEASE_CHANNEL`), the compile-time
+// build metadata, and the `release::ga_banner()` line. Exposed as reachable
+// public API (`goose::release`, the product's `bharatcode::release` surface) so
+// the version surface, `serve`, and update flows share one identity.
+pub mod release;
 pub mod residency;
 pub mod scheduler;
 pub mod scheduler_trait;

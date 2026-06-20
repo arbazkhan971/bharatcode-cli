@@ -99,7 +99,10 @@ mod tests {
         for off in ["0", "off", "false", "no", "  "] {
             let _guard = env_guard(Some(off), None);
             assert!(!is_enabled(), "expected {off:?} to stay off");
-            assert!(release_context_block().is_none(), "expected None for {off:?}");
+            assert!(
+                release_context_block().is_none(),
+                "expected None for {off:?}"
+            );
         }
     }
 
@@ -127,7 +130,11 @@ mod tests {
     fn block_under_byte_cap() {
         let _guard = env_guard(Some("on"), None);
         let block = release_context_block().unwrap();
-        assert!(block.len() <= 400, "expected <=400 bytes, got {}: {block}", block.len());
+        assert!(
+            block.len() <= 400,
+            "expected <=400 bytes, got {}: {block}",
+            block.len()
+        );
     }
 
     #[test]

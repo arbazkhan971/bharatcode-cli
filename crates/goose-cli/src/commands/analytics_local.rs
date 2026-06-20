@@ -324,8 +324,14 @@ mod tests {
         let line = render_line(&agg).expect("non-empty aggregate renders a line");
 
         assert_eq!(line.lines().count(), 1, "footer must be one line: {line}");
-        assert!(line.contains('1') && line.contains("turns"), "turns: {line}");
-        assert!(line.contains("165") && line.contains("tokens"), "tokens: {line}");
+        assert!(
+            line.contains('1') && line.contains("turns"),
+            "turns: {line}"
+        );
+        assert!(
+            line.contains("165") && line.contains("tokens"),
+            "tokens: {line}"
+        );
         for forbidden in ["goose", "Goose", "Block"] {
             assert!(
                 !line.contains(forbidden),

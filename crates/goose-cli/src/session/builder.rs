@@ -38,6 +38,15 @@ mod migrate;
 #[path = "db_preflight.rs"]
 mod db_preflight;
 
+// Read-only security-hardening posture preflight. Lives at the crate root, but
+// `lib.rs` is owned by a sibling in this wave, so it is declared here (the file
+// that wires it into the session build path) via an explicit `#[path]`. Default
+// (env unset) emits one `tracing::info!` posture line and changes nothing else;
+// `BHARATCODE_HARDENED=strict` additionally prints one warning per failing
+// control. Never blocks startup.
+#[path = "../security_preflight.rs"]
+mod security_preflight;
+
 // Canonical GA release-info source (semantic GA version, channel, Apache-2.0
 // attribution) and the brand-clean one-line startup banner. Lives at the crate
 // root, but `lib.rs` is owned by a sibling in this wave, so it is declared here
@@ -619,6 +628,19 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // that cannot run is silent; corruption warns (and, with
     // BHARATCODE_DB_PREFLIGHT set, points the user at `bharatcode db --vacuum`).
     let _ = db_preflight::preflight().await;
+
+    // Read-only security-hardening posture preflight: score the effective
+    // runtime config against the hardening checklist and log a one-line posture
+    // summary. Default (BHARATCODE_HARDENED unset) is a single `tracing::info!`
+    // line with no behaviour change; `=strict` additionally surfaces one visible
+    // warning per failing control. Never blocks startup; `assess` never panics.
+    let posture = security_preflight::assess();
+    tracing::info!("{}", posture.summary_line());
+    if security_preflight::strict_enabled() {
+        for w in posture.warnings() {
+            eprintln!("{}", w);
+        }
+    }
 
     // Announce the GA milestone once at startup with a brand-clean one-line
     // banner (`BharatCode <ga-version> (GA) — Apache-2.0`). Interactive-only and

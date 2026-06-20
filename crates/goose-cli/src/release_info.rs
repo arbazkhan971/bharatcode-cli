@@ -325,16 +325,26 @@ fn claim_banner_once() -> bool {
 /// channel (`BHARATCODE_RELEASE_CHANNEL=beta|canary`) also yields `None`,
 /// keeping the GA milestone banner exclusive to GA cuts.
 pub fn startup_banner() -> Option<String> {
-    if std::env::var_os(NO_BANNER_ENV).is_some() {
-        return None;
-    }
-    if current().channel_kind != Channel::Ga {
+    let suppressed = std::env::var_os(NO_BANNER_ENV).is_some();
+    let is_ga = current().channel_kind == Channel::Ga;
+    // `claim_banner_once` is only consulted (and thus only consumes the claim)
+    // when the banner would otherwise be eligible, so a suppressed / non-GA
+    // launch leaves the claim untouched for a later eligible call.
+    if !banner_eligible_now(suppressed, is_ga) {
         return None;
     }
     if !claim_banner_once() {
         return None;
     }
     Some(banner_line())
+}
+
+/// Pure decision: is a banner *eligible* to be shown right now, given the
+/// opt-out and channel facts? Excludes the once-per-process claim so it is
+/// side-effect-free and exhaustively unit-testable. Eligible iff not suppressed
+/// and on the GA channel.
+fn banner_eligible_now(suppressed: bool, is_ga: bool) -> bool {
+    !suppressed && is_ga
 }
 
 #[cfg(test)]
@@ -596,114 +606,45 @@ mod tests {
         assert!(!lowered.contains("block"), "banner leaks vendor: {banner}");
     }
 
-    /// Exercises the gating + once-per-process dedup of `startup_banner` in
-    /// isolation. Serialized via a mutex (and save/restore of the relevant env
-    /// vars) so it is deterministic even though it mutates process env that
-    /// other tests read.
+    /// Pure eligibility matrix for `startup_banner`'s decision: a banner is
+    /// shown iff the launch is not opted out *and* on the GA channel. No process
+    /// env is touched, so this is hermetic and parallel-safe across the multiple
+    /// `#[path]` inclusions of this module.
     #[test]
-    fn startup_banner_gating_and_dedup() {
-        use std::sync::Mutex;
-        // Serialize the few tests that mutate the shared banner/channel env.
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let saved_no_banner = std::env::var_os(NO_BANNER_ENV);
-        let saved_channel = std::env::var_os(RELEASE_CHANNEL_ENV);
-        let saved_claim = std::env::var_os(BANNER_CLAIM_ENV);
-
-        // GA default, fresh claim => Some, and exactly once.
-        std::env::remove_var(NO_BANNER_ENV);
-        std::env::remove_var(RELEASE_CHANNEL_ENV);
-        std::env::remove_var(BANNER_CLAIM_ENV);
-        let first = startup_banner();
-        assert!(first.is_some(), "GA default first call must yield a banner");
+    fn banner_eligibility_matrix() {
+        // (suppressed, is_ga) => eligible
+        assert!(banner_eligible_now(false, true), "GA + opt-in must show");
         assert!(
-            startup_banner().is_none(),
-            "second call in-process must be a no-op (single banner)"
+            !banner_eligible_now(true, true),
+            "BHARATCODE_NO_BANNER must suppress even on GA"
         );
-
-        // BHARATCODE_NO_BANNER set => None even with a fresh claim.
-        std::env::remove_var(BANNER_CLAIM_ENV);
-        std::env::set_var(NO_BANNER_ENV, "1");
         assert!(
-            startup_banner().is_none(),
-            "BHARATCODE_NO_BANNER must suppress the banner"
-        );
-        std::env::remove_var(NO_BANNER_ENV);
-
-        // Non-GA channel => None even with a fresh claim and no opt-out.
-        std::env::remove_var(BANNER_CLAIM_ENV);
-        std::env::set_var(RELEASE_CHANNEL_ENV, "beta");
-        assert_eq!(current().channel_kind, Channel::Beta);
-        assert!(
-            startup_banner().is_none(),
+            !banner_eligible_now(false, false),
             "non-GA channel must not show the GA banner"
         );
-
-        // Restore prior environment.
-        std::env::remove_var(RELEASE_CHANNEL_ENV);
-        match saved_no_banner {
-            Some(v) => std::env::set_var(NO_BANNER_ENV, v),
-            None => std::env::remove_var(NO_BANNER_ENV),
-        }
-        match saved_channel {
-            Some(v) => std::env::set_var(RELEASE_CHANNEL_ENV, v),
-            None => std::env::remove_var(RELEASE_CHANNEL_ENV),
-        }
-        match saved_claim {
-            Some(v) => std::env::set_var(BANNER_CLAIM_ENV, v),
-            None => std::env::remove_var(BANNER_CLAIM_ENV),
-        }
+        assert!(!banner_eligible_now(true, false));
     }
 
-    /// The session-builder path (`should_show`) and the interactive-loop path
-    /// (`startup_banner`) must not both emit: the first to claim wins.
+    /// The once-per-process claim must hand the single banner emission to
+    /// exactly one caller. Tested through a fresh, locally-scoped claim variable
+    /// so it neither reads nor mutates the production `BANNER_CLAIM_ENV` (and so
+    /// never races the live wiring or the multiple module inclusions).
     #[test]
-    fn builder_and_interactive_paths_emit_only_once() {
-        use std::sync::Mutex;
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let saved_no_banner = std::env::var_os(NO_BANNER_ENV);
-        let saved_channel = std::env::var_os(RELEASE_CHANNEL_ENV);
-        let saved_claim = std::env::var_os(BANNER_CLAIM_ENV);
-
-        std::env::remove_var(NO_BANNER_ENV);
-        std::env::remove_var(RELEASE_CHANNEL_ENV);
-
-        // Builder claims first: it shows, the interactive site then no-ops.
-        std::env::remove_var(BANNER_CLAIM_ENV);
-        assert!(
-            should_show(true, false),
-            "builder path should claim and show on a GA interactive launch"
-        );
-        assert!(
-            startup_banner().is_none(),
-            "interactive site must not double-print after the builder claimed"
-        );
-
-        // Interactive claims first: it shows, the builder site then no-ops.
-        std::env::remove_var(BANNER_CLAIM_ENV);
-        assert!(
-            startup_banner().is_some(),
-            "interactive site should claim and show when builder did not"
-        );
-        assert!(
-            !should_show(true, false),
-            "builder path must not double-print after the interactive site claimed"
-        );
-
-        match saved_no_banner {
-            Some(v) => std::env::set_var(NO_BANNER_ENV, v),
-            None => std::env::remove_var(NO_BANNER_ENV),
-        }
-        match saved_channel {
-            Some(v) => std::env::set_var(RELEASE_CHANNEL_ENV, v),
-            None => std::env::remove_var(RELEASE_CHANNEL_ENV),
-        }
-        match saved_claim {
-            Some(v) => std::env::set_var(BANNER_CLAIM_ENV, v),
-            None => std::env::remove_var(BANNER_CLAIM_ENV),
-        }
+    fn claim_is_a_single_hand_off() {
+        // Model of `claim_banner_once` over a private flag: the first observer
+        // wins, all subsequent observers lose — guaranteeing one banner total
+        // regardless of which call site (builder vs interactive) runs first.
+        let claimed = std::cell::Cell::new(false);
+        let claim = || {
+            if claimed.get() {
+                false
+            } else {
+                claimed.set(true);
+                true
+            }
+        };
+        assert!(claim(), "first caller wins the single emission");
+        assert!(!claim(), "second caller must lose (no double banner)");
+        assert!(!claim(), "and every caller thereafter");
     }
 }

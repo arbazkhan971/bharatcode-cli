@@ -21,11 +21,14 @@ pub async fn run(agent: &crate::agents::Agent, session_id: &str) -> anyhow::Resu
     let info = SystemInfo::collect();
     let extensions = agent.list_extensions().await;
 
+    let perf_profile = Config::global().perf_release_summary().join("; ");
+
     let mut prompt = format!(
         "I ran /doctor because something seems off. Here's my system info:\n\n\
          {}\n\
          Loaded extensions: {}\n\
-         Config file: {}\n",
+         Config file: {}\n\
+         Perf-release profile: {}\n",
         info.to_text(),
         if extensions.is_empty() {
             "none".to_string()
@@ -33,6 +36,7 @@ pub async fn run(agent: &crate::agents::Agent, session_id: &str) -> anyhow::Resu
             extensions.join(", ")
         },
         config_path().display(),
+        perf_profile,
     );
 
     if let Some(path) = latest_server_log_path() {
