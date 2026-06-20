@@ -1450,6 +1450,11 @@ impl CliSession {
         let run_started = Instant::now();
         let mut first_token_at: Option<Instant> = None;
         let mut last_usage: Option<ProviderUsage> = None;
+        // BharatCode v91: count-only tally of tool requests issued this turn,
+        // fed to the opt-in local usage analytics after the loop. Counts only —
+        // never a tool name or argument. Always taken (cheap); only persisted
+        // when BHARATCODE_ANALYTICS is on.
+        let mut tool_calls_this_turn: u64 = 0;
 
         use futures::StreamExt;
         loop {
@@ -1566,6 +1571,14 @@ impl CliSession {
                                 }
                             } else {
                                 log_tool_metrics(&message, &self.messages);
+                                // BharatCode v91: count (not inspect) tool requests in
+                                // this assistant message for the opt-in local usage
+                                // tally. Names/arguments are never read.
+                                tool_calls_this_turn += message
+                                    .content
+                                    .iter()
+                                    .filter(|c| matches!(c, MessageContent::ToolRequest(_)))
+                                    .count() as u64;
                                 if message_has_text(&message) {
                                     accumulated_text.push_str(&message.as_concat_text());
                                 }
@@ -1747,6 +1760,14 @@ impl CliSession {
                 session_cost_usd,
             );
         }
+
+        // BharatCode v91: opt-in, LOCAL-ONLY usage analytics. Optional, default
+        // OFF — when BHARATCODE_ANALYTICS is on, increment a local count-only
+        // tally (this turn + the tool requests it issued, bucketed by IST day)
+        // under the config dir. Records counts only — never prompt/content. When
+        // disabled this is a zero-I/O no-op and no file is created, so default
+        // behavior is byte-identical. Best-effort: never breaks the turn.
+        goose::usage_analytics::record_turn(tool_calls_this_turn);
 
         // BharatCode v63: crash/resume recovery pointer. Optional, default OFF —
         // when BHARATCODE_RESUME is on, rewrite a tiny last-good-turn sidecar

@@ -1514,6 +1514,20 @@ enum Command {
         max_sessions: Option<usize>,
     },
 
+    /// Run the local, offline micro-benchmark suite.
+    ///
+    /// Times a small fixed set of purely in-crate routines (token-count
+    /// approximation, UTF-8-safe context trimming, quote-aware argv splitting)
+    /// and prints a clean timing table plus a one-line summary. Fully offline:
+    /// no network, no provider, and no model call. Iteration counts can be
+    /// scaled with `BHARATCODE_BENCH_ITERATIONS`; the default run is unchanged.
+    #[command(about = "Run local, offline micro-benchmarks and print a timing table")]
+    Bench {
+        /// Emit the machine-readable JSON report instead of the table.
+        #[arg(long, help = "Emit the machine-readable JSON report")]
+        json: bool,
+    },
+
     #[command(
         name = "validate-extensions",
         about = "Validate a bundled-extensions.json file",
@@ -1704,6 +1718,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::GenDocs { .. }) => "gen-docs",
         Some(Command::Refactor { .. }) => "refactor",
         Some(Command::ServeSessions { .. }) => "serve-sessions",
+        Some(Command::Bench { .. }) => "bench",
         Some(Command::ValidateExtensions { .. }) => "validate-extensions",
         None => "default_session",
     }
@@ -2679,6 +2694,9 @@ pub async fn cli() -> anyhow::Result<()> {
             glob,
             apply,
         }),
+        Some(Command::Bench { json }) => {
+            crate::commands::bench::handle_bench(crate::commands::bench::BenchOptions { json })
+        }
         Some(Command::ServeSessions { addr, max_sessions }) => {
             serve_sessions::handle_serve_sessions(serve_sessions::ServeSessionsOptions {
                 addr,
