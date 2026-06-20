@@ -507,6 +507,9 @@ impl CliSession {
                 console::style("●").red(),
                 console::style(format!("session closed · {}", &self.session_id)).dim()
             );
+            // BharatCode v29: point the user at the DPDP audit log when auditing
+            // is on (no-op otherwise). Keeps the viewer reachable in the binary.
+            crate::commands::audit::print_session_summary(&self.session_id);
         }
 
         result
@@ -1488,6 +1491,45 @@ impl CliSession {
             if self.stats {
                 print_run_stats(run_started, first_token_at, last_usage.as_ref());
             }
+        }
+
+        // BharatCode v29: DPDP audit log. Optional, default OFF — when
+        // BHARATCODE_AUDIT is on, append one metadata-only record per turn
+        // (provider/model/timestamp IST/tokens/₹) to the local append-only log.
+        // Best-effort: never breaks the turn if the write fails.
+        if crate::commands::audit::is_enabled() {
+            let provider_name = Config::global()
+                .get_bharatcode_provider()
+                .unwrap_or_else(|_| "unknown".to_string());
+            let model_name = match self.agent.provider().await {
+                Ok(p) => p.get_model_config().model_name,
+                Err(_) => "unknown".to_string(),
+            };
+            let (input_tokens, output_tokens, total_tokens) = last_usage
+                .as_ref()
+                .map(|u| {
+                    (
+                        u.usage.input_tokens,
+                        u.usage.output_tokens,
+                        u.usage.total_tokens,
+                    )
+                })
+                .unwrap_or((None, None, None));
+            let session_cost_usd = self
+                .get_session()
+                .await
+                .ok()
+                .and_then(|s| s.accumulated_cost)
+                .unwrap_or(0.0);
+            crate::commands::audit::record_turn(
+                &provider_name,
+                &model_name,
+                &self.session_id,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                session_cost_usd,
+            );
         }
 
         Ok(())

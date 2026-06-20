@@ -27,5 +27,9 @@
   "cost.empty": "No recorded LLM spend yet. Run a session to start the ledger.",
   "cost.sessions": "Sessions ({shown} of {total})",
   "cost.more": "... {count} more (use --all to show every session)",
-  "cost.by_month": "By month"
+  "cost.by_month": "By month",
+  "review.no_changes": "bharatcode review: no changes to review",
+  "review.prompt_instructions": "You are reviewing the following git diff. Identify correctness bugs, security issues, and clear simplifications. For each finding, name the file and line, explain the problem, and suggest a fix. Be concise and skip praise. If there are no meaningful issues, say so.",
+  "review.findings_header": "## Review findings",
+  "review.scope_working_tree": "the working tree vs HEAD"
 }
