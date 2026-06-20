@@ -2,6 +2,7 @@ pub mod apply_patch;
 pub mod edit;
 pub mod image;
 pub mod redact;
+pub mod refactor;
 pub mod shell;
 pub mod tree;
 pub mod vision_guard;
@@ -16,6 +17,7 @@ use async_trait::async_trait;
 use edit::{EditTools, FileEditParams, FileWriteParams};
 use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
+use refactor::{RefactorParams, RefactorTool};
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
     RawContent, ServerCapabilities, Tool, ToolAnnotations,
@@ -37,6 +39,7 @@ pub struct DeveloperClient {
     tree_tool: Arc<TreeTool>,
     image_tool: Arc<ImageTool>,
     web_search_tool: Arc<WebSearchTool>,
+    refactor_tool: Arc<RefactorTool>,
 }
 
 fn developer_instructions() -> &'static str {
@@ -86,6 +89,7 @@ impl DeveloperClient {
             tree_tool: Arc::new(TreeTool::new()),
             image_tool: Arc::new(ImageTool::new()),
             web_search_tool: Arc::new(WebSearchTool::new()),
+            refactor_tool: Arc::new(RefactorTool::new()),
         })
     }
 
@@ -260,6 +264,23 @@ impl DeveloperClient {
                 Some(true),
                 Some(true),
             )),
+            Tool::new(
+                "rename_symbol".to_string(),
+                "Rename an identifier across the working tree using a safe, \
+                 word-boundary (whole-word) match that respects .gitignore. \
+                 Returns a per-file replacement count and a unified-diff-style \
+                 preview. Defaults to a dry run (no files written); pass \
+                 `dry_run: false` to apply the rename on disk."
+                    .to_string(),
+                Self::schema::<RefactorParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Rename Symbol".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
         ]
     }
 }
@@ -343,6 +364,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "rename_symbol" => match Self::parse_args::<RefactorParams>(arguments) {
+                Ok(params) => Ok(self.refactor_tool.rename_symbol(params, working_dir).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -379,7 +407,8 @@ mod tests {
                 "shell",
                 "tree",
                 "read_image",
-                "web_search"
+                "web_search",
+                "rename_symbol"
             ]
         );
     }

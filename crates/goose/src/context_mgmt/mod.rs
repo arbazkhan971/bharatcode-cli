@@ -17,6 +17,8 @@ use tokio::task::JoinHandle;
 use tracing::info;
 use tracing::log::warn;
 
+mod diff_compact;
+
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
 const TOOLCALL_SUMMARIZATION_BATCH_SIZE: usize = 10;
@@ -303,6 +305,19 @@ async fn do_compact(
             optimize_budget,
             TOOLCALL_SUMMARIZATION_BATCH_SIZE,
         )
+    } else {
+        agent_visible_messages
+    };
+
+    // Opt-in diff/patch-aware pre-selection: when BHARATCODE_DIFF_COMPACT is
+    // enabled, keep the newest diff-bearing messages verbatim and replace older
+    // diffs with a compact filename+hunk-count summary before summarizing.
+    // Disabled by default, in which case this is an identity pass that preserves
+    // current behavior.
+    let budget = (provider.get_model_config().context_limit() as f64 * DEFAULT_COMPACTION_THRESHOLD)
+        as usize;
+    let agent_visible_messages = if diff_compact::is_enabled() {
+        diff_compact::select_diff_aware_owned(&agent_visible_messages, budget)
     } else {
         agent_visible_messages
     };

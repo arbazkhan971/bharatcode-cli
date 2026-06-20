@@ -46,6 +46,12 @@ use tracing::warn;
 #[path = "commands/model_pack.rs"]
 mod model_pack;
 
+// Same rationale as `model_pack` above: the `gen-tests` command's module is
+// declared here, from cli.rs, via an explicit `#[path]` rather than editing the
+// contended `commands/mod.rs`.
+#[path = "commands/gen_tests.rs"]
+mod gen_tests;
+
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -1240,6 +1246,46 @@ enum Command {
         #[arg(long, short = 'q')]
         quiet: bool,
     },
+    /// Generate unit tests for a source file in a single pass.
+    ///
+    /// Reads the target source file, builds a focused test-authoring
+    /// instruction (respecting the project's existing test conventions), and
+    /// runs a single agent turn through the shared run/session path to emit the
+    /// proposed test file(s). The framework is inferred from the file
+    /// extension unless `--framework` is given.
+    #[command(
+        name = "gen-tests",
+        about = "Generate unit tests for a source file in a single pass"
+    )]
+    GenTests {
+        /// Path to the source file to generate tests for.
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Explicit test framework hint (e.g. "pytest", "vitest"). Defaults to
+        /// a hint inferred from the file extension.
+        #[arg(long = "framework", value_name = "FRAMEWORK")]
+        framework: Option<String>,
+    },
+    /// Generate documentation for a source file in a single pass.
+    ///
+    /// Reads the target source file and runs a single agent turn through the
+    /// shared run/session path to produce a documentation draft, streamed to
+    /// stdout. With `--write`, the draft is saved to the sibling Markdown file.
+    #[command(
+        name = "gen-docs",
+        about = "Generate documentation for a source file in a single pass"
+    )]
+    GenDocs {
+        /// Path to the source file to document.
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Write the generated draft to the sibling `<stem>.md` file instead of
+        /// only printing it to stdout.
+        #[arg(long = "write")]
+        write: bool,
+    },
     #[command(
         name = "validate-extensions",
         about = "Validate a bundled-extensions.json file",
@@ -1421,6 +1467,8 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Completion { .. }) => "completion",
         Some(Command::Review { .. }) => "review",
         Some(Command::ReviewDiff { .. }) => "review-diff",
+        Some(Command::GenTests { .. }) => "gen-tests",
+        Some(Command::GenDocs { .. }) => "gen-docs",
         Some(Command::ValidateExtensions { .. }) => "validate-extensions",
         None => "default_session",
     }
@@ -2329,6 +2377,16 @@ pub async fn cli() -> anyhow::Result<()> {
                 provider,
                 model,
                 quiet,
+            })
+            .await
+        }
+        Some(Command::GenTests { path, framework }) => {
+            gen_tests::handle_gen_tests(gen_tests::GenTestsOptions { path, framework }).await
+        }
+        Some(Command::GenDocs { path, write }) => {
+            crate::commands::gen_docs::handle_gen_docs(crate::commands::gen_docs::GenDocsOptions {
+                path,
+                write,
             })
             .await
         }

@@ -17,6 +17,12 @@ use std::process;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
+// `session/mod.rs` is a contended shared file in this wave, so the opt-in
+// framework-migration advisory module is declared here, from builder.rs (the
+// file that wires it into the session build path), via an explicit `#[path]`.
+#[path = "migrate.rs"]
+mod migrate;
+
 const EXTENSION_HINT_MAX_LEN: usize = 5;
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
@@ -650,6 +656,18 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     // Extensions are loaded after session creation because we may change directory when resuming
     let agent_ptr = resolve_and_load_extensions(agent, extensions_for_provider, &session_id).await;
+
+    // Opt-in framework-migration advisory: when BHARATCODE_MIGRATE=<from>:<to>
+    // is set, inject a compact migration-strategy block so the agent plans the
+    // migration consistently. Default (unset) leaves the prompt unchanged.
+    if let Some(spec) = migrate::from_env() {
+        agent_ptr
+            .extend_system_prompt(
+                "bharatcode_migration".to_string(),
+                migrate::advisory_block(&spec),
+            )
+            .await;
+    }
 
     let edit_mode = config
         .get_param::<String>("EDIT_MODE")
