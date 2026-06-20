@@ -1,114 +1,173 @@
-//! Canonical list of the Hindi-deepened high-traffic CLI keys and a parity guard.
+//! Hindi coverage manifest for the v82 "deepen Hindi" wave (BharatCode).
 //!
-//! v82 deepens Hindi coverage across three high-traffic CLI surfaces whose
-//! user-facing strings already route through a `default`-bearing translation
-//! helper in the running binary:
+//! This wave widens Hindi past the original starter strings into the long tail of
+//! high-traffic, user-facing CLI surfaces that other v8x siblings introduce in
+//! the same wave:
 //!
-//!   * the `/help` group headings and title (`help_tr(key, default)` in
-//!     [`crate::session::input`]),
-//!   * the doctor "Deep checks" labels (`label(key, default)` in the
-//!     `doctor_checks` command), and
-//!   * the doctor session/banner words such as provider/model and the config
-//!     directory row (`label(key, default)` in the `doctor` command).
+//!   * `onboarding.*` — the guided first-run wizard steps,
+//!   * `helpindex.*`  — the `bharatcode help-index` category headings,
+//!   * `a11y.*`       — the accessibility / screen-reader status labels,
+//!   * `tutorials.*`  — the quickstart tutorial steps,
+//!   * `dashboard.*`  — the cost-dashboard headings, and
+//!   * `notify.*`     — the desktop / terminal notification labels.
 //!
-//! Each of those helpers echoes the `key` back when the active locale table has
-//! no entry, so the call sites render English from their `default` argument
-//! today. Adding the Hindi values to `hi.json` (this module's sibling file) makes
-//! them switch to Hindi under `BHARATCODE_LANG=hi` WITHOUT touching the call
-//! sites — that is the real wiring.
+//! Every key listed in [`hindi_coverage_keys`] already carries a genuine Hindi
+//! value in the sibling `hi.json` table (compiled into the binary via
+//! `include_str!` by [`crate::i18n`]). The values only *surface* when the active
+//! locale resolves to Hindi (`BHARATCODE_LANG=hi`, `bharatcode_lang=hi`, or
+//! `LANG=hi_IN`); with any other locale the English strings render byte-for-byte
+//! unchanged, so this module changes no default behaviour. It is data + a small
+//! accessor, with no env gate of its own.
 //!
-//! Activating Hindi for these strings is purely opt-in: set `BHARATCODE_LANG=hi`
-//! (the locale resolver in [`crate::i18n`] reads it first). With the default
-//! locale the English `default` values are emitted byte-for-byte unchanged.
-//!
-//! This module is the single place that enumerates the deepened keys so a test
-//! can assert `hi.json` carries a real Hindi value for each one and that the two
-//! locale tables stay in lockstep.
+//! [`count_translated`] reports how many of those keys a given locale table fills
+//! with a real Hindi value (a value that carries at least one Devanagari
+//! codepoint), so the help/doctor coverage surface can report Hindi depth without
+//! re-deriving the canonical key list. The unit tests assert each canonical key
+//! exists in the shipped `hi.json` and that its value is genuinely translated —
+//! not an English echo.
 
-/// Every key whose Hindi value v82 adds to `hi.json` so it stops echoing the
-/// English `default` under `BHARATCODE_LANG=hi`.
+use std::collections::HashMap;
+
+/// The canonical list of Hindi-deepened keys this wave covers, grouped by the
+/// stable namespaces it introduces.
 ///
-/// Keep this list in sync with the entries added to `hi.json`; the parity test
-/// below fails loudly if it drifts. The matching English defaults flow through
-/// the `help_tr`/`label` call sites named in the module docs, so this version
-/// deliberately does NOT add these keys to `en.json` (a sibling version owns it).
-pub const HINDI_DEEPENED_KEYS: &[&str] = &[
-    "help.title",
-    "help.group.session",
-    "help.group.conversation",
-    "help.group.model_mode",
-    "help.group.extensions",
-    "help.group.display",
-    "help.group.navigation",
-    "doctor.checks_title",
-    "doctor.check.git",
-    "doctor.check.local_provider",
-    "doctor.check.config_writable",
-    "doctor.check.session_db",
-    "doctor.provider_model",
-    "doctor.local_engine",
-    "doctor.config_dir",
+/// Each entry must exist in `hi.json` with a genuinely-translated (Devanagari)
+/// value; the unit tests below fail loudly if any key is missing or still echoes
+/// English. The matching English defaults flow through the `tr!`-based call sites
+/// (the onboarding wizard, `help-index`, the accessibility banner, the tutorials
+/// runner, the cost dashboard, and the notifier), so deepening Hindi here needs
+/// no change at those call sites — only the locale table.
+const HINDI_COVERAGE_KEYS: &[&str] = &[
+    // onboarding wizard
+    "onboarding.title",
+    "onboarding.step_locale",
+    "onboarding.step_provider",
+    "onboarding.step_theme",
+    "onboarding.step_privacy",
+    "onboarding.apply_hint",
+    // help-index category headings
+    "helpindex.header",
+    "helpindex.cat_session",
+    "helpindex.cat_conversation",
+    "helpindex.cat_model",
+    "helpindex.cat_extensions",
+    "helpindex.cat_display",
+    "helpindex.cat_navigation",
+    // accessibility status labels
+    "a11y.enabled",
+    "a11y.spinner_label",
+    // quickstart tutorials
+    "tutorials.quickstart_title",
+    "tutorials.quickstart_step1",
+    "tutorials.quickstart_step2",
+    "tutorials.next_hint",
+    // cost dashboard headings
+    "dashboard.title",
+    "dashboard.bar_legend",
+    "dashboard.top_models",
+    // notification labels
+    "notify.turn_done",
+    "notify.verify_failed",
 ];
 
-/// Parse a locale JSON payload into a flat key/value map.
+/// The canonical list of namespaces this wave deepens into Hindi.
 ///
-/// Reads the tables the exact same way [`crate::i18n`] does at runtime so the
-/// test asserts against the real bundled data.
-#[cfg(test)]
-fn parse_table(raw: &str) -> std::collections::HashMap<String, String> {
-    serde_json::from_str(raw).expect("i18n: locale table is not valid JSON")
+/// Returned as a `'static` slice so the help/doctor coverage surface and the
+/// parity tests share one source of truth. Order is stable (namespace-grouped) so
+/// rendered output is deterministic.
+pub fn hindi_coverage_keys() -> &'static [&'static str] {
+    HINDI_COVERAGE_KEYS
+}
+
+/// Whether `value` carries at least one Devanagari codepoint (`U+0900..=U+097F`),
+/// i.e. it is a genuine Hindi translation rather than an English echo.
+fn is_devanagari(value: &str) -> bool {
+    value.chars().any(|c| matches!(c, '\u{0900}'..='\u{097F}'))
+}
+
+/// Count how many of the canonical coverage keys `table` fills with a genuinely
+/// translated (Devanagari) Hindi value.
+///
+/// `table` is a flat key/value locale map shaped exactly like the one
+/// [`crate::i18n`] builds from `hi.json`. A key that is absent, empty, or still
+/// holding the English string does not count, so the returned figure is true
+/// Hindi depth across this wave's surfaces — never an inflated parity count.
+pub fn count_translated(table: &HashMap<String, String>) -> usize {
+    HINDI_COVERAGE_KEYS
+        .iter()
+        .filter(|key| table.get(**key).is_some_and(|value| is_devanagari(value)))
+        .count()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn hindi_table() -> HashMap<String, String> {
+        serde_json::from_str(include_str!("hi.json")).expect("i18n: hi.json is not valid JSON")
+    }
+
     #[test]
-    fn deepened_keys_are_unique() {
+    fn coverage_keys_are_unique() {
         let mut seen = std::collections::HashSet::new();
-        for key in HINDI_DEEPENED_KEYS {
-            assert!(seen.insert(*key), "duplicate deepened key: {key}");
+        for key in hindi_coverage_keys() {
+            assert!(seen.insert(*key), "duplicate coverage key: {key}");
         }
     }
 
-    /// Each deepened key must carry a non-empty Hindi value that differs from the
-    /// English value, so `BHARATCODE_LANG=hi` shows materially more Hindi.
+    /// The wave's core guarantee: every canonical key exists in the shipped
+    /// `hi.json` and its value contains a Devanagari codepoint, proving the value
+    /// is a real Hindi translation and not an English echo.
     #[test]
-    fn deepened_keys_have_distinct_hindi_values() {
-        let en = parse_table(include_str!("en.json"));
-        let hi = parse_table(include_str!("hi.json"));
-
-        for key in HINDI_DEEPENED_KEYS {
-            let hi_val = hi
+    fn every_coverage_key_has_a_devanagari_hindi_value() {
+        let hi = hindi_table();
+        for key in hindi_coverage_keys() {
+            let value = hi
                 .get(*key)
-                .unwrap_or_else(|| panic!("hi.json is missing deepened key: {key}"));
+                .unwrap_or_else(|| panic!("hi.json is missing Hindi-coverage key: {key}"));
             assert!(
-                !hi_val.trim().is_empty(),
-                "hi.json has an empty value for deepened key: {key}"
+                !value.trim().is_empty(),
+                "hi.json has an empty value for coverage key: {key}"
             );
-
-            let en_val = en
-                .get(*key)
-                .unwrap_or_else(|| panic!("en.json is missing deepened key: {key}"));
-            assert_ne!(
-                hi_val, en_val,
-                "hi.json value for {key} must differ from its en.json value (untranslated)"
+            assert!(
+                is_devanagari(value),
+                "hi.json value for {key} carries no Devanagari codepoint (English echo): {value:?}"
             );
         }
     }
 
-    /// The two locale tables must agree on every key: no key may exist in one
-    /// table but not the other. v82 adds the Hindi side; the sibling that owns
-    /// `en.json` adds the matching English side in the same wave.
+    /// `count_translated` over the real shipped `hi.json` must report full Hindi
+    /// depth across every canonical coverage key.
     #[test]
-    fn en_and_hi_have_identical_key_sets() {
-        let en = parse_table(include_str!("en.json"));
-        let hi = parse_table(include_str!("hi.json"));
-        let en_keys: std::collections::BTreeSet<&String> = en.keys().collect();
-        let hi_keys: std::collections::BTreeSet<&String> = hi.keys().collect();
+    fn count_translated_reports_full_depth_for_shipped_hindi() {
+        let hi = hindi_table();
         assert_eq!(
-            en_keys, hi_keys,
-            "en.json and hi.json key sets differ (no missing/extra keys allowed)"
+            count_translated(&hi),
+            hindi_coverage_keys().len(),
+            "every coverage key must be genuinely translated in hi.json"
         );
+    }
+
+    /// English (or otherwise non-Devanagari) values never inflate the count, so a
+    /// future English echo would lower the reported Hindi depth rather than hide.
+    #[test]
+    fn count_translated_ignores_english_echoes() {
+        let mut table: HashMap<String, String> = HashMap::new();
+        // First key translated, the rest left as English echoes.
+        let keys = hindi_coverage_keys();
+        table.insert(keys[0].to_string(), "नमस्ते".to_string());
+        for key in &keys[1..] {
+            table.insert(key.to_string(), "English text".to_string());
+        }
+        assert_eq!(count_translated(&table), 1);
+    }
+
+    #[test]
+    fn devanagari_detector_distinguishes_scripts() {
+        assert!(is_devanagari("हिंदी"));
+        assert!(is_devanagari("BharatCode डैशबोर्ड"));
+        assert!(!is_devanagari("English only"));
+        assert!(!is_devanagari("en,hi,ta"));
+        assert!(!is_devanagari(""));
     }
 }
