@@ -4940,6 +4940,7 @@ dependencies = [
  "sha2 0.11.0",
  "shlex 2.0.1",
  "sigstore-verify",
+ "sqlx",
  "strum 0.28.0",
  "tar",
  "tempfile",

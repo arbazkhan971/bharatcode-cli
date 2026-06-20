@@ -77,6 +77,19 @@ pub mod verify;
 #[path = "../testgen.rs"]
 pub mod testgen;
 
+// Parallel tool-execution governor (concurrency cap + per-tool timeout) lives in
+// crates/goose/src/tool_governor.rs. It wraps the concurrent tool fan-out built
+// just before `stream::select_all`; registering it here keeps it next to its
+// single shared call site. Off by default (see BHARATCODE_TOOL_* env vars).
+#[path = "../tool_governor.rs"]
+pub mod tool_governor;
+
+// Process-wide governor, read once from the environment. With neither
+// BHARATCODE_TOOL_MAX_INFLIGHT nor BHARATCODE_TOOL_TIMEOUT_SECS set this is a
+// transparent no-op and `wrap_stream` returns each stream untouched.
+static TOOL_GOVERNOR: std::sync::LazyLock<tool_governor::ToolGovernor> =
+    std::sync::LazyLock::new(tool_governor::ToolGovernor::from_env);
+
 const DEFAULT_MAX_TURNS: u32 = 1000;
 const DEFAULT_STOP_HOOK_BLOCK_CAP: u32 = 8;
 const COMPACTION_THINKING_TEXT: &str = "bharatcode is compacting the conversation...";
@@ -2145,6 +2158,8 @@ impl Agent {
                                     let with_id = tool_futures
                                         .into_iter()
                                         .map(|(request_id, stream)| {
+                                            let stream = TOOL_GOVERNOR
+                                                .wrap_stream(request_id.clone(), stream);
                                             stream.map(move |item| (request_id.clone(), item))
                                         })
                                         .collect::<Vec<_>>();

@@ -30,6 +30,14 @@ use tracing::warn;
 #[path = "../semantic_index.rs"]
 mod semantic_index;
 
+// Opt-in streaming throughput meter (BHARATCODE_STREAM_STATS). Registered here
+// via `#[path]` so the feature stays confined to the shared provider-streaming
+// path (where every streamed text delta passes) and its own file. The meter
+// runs cheaply on every turn but only logs a summary when the switch is on, so
+// default behaviour is unchanged.
+#[path = "../stream_meter.rs"]
+mod stream_meter;
+
 /// Wrap a provider stream so that, on successful completion, the fully-assembled
 /// assistant message and final usage are written to the prompt cache under `key`.
 ///
@@ -501,6 +509,13 @@ impl Agent {
             }
         };
 
+        // Lightweight per-turn streaming throughput meter. Built before the
+        // stream is consumed so it captures the full wall time; each yielded
+        // text delta is tee'd through `meter.tick(...)` for measurement only —
+        // streamed items are never altered. A summary is logged on completion
+        // when BHARATCODE_STREAM_STATS is enabled (no-op otherwise).
+        let mut meter = stream_meter::StreamMeter::start();
+
         let produced: MessageStream = Box::pin(try_stream! {
             if config.toolshim {
                 // Toolshim mode: accumulate the full response before processing
@@ -511,6 +526,10 @@ impl Agent {
 
                 while let Some(result) = stream.next().await {
                     let (msg_opt, usage_opt) = result?;
+
+                    if let Some(msg) = &msg_opt {
+                        meter.tick(&msg.as_concat_text());
+                    }
 
                     if let Some(msg) = msg_opt {
                         accumulated_message = Some(match accumulated_message {
@@ -553,8 +572,17 @@ impl Agent {
                 while let Some(result) = stream.next().await {
                     let (message, usage) = result?;
 
+                    if let Some(msg) = &message {
+                        meter.tick(&msg.as_concat_text());
+                    }
+
                     yield (message, usage);
                 }
+            }
+
+            // Stream finished cleanly: emit the throughput summary when opted in.
+            if stream_meter::is_enabled() {
+                debug!("{}", meter.finish().summary_line());
             }
         });
 

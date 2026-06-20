@@ -28,6 +28,7 @@ pub mod cursor_agent;
 pub mod databricks;
 pub mod databricks_auth;
 pub mod databricks_v2;
+pub mod deadline;
 pub mod embeddings;
 pub mod fallback;
 pub mod formats;

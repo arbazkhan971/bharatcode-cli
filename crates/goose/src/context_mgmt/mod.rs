@@ -24,6 +24,7 @@ use tracing::info;
 use tracing::log::warn;
 
 mod diff_compact;
+mod token_cache;
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
@@ -221,7 +222,7 @@ pub async fn check_if_compaction_needed(
             let token_counts: Vec<_> = messages
                 .iter()
                 .filter(|m| m.is_agent_visible())
-                .map(|msg| token_counter.count_chat_tokens("", std::slice::from_ref(msg), &[]))
+                .map(|msg| token_cache::count_cached(&token_counter, msg))
                 .collect();
 
             (token_counts.iter().sum(), "estimated")

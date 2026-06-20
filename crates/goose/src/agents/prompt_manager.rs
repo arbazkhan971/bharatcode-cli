@@ -34,6 +34,13 @@ mod codebase_index;
 #[path = "../plan_mode.rs"]
 pub mod plan_mode;
 
+// Incremental-context repo digest (opt-in via BHARATCODE_REPO_DIGEST). Declared
+// as a child module of prompt_manager via `#[path]` so the wiring stays confined
+// to the prompt-assembly path without touching lib.rs. The block is memoized per
+// working dir + fingerprint inside the module so repeated turns reuse it.
+#[path = "../repo_digest.rs"]
+pub mod repo_digest;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -221,6 +228,19 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // When disabled this is None and the prompt is unchanged.
         if let Some(plan) = plan_mode::plan_block() {
             system_prompt_extras.insert("bharatcode_plan".to_string(), plan);
+        }
+
+        // Incremental-context repo digest (opt-in via BHARATCODE_REPO_DIGEST).
+        // A small, cached structural snapshot (top-level layout + content
+        // fingerprint) memoized per working dir so repeated turns reuse the
+        // cached string unless the tree changes. When disabled or the working
+        // directory is unreadable this is None and the prompt is byte-identical.
+        if repo_digest::is_enabled() {
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Some(block) = repo_digest::digest_block(&cwd) {
+                    system_prompt_extras.insert("bharatcode_repo_digest".to_string(), block);
+                }
+            }
         }
 
         if goose_mode == GooseMode::Chat {

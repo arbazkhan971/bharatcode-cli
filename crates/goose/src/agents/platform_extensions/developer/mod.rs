@@ -2,6 +2,7 @@ pub mod apply_patch;
 pub mod delegate;
 pub mod edit;
 pub mod image;
+pub mod read_lines;
 pub mod redact;
 pub mod refactor;
 pub mod shell;
@@ -19,6 +20,7 @@ use delegate::{DelegateParams, DelegateTool};
 use edit::{EditTools, FileEditParams, FileWriteParams};
 use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
+use read_lines::{ReadLinesParams, ReadLinesTool};
 use refactor::{RefactorParams, RefactorTool};
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
@@ -39,6 +41,7 @@ pub struct DeveloperClient {
     shell_tool: Arc<ShellTool>,
     edit_tools: Arc<EditTools>,
     tree_tool: Arc<TreeTool>,
+    read_lines_tool: Arc<ReadLinesTool>,
     image_tool: Arc<ImageTool>,
     web_search_tool: Arc<WebSearchTool>,
     refactor_tool: Arc<RefactorTool>,
@@ -92,6 +95,7 @@ impl DeveloperClient {
             shell_tool: Arc::new(ShellTool::new(context.use_login_shell_path)?),
             edit_tools: Arc::new(EditTools::new()),
             tree_tool: Arc::new(TreeTool::new()),
+            read_lines_tool: Arc::new(ReadLinesTool::new()),
             image_tool: Arc::new(ImageTool::new()),
             web_search_tool: Arc::new(WebSearchTool::new()),
             refactor_tool: Arc::new(RefactorTool::new()),
@@ -243,6 +247,24 @@ impl DeveloperClient {
                 Some(false),
             )),
             Tool::new(
+                "read_lines".to_string(),
+                "Read a bounded line-range window from a single file (offset + limit) so you \
+                 can navigate huge files without loading the whole thing. Skips `offset` leading \
+                 lines and returns up to `limit` lines (default 200, max ~2000). The slice is also \
+                 capped by a hard byte budget to protect memory, so a single very long line is \
+                 truncated. Reports the file's total line count and a `truncated` flag in the \
+                 structured output. Read-only and byte-bounded."
+                    .to_string(),
+                Self::schema::<ReadLinesParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read Lines".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
                 "read_image".to_string(),
                 "Read an image from a local file path or http(s) URL and return it as image content for the model to inspect. Supports png, jpeg, gif, and webp.".to_string(),
                 Self::schema::<ImageReadParams>(),
@@ -367,6 +389,23 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "read_lines" => match Self::parse_args::<ReadLinesParams>(arguments) {
+                Ok(params) => match self
+                    .read_lines_tool
+                    .read_lines_with_cwd(params, working_dir)
+                {
+                    Ok(result) => Ok(result),
+                    Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Error: {}",
+                        error.message
+                    ))
+                    .with_priority(0.0)])),
+                },
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "read_image" => match Self::parse_args::<ImageReadParams>(arguments) {
                 Ok(params) => {
                     let result = self
@@ -436,6 +475,7 @@ mod tests {
                 "apply_patch",
                 "shell",
                 "tree",
+                "read_lines",
                 "read_image",
                 "web_search",
                 "rename_symbol",

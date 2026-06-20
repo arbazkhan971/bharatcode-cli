@@ -66,6 +66,10 @@ sha2 = { workspace = true }
 sigstore-verify = { version = "0.8", default-features = false, optional = true }
 axum.workspace = true
 clap_complete_nushell = { version = "4", default-features = false }
+# Used by `bharatcode db` to inspect/compact the session database directly.
+# Mirrors the `goose` crate's sqlx config; the tokio runtime feature is supplied
+# transitively via the `rustls-tls` / `native-tls` features below.
+sqlx = { version = "0.8.5", default-features = false, features = ["sqlite", "macros"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 anstream = { version = "1", default-features = false, features = ["wincon"] }
