@@ -1,0 +1,45 @@
+version: "1.0.0"
+title: Offline Benchmark / Eval Harness
+description: >-
+  A deterministic, fully-offline eval harness. It runs a fixed set of embedded
+  task cases through a single headless agent turn against the active local
+  provider, grades each one with an objective grader (substring, regex, or
+  non-empty), and prints a scored report: pass/fail per case, an aggregate
+  pass-rate, and p50/p95 wall-times. Cases and grading are pure data so the
+  harness is unit-testable without any provider.
+
+# This recipe is a data artifact that documents and surfaces the embedded
+# benchmark harness. The cases, graders, and report logic live in the binary
+# (crate entry: `crate::commands::bench::handle_bench`); this YAML records the
+# contract for the serve-sessions / eval consumers that drive the harness
+# programmatically. Per-case wall-time is clamped by BHARATCODE_BENCH_TIMEOUT_SECS
+# (default 60). Grading itself is pure and ungated.
+
+parameters:
+  - key: case
+    input_type: string
+    requirement: optional
+    default: ""
+    description: >-
+      Optional case id to run a single embedded case; empty runs the full suite.
+  - key: json
+    input_type: boolean
+    requirement: optional
+    default: false
+    description: Emit the machine-readable JSON report instead of the table.
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  Run the offline benchmark / eval harness over the embedded task cases.
+  For each (filtered) case:
+    - Send the case prompt through one headless agent turn against the active
+      local provider.
+    - Capture the assistant text and grade it with the case's objective grader
+      (substring-present, regex-match, or non-empty).
+    - Time the turn (clamped to BHARATCODE_BENCH_TIMEOUT_SECS seconds, default 60).
+  Then report pass/fail per case, the aggregate pass-rate, and p50/p95 wall-time.
+  The grading is deterministic and provider-independent; the same case prompt and
+  grader always produce the same verdict for a given assistant output.

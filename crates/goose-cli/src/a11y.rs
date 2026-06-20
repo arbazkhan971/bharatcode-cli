@@ -89,7 +89,7 @@ pub fn suppress_animations() -> bool {
     is_enabled()
 }
 
-fn label(key: &'static str) -> &'static str {
+fn label_text(key: &'static str) -> &'static str {
     labels()
         .get(key)
         .map(String::as_str)
@@ -100,13 +100,64 @@ fn label(key: &'static str) -> &'static str {
 /// A labelled, screen-reader-friendly announcement of a tool request, e.g.
 /// `Tool call: shell`.
 pub fn announce_tool_request(name: &str) -> String {
-    format!("{}: {}", label("a11y.tool_call"), name)
+    format!("{}: {}", label_text("a11y.tool_call"), name)
 }
 
 /// A labelled, screen-reader-friendly announcement of a tool response, e.g.
 /// `Result:`.
 pub fn announce_tool_response() -> String {
-    format!("{}:", label("a11y.result"))
+    format!("{}:", label_text("a11y.result"))
+}
+
+/// Map a streaming role to an ASCII, colon-terminated, screen-reader-announceable
+/// marker. Unknown roles fall back to `Output:` so a raw token never leaks. (v83)
+pub fn label(role: &str) -> &'static str {
+    match role {
+        "assistant" => "Assistant:",
+        "tool" => "Tool:",
+        "tool_result" | "result" => "Result:",
+        "user" => "User:",
+        "system" => "System:",
+        "thinking" => "Thinking:",
+        "error" => "Error:",
+        _ => "Output:",
+    }
+}
+
+/// Decorative glyphs paired with the ASCII word [`plain`] rewrites them to. (v83)
+const GLYPH_WORDS: &[(char, &str)] = &[
+    ('\u{2713}', "OK"),
+    ('\u{2717}', "FAILED"),
+    ('\u{2718}', "FAILED"),
+    ('\u{2705}', "OK"),
+    ('\u{274C}', "FAILED"),
+    ('\u{2192}', "->"),
+    ('\u{25B8}', ">"),
+    ('\u{25B6}', ">"),
+    ('\u{2026}', "..."),
+    ('\u{25CF}', "*"),
+    ('\u{25CB}', "o"),
+    ('\u{2022}', "-"),
+];
+
+/// Strip ANSI escapes and rewrite decorative glyphs to ASCII so output is
+/// linear and screen-reader-announceable. Borrows when nothing changes. (v83)
+pub fn plain(s: &str) -> std::borrow::Cow<'_, str> {
+    let stripped = console::strip_ansi_codes(s);
+    if !stripped
+        .chars()
+        .any(|c| GLYPH_WORDS.iter().any(|(g, _)| *g == c))
+    {
+        return stripped;
+    }
+    let mut out = String::with_capacity(stripped.len());
+    for ch in stripped.chars() {
+        match GLYPH_WORDS.iter().find(|(g, _)| *g == ch) {
+            Some((_, word)) => out.push_str(word),
+            None => out.push(ch),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Return the spelled-out `word` form of a decorative `symbol` when a11y mode

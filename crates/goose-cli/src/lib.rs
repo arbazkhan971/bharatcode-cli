@@ -4,12 +4,14 @@ compile_error!("At least one of `rustls-tls` or `native-tls` features must be en
 #[cfg(all(feature = "rustls-tls", feature = "native-tls"))]
 compile_error!("Features `rustls-tls` and `native-tls` are mutually exclusive");
 
+pub mod a11y;
 pub mod cli;
 pub mod commands;
 pub mod help_index;
 pub mod i18n;
 pub mod keybindings;
 pub mod logging;
+pub mod notify;
 pub mod project_tracker;
 pub mod recipes;
 pub mod scenario_tests;
