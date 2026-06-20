@@ -1,0 +1,29 @@
+version: "1.0.0"
+title: Aadhaar & PII Data-Handling Audit
+description: >-
+  Scan a codebase for unsafe handling of Indian personally identifiable
+  information (Aadhaar, PAN, mobile, bank account) and check alignment with the
+  Digital Personal Data Protection (DPDP) Act expectations: masking, encryption
+  at rest, consent and retention.
+
+parameters:
+  - key: source_dir
+    input_type: string
+    requirement: optional
+    default: "."
+    description: Path to the directory to audit for PII handling.
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  Audit {{ source_dir }} for handling of Indian PII and DPDP Act compliance.
+  Look for:
+    - Aadhaar numbers stored or logged in plaintext (should be masked / tokenised).
+    - PAN, mobile numbers and bank account numbers in logs or analytics events.
+    - Missing encryption at rest for sensitive columns or files.
+    - Absent consent capture or data-retention / deletion paths.
+    - PII leaking into third-party SDKs or error-reporting payloads.
+  Produce a prioritised remediation list with file and line references and a
+  short note on the relevant DPDP principle for each finding.

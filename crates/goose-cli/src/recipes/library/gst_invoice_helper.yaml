@@ -1,0 +1,33 @@
+version: "1.0.0"
+title: GST Invoice & Tax Calculation Helper
+description: >-
+  Generate or review GST-compliant invoicing logic for Indian businesses:
+  CGST / SGST / IGST split, HSN/SAC codes, place-of-supply rules, rounding and
+  GSTIN validation.
+
+parameters:
+  - key: source_dir
+    input_type: string
+    requirement: optional
+    default: "."
+    description: Path to the directory with invoicing / billing code.
+  - key: supply_type
+    input_type: string
+    requirement: optional
+    default: "intra-state"
+    description: "Supply type to model: intra-state (CGST+SGST) or inter-state (IGST)."
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  Review or scaffold GST invoicing logic in {{ source_dir }} for a
+  {{ supply_type }} supply. Ensure:
+    - Correct CGST + SGST split for intra-state and IGST for inter-state supply.
+    - Tax computed per line item on the correct taxable value, then rounded
+      per invoice (not per item) to the nearest rupee.
+    - HSN / SAC codes and GST rate slabs (0, 5, 12, 18, 28) applied correctly.
+    - GSTIN format validation (15 chars: state code + PAN + entity + checksum).
+    - Place-of-supply determines the tax type, not the seller location alone.
+  Output the corrected logic plus a worked example invoice with the tax breakup.

@@ -1,0 +1,33 @@
+version: "1.0.0"
+title: UPI Payment Integration Review
+description: >-
+  Review a UPI / payment-gateway integration (Razorpay, PhonePe, Paytm, Cashfree,
+  NPCI UPI) for correctness, idempotency, webhook signature verification and
+  reconciliation gaps common in Indian fintech codebases.
+
+parameters:
+  - key: source_dir
+    input_type: string
+    requirement: optional
+    default: "."
+    description: Path to the directory containing the payment integration code.
+  - key: provider
+    input_type: string
+    requirement: optional
+    default: "razorpay"
+    description: "Payment provider in use: razorpay, phonepe, paytm, cashfree or npci."
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  Audit the {{ provider }} UPI / payment integration under {{ source_dir }}.
+  Focus on:
+    - Webhook signature verification and replay protection.
+    - Idempotency keys on order creation and capture.
+    - Correct handling of PENDING / SUCCESS / FAILED / REFUND states.
+    - Amount handling in paise (integer) versus rupees (avoid float drift).
+    - Reconciliation between gateway settlement reports and the local ledger.
+    - Secrets / API keys never committed to source control.
+  Report findings grouped by severity with concrete file and line references.

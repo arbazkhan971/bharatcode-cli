@@ -1,0 +1,20 @@
+# Derived from OpenAI Codex `codex-apply-patch` (Apache-2.0, Copyright 2025 OpenAI).
+# See LICENSES/LICENSE-codex and NOTICE.
+[package]
+name = "bharatcode-apply-patch"
+version.workspace = true
+edition = "2024"
+license = "Apache-2.0"
+authors.workspace = true
+description = "Streaming apply-patch parser and std::fs applier, ported from OpenAI Codex (Apache-2.0)"
+
+[lib]
+name = "bharatcode_apply_patch"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

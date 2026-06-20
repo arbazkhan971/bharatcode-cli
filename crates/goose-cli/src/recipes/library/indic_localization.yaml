@@ -1,0 +1,34 @@
+version: "1.0.0"
+title: Indic Language Localization Helper
+description: >-
+  Add or review localization for Indian languages (Hindi, Tamil, Bengali,
+  Telugu, Marathi and more): externalise hard-coded strings, handle Unicode /
+  Devanagari rendering, Indian number formatting (lakh / crore) and locale-aware
+  date and currency display.
+
+parameters:
+  - key: source_dir
+    input_type: string
+    requirement: optional
+    default: "."
+    description: Path to the directory whose UI strings should be localized.
+  - key: target_locale
+    input_type: string
+    requirement: optional
+    default: "hi-IN"
+    description: "Target Indic locale, e.g. hi-IN, ta-IN, bn-IN, te-IN, mr-IN."
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  Help localize the project in {{ source_dir }} for the {{ target_locale }} locale.
+  Steps:
+    - Find user-facing hard-coded strings that are not routed through an i18n layer.
+    - Propose externalised keys and a translation table entry for each string.
+    - Verify Unicode-safe handling of Devanagari and other Indic scripts
+      (no byte-index slicing that breaks combining characters).
+    - Use the Indian numbering system (lakh / crore grouping) where appropriate.
+    - Format dates as DD/MM/YYYY and currency with the rupee symbol per locale.
+  Return the extracted keys, suggested translations and the code changes needed.
