@@ -28,6 +28,7 @@ pub mod cursor_agent;
 pub mod databricks;
 pub mod databricks_auth;
 pub mod databricks_v2;
+pub mod fallback;
 pub mod formats;
 mod gcpauth;
 pub mod gcpvertexai;

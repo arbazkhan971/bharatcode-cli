@@ -31,5 +31,21 @@
   "review.no_changes": "bharatcode review: समीक्षा के लिए कोई बदलाव नहीं",
   "review.prompt_instructions": "आप नीचे दिए गए git diff की समीक्षा कर रहे हैं। correctness bugs, security समस्याएँ और स्पष्ट simplifications पहचानें। हर finding के लिए file और line बताएँ, समस्या समझाएँ और एक सुधार सुझाएँ। संक्षिप्त रहें और प्रशंसा छोड़ें। यदि कोई सार्थक समस्या न हो तो वैसा बताएँ।",
   "review.findings_header": "## समीक्षा निष्कर्ष",
-  "review.scope_working_tree": "working tree बनाम HEAD"
+  "review.scope_working_tree": "working tree बनाम HEAD",
+  "privacy.title": "BharatCode गोपनीयता स्थिति",
+  "privacy.subtitle": "इस session के लिए हल की गई data-governance स्थिति",
+  "privacy.row_residency": "डेटा निवास (residency)",
+  "privacy.row_offline": "ऑफ़लाइन / no-egress",
+  "privacy.row_redact": "गुप्त जानकारी redaction",
+  "privacy.row_audit": "DPDP ऑडिट लॉग",
+  "privacy.row_telemetry": "टेलीमेट्री",
+  "privacy.row_provider": "लोकल-फर्स्ट provider",
+  "privacy.row_egress": "Egress गार्ड",
+  "privacy.src_offline_forced": "ऑफ़लाइन मोड द्वारा बाध्य (BHARATCODE_OFFLINE)",
+  "privacy.src_builtin": "अंतर्निहित (टेलीमेट्री अक्षम)",
+  "privacy.src_builtin_guard": "अंतर्निहित egress गार्ड",
+  "privacy.egress_enforcing": "स्थापित (लागू किया जा रहा है)",
+  "privacy.egress_passthrough": "स्थापित (पास-थ्रू)",
+  "privacy.locked_down": "सभी स्तंभ सुरक्षित: strict residency, ऑफ़लाइन, redaction चालू, टेलीमेट्री बंद, लोकल provider।",
+  "privacy.hint": "स्थिति कड़ी करें: BHARATCODE_OFFLINE=1, BHARATCODE_RESIDENCY=strict, BHARATCODE_REDACT=1, BHARATCODE_AUDIT=1।"
 }

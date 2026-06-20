@@ -30,6 +30,7 @@ pub mod logging;
 pub mod mcp_utils;
 pub mod memory_store;
 pub mod model_config;
+pub mod model_registry;
 pub mod oauth;
 pub mod offline;
 #[cfg(feature = "otel")]
