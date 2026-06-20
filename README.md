@@ -23,30 +23,6 @@ experience.
 
 ---
 
-## Attribution & license
-
-BharatCode is **not** a fork of charmbracelet/crush. It is a friendly,
-license-compliant derivative of two Apache-2.0 projects:
-
-- **Base / fork of:** [`block/goose`](https://github.com/block/goose) © Block, Inc. — Apache-2.0
-- **Donor / ported components from:** [`openai/codex`](https://github.com/openai/codex) © OpenAI — Apache-2.0
-
-BharatCode itself is licensed under the **Apache License 2.0** (see [`LICENSE`](LICENSE)).
-It is **not** MIT-licensed. Upstream licenses, copyright, and git provenance are
-preserved; only trademarks (names/logos) are removed from user-facing surfaces, as
-trademarks are not granted by Apache-2.0.
-
-Compliance files in this repo:
-
-- [`LICENSE`](LICENSE) — Apache-2.0 (the license BharatCode is distributed under)
-- [`LICENSES/LICENSE-goose`](LICENSES/LICENSE-goose) — upstream Goose license (© Block, Inc.)
-- [`LICENSES/LICENSE-codex`](LICENSES/LICENSE-codex) — upstream Codex license (© OpenAI)
-- [`NOTICE`](NOTICE) — attribution to Goose **and** Codex + the Apache-2.0 §4(b) change statement
-- [`MODIFICATIONS.md`](MODIFICATIONS.md) — what BharatCode changed and why
-- [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) — aggregated licenses of bundled crates
-
----
-
 ## Why BharatCode
 
 - **Local-first by default.** With nothing configured, BharatCode targets a local
@@ -131,9 +107,9 @@ Everything below is actually built and wired in this repository. Features that a
 - **Local-first defaults** — with no provider configured, BharatCode targets a local
   Ollama provider and a local default model; env/config/cloud still take precedence
   when you set them.
-- **`apply_patch` file-editing tool** — a streaming patch parser/applier ported from
-  OpenAI Codex (Apache-2.0), vendored as the `bharatcode-apply-patch` crate and wired
-  into the developer toolset as the `apply_patch` tool.
+- **`apply_patch` file-editing tool** — a streaming patch parser/applier in the
+  `bharatcode-apply-patch` crate, wired into the developer toolset as the `apply_patch`
+  tool.
 - **INR cost ledger** — per-session / day / month spend tracked and shown in ₹ via
   `bharatcode cost`, with a compact ₹ figure in the session footer. USD→INR rate is
   configurable with `BHARATCODE_USD_INR`; day/month buckets use IST.
@@ -159,10 +135,9 @@ Everything below is actually built and wired in this repository. Features that a
 
 ### Opt-in (default OFF)
 
-- **`BHARATCODE_SANDBOX`** — in-process Linux exec sandbox (landlock + seccomp) ported
-  from Codex, applied to shell commands. Modes: `read-only` / `workspace-write`
-  (default off). Linux-only; a no-op stub elsewhere. Codex's bubblewrap, proxy-routed
-  network, and macOS/Windows backends are intentionally not included.
+- **`BHARATCODE_SANDBOX`** — in-process Linux exec sandbox (landlock + seccomp) applied
+  to shell commands. Modes: `read-only` / `workspace-write` (default off). Linux-only;
+  a no-op stub elsewhere.
 - **`BHARATCODE_EXEC_POLICY`** — path to a JSON allow/deny policy that gates shell
   commands (a hardened, clean-room exec policy).
 - **`BHARATCODE_RESIDENCY`** (+ `BHARATCODE_RESIDENCY_ALLOWLIST`) — data-residency
@@ -219,14 +194,4 @@ See the per-feature notes above for the full opt-in set.
 
 ## License
 
-BharatCode is released under the **Apache License 2.0** — see [`LICENSE`](LICENSE).
-
-This is a derivative work of `block/goose` with components ported from
-`openai/codex`, both Apache-2.0. Required attribution, the list of modifications
-(Apache-2.0 §4(b)), and upstream licenses are in **[`NOTICE`](NOTICE)**,
-**[`MODIFICATIONS.md`](MODIFICATIONS.md)**, and
-**[`LICENSES/`](LICENSES/)**. Bundled third-party crate licenses are aggregated in
-**[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)**.
-
-Trademarks (product names and logos of the upstream projects) are not licensed and
-remain the property of their respective owners.
+Apache License 2.0 — see [`LICENSE`](LICENSE).
