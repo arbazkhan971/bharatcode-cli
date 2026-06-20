@@ -25,6 +25,19 @@ pub struct SessionHandle {
     accesses: Arc<AtomicU64>,
 }
 
+/// Two handles are equal when they describe the same session slot (id +
+/// creation instant). The shared access counter is mutable usage telemetry, not
+/// identity, so it is intentionally excluded from equality — this also lets a
+/// handle be compared inside `Result`/`assert_eq!` without requiring
+/// `PartialEq` on the non-comparable atomic counter.
+impl PartialEq for SessionHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.created_at == other.created_at
+    }
+}
+
+impl Eq for SessionHandle {}
+
 impl SessionHandle {
     /// Create a handle for a freshly registered session id.
     pub fn new(id: impl Into<String>) -> Self {

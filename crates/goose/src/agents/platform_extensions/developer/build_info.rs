@@ -137,8 +137,7 @@ mod tests {
     fn text_of(result: &CallToolResult) -> String {
         result
             .content
-            .as_ref()
-            .and_then(|items| items.first())
+            .first()
             .and_then(|c| match &c.raw {
                 RawContent::Text(t) => Some(t.text.clone()),
                 _ => None,

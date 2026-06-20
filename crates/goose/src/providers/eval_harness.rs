@@ -300,7 +300,7 @@ impl EvalSuite {
     /// expectations is a *failing scenario*, not an error.
     pub async fn run<F, Fut>(&self, mut turn: F) -> Result<EvalReport, EvalError>
     where
-        F: FnMut(&EvalScenario) -> Fut,
+        F: FnMut(EvalScenario) -> Fut,
         Fut: Future<Output = TurnOutput>,
     {
         let mut outcomes = Vec::with_capacity(self.scenarios.len());
@@ -310,7 +310,7 @@ impl EvalSuite {
             let compiled = scenario.expect.compile_regexes()?;
 
             let started = Instant::now();
-            let output = turn(scenario).await;
+            let output = turn(scenario.clone()).await;
             let latency_ms = started.elapsed().as_millis();
 
             let failures = scenario.expect.unmet(&output, &compiled);
@@ -355,7 +355,7 @@ mod tests {
     /// An echoing turn function: the reply is exactly the prompt. With the suite
     /// above this passes scenario 1 (prompt contains "hello world") and fails
     /// scenario 2 (prompt does not contain "the answer is 4").
-    async fn echo_turn(scenario: &EvalScenario) -> TurnOutput {
+    async fn echo_turn(scenario: EvalScenario) -> TurnOutput {
         TurnOutput::text(scenario.prompt.clone())
     }
 
@@ -433,7 +433,9 @@ scenarios:
 
         // Turn that DID invoke the expected tool -> pass.
         let with_tool = suite
-            .run(|s| async move { TurnOutput::text(s.prompt.clone()).with_tool("web_search") })
+            .run(|s: EvalScenario| async move {
+                TurnOutput::text(s.prompt.clone()).with_tool("web_search")
+            })
             .await
             .unwrap();
         assert_eq!(with_tool.passed(), 1);
