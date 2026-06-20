@@ -9,6 +9,13 @@ pub mod streaming_buffer;
 mod task_execution_display;
 mod thinking;
 
+// Plan-mode plan-file persistence lives under crates/goose-cli/src/commands/.
+// commands/mod.rs does not list it, so it is pulled in here via #[path] (the same
+// out-of-tree-module precedent as `verify` in agents/agent.rs) and reached only
+// from plan mode below.
+#[path = "../commands/plan_file.rs"]
+mod plan_file;
+
 use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
 };
@@ -898,7 +905,32 @@ impl CliSession {
         plan_messages.push(Message::user().with_text(&options.message_text));
 
         let reasoner = get_reasoner().await?;
-        self.plan_with_reasoner_model(plan_messages, reasoner).await
+        self.plan_with_reasoner_model(plan_messages, reasoner)
+            .await?;
+
+        // BharatCode v42: optionally persist the reasoner-produced plan to a
+        // markdown plan-file so it survives across turns/sessions. Default OFF
+        // (gated on BHARATCODE_PLAN_FILE): with the flag unset this whole block
+        // is skipped and the plan flow is byte-identical. The reasoner's plan is
+        // the latest message left on the conversation by plan_with_reasoner_model.
+        if plan_file::is_enabled() {
+            if let Some(plan_text) = self.messages.last().map(|m| m.as_concat_text()) {
+                if !plan_text.trim().is_empty() {
+                    match plan_file::save_plan(&self.session_id, &plan_text) {
+                        Ok(()) => {
+                            if let Some(pointer) = plan_file::latest_pointer(&self.session_id) {
+                                println!("  {}", console::style(pointer).dim());
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("plan-file: failed to save plan: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_clear(&mut self) -> Result<()> {

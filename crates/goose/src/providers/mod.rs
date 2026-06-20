@@ -54,6 +54,7 @@ pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
 pub mod pi_acp;
+pub mod planner_presets;
 pub mod provider_registry;
 pub mod provider_test;
 mod retry {

@@ -22,6 +22,12 @@ use std::path::Path;
 #[path = "../provider_caps.rs"]
 mod provider_caps;
 
+// Codebase semantic index (opt-in via BHARATCODE_CODEBASE_INDEX). Declared as a
+// child module of prompt_manager via `#[path]` so the wiring stays confined to
+// the prompt-assembly path without touching lib.rs.
+#[path = "codebase_index.rs"]
+mod codebase_index;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -191,6 +197,18 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // prompt is unchanged.
         if let Some(caps) = provider_caps::capability_block() {
             system_prompt_extras.insert("bharatcode_model_caps".to_string(), caps);
+        }
+
+        // Codebase semantic index (opt-in via BHARATCODE_CODEBASE_INDEX). The
+        // empty query makes the index derive a deterministic, repo-layout based
+        // query so the injected block stays cache-stable across sessions. When
+        // disabled or empty this is None and the prompt is byte-identical.
+        if codebase_index::is_enabled() {
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Some(block) = codebase_index::relevant_files_block(&cwd, "") {
+                    system_prompt_extras.insert("bharatcode_codebase_index".to_string(), block);
+                }
+            }
         }
 
         if goose_mode == GooseMode::Chat {

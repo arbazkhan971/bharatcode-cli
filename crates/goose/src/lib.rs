@@ -54,6 +54,7 @@ pub mod skills;
 pub mod slash_commands;
 pub mod source_roots;
 pub mod sources;
+pub mod subagent_profiles;
 pub mod subprocess;
 pub mod token_counter;
 pub mod tool_inspection;

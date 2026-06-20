@@ -16,6 +16,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+// Agent-capability toggles (v41-v49) are read through the typed
+// `get_bharatcode_*` getters registered below. The reader/summary helpers live
+// in `agent_caps.rs`, wired in here (rather than via lib.rs) so the module is
+// reachable from the running binary alongside its config keys.
+#[path = "../agent_caps.rs"]
+pub(crate) mod agent_caps;
+
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -536,6 +543,14 @@ impl Config {
         }
 
         Ok(map)
+    }
+
+    /// Human-readable `key = on/off` rows for the v41-v49 agent-capability
+    /// toggles, resolved from this config via the typed `get_bharatcode_*`
+    /// getters. Used by `bharatcode configure`/doctor to surface which
+    /// capabilities are active.
+    pub fn agent_caps_summary(&self) -> Vec<String> {
+        agent_caps::summary_lines_for_config(self)
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
@@ -1140,6 +1155,18 @@ config_value!(BHARATCODE_PROMPT_EDITOR_ALWAYS, Option<bool>);
 config_value!(BHARATCODE_MAX_ACTIVE_AGENTS, usize);
 config_value!(BHARATCODE_DISABLE_SESSION_NAMING, bool);
 config_value!(BHARATCODE_DISABLE_TOOL_CALL_SUMMARY, bool);
+
+// Agent-capability toggles (v41-v49). Registered as first-class typed getters
+// so `bharatcode configure`/doctor can read them via the standard accessor path
+// (which layers env over the config file) instead of raw env lookups. All
+// default-empty, so default behaviour is unchanged. The resolver/summary
+// helpers live in `agent_caps` (wired via the `#[path]` mod decl above).
+config_value!(BHARATCODE_SUBAGENTS, String);
+config_value!(BHARATCODE_PLAN_FILE, String);
+config_value!(BHARATCODE_CODEBASE_INDEX, String);
+config_value!(BHARATCODE_DIFF_COMPACT, String);
+config_value!(BHARATCODE_PLANNER_MODEL, String);
+config_value!(BHARATCODE_MIGRATE, String);
 
 impl Config {
     pub fn get_bharatcode_context_limit(&self) -> Result<Option<usize>, ConfigError> {
