@@ -25,7 +25,7 @@ const TA_JSON: &str = include_str!("../src/i18n/ta.json");
 
 /// Keys whose values are structural locale-code data rather than prose, and so
 /// are deliberately identical across every locale table.
-const STRUCTURAL_KEYS: &[&str] = &["meta.locales"];
+const STRUCTURAL_KEYS: &[&str] = &["meta.locales", "version.product"];
 
 fn load(label: &str, raw: &str) -> BTreeMap<String, String> {
     serde_json::from_str(raw).unwrap_or_else(|e| panic!("i18n: {label} is not valid JSON: {e}"))
