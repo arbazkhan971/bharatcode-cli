@@ -23,6 +23,16 @@ use std::time::Duration;
 use super::streaming_buffer::MarkdownBuffer;
 use crate::commands::cost_ledger;
 
+#[path = "../a11y.rs"]
+mod a11y;
+
+/// Screen-reader-friendly *plain* rewriting of the session ready banner
+/// (opt-in, default OFF). Distinct from the `a11y` mode module above: this owns
+/// the [`a11y_banner::plainify`] glyph stripper used only at the ready-banner
+/// render site, gated on `BHARATCODE_A11Y` / `BHARATCODE_SCREEN_READER`.
+#[path = "a11y.rs"]
+mod a11y_banner;
+
 pub const DEFAULT_MIN_PRIORITY: f32 = 0.0;
 pub const DEFAULT_CLI_LIGHT_THEME: &str = "GitHub";
 pub const DEFAULT_CLI_DARK_THEME: &str = "zenburn";
@@ -167,6 +177,9 @@ thread_local! {
 }
 
 pub fn show_thinking() {
+    if a11y::suppress_animations() {
+        return;
+    }
     if std::io::stdout().is_terminal() {
         THINKING.with(|t| t.borrow_mut().show());
     }
@@ -481,6 +494,14 @@ fn render_thinking_streaming(
 }
 
 fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
+    if a11y::is_enabled() {
+        if let Ok(call) = &req.tool_call {
+            let (tool, _extension) = split_tool_name(&call.name);
+            println!("{}", a11y::announce_tool_request(&tool));
+            print_params(&call.arguments, 1, debug);
+            return;
+        }
+    }
     match &req.tool_call {
         Ok(call) => match call.name.to_string().as_str() {
             name if is_shell_tool_name(name) => render_shell_request(call, debug),
@@ -498,6 +519,10 @@ fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
 
 fn render_tool_response(resp: &ToolResponse, debug: bool) {
     let config = Config::global();
+
+    if a11y::is_enabled() {
+        println!("{}", a11y::announce_tool_response());
+    }
 
     match &resp.tool_result {
         Ok(result) => {
@@ -939,12 +964,13 @@ fn render_subagent_tool_graph(subagent_id: &str, tool_graph: &[Value]) {
 
 fn print_tool_header(call: &CallToolRequestParams) {
     let (tool, extension) = split_tool_name(&call.name);
+    let marker = a11y::glyph_or_word("▸", "Tool call:");
     let tool_header = if extension.is_empty() {
-        format!("  {} {}", style("▸").dim(), style(&tool).dim())
+        format!("  {} {}", style(&marker).dim(), style(&tool).dim())
     } else {
         format!(
             "  {} {} {}",
-            style("▸").dim(),
+            style(&marker).dim(),
             style(&tool).dim(),
             style(extension).magenta().dim(),
         )
@@ -1344,11 +1370,19 @@ pub fn display_session_info(
             style(format!("  {}", cwd_display)).dim(),
         );
     }
-    println!(
-        "  {}  {}",
-        style("   L L").white(),
-        style(format!("   {}", crate::tr!("session.ready"))).white()
-    );
+    let ready = crate::tr!("session.ready");
+    if a11y_banner::is_enabled() {
+        // Screen-reader plain mode: drop the ASCII-art leg glyphs and any
+        // decorative chrome in the message, and skip color styling (the escape
+        // codes are themselves noise to a screen reader).
+        println!("  {}", a11y_banner::plainify(&format!("L L   {ready}")));
+    } else {
+        println!(
+            "  {}  {}",
+            style("   L L").white(),
+            style(format!("   {ready}")).white()
+        );
+    }
 }
 
 fn set_terminal_title() {

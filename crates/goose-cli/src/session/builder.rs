@@ -42,6 +42,13 @@ mod recipe_lock;
 #[path = "../commands/git_context.rs"]
 mod git_context;
 
+// Embedded quick-start tutorials and the first-run nudge. Lives under
+// `commands/`, but `commands/mod.rs` is owned by a sibling in this wave, so it
+// is declared here (the file that wires the nudge into the session build path)
+// via an explicit `#[path]`.
+#[path = "../commands/tutorials.rs"]
+mod tutorials;
+
 const EXTENSION_HINT_MAX_LEN: usize = 5;
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
@@ -523,6 +530,27 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     #[cfg(feature = "telemetry")]
     goose::posthog::set_session_context("cli", session_config.resume);
 
+    // Direct, opt-in access to the embedded quick-start tutorials without
+    // starting a session: `BHARATCODE_TUTORIAL=list` prints the index, and
+    // `BHARATCODE_TUTORIAL=<id>` prints a single guide. This keeps the tutorials
+    // reachable in the running binary; default (unset) behaviour is unchanged.
+    if let Ok(arg) = std::env::var("BHARATCODE_TUTORIAL") {
+        let arg = arg.trim();
+        if !arg.is_empty() {
+            match arg {
+                "list" => println!("{}", tutorials::list()),
+                id => match tutorials::show(id) {
+                    Some(body) => println!("{body}"),
+                    None => {
+                        eprintln!("{}", tutorials::list());
+                        process::exit(1);
+                    }
+                },
+            }
+            process::exit(0);
+        }
+    }
+
     // Best-effort, non-blocking physical-integrity quick-check of the session
     // database before the agent/session is constructed. A healthy DB or a check
     // that cannot run is silent; corruption warns (and, with
@@ -717,6 +745,15 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 Ok(outcome) => tracing::info!(?outcome, "recipe lock"),
                 Err(e) => tracing::warn!(%e, "recipe lock failed"),
             }
+        }
+    }
+
+    // First-run nudge: on the very first run (no session database yet), print a
+    // single localized line pointing new users at `bharatcode tutorials`.
+    // Suppressible via BHARATCODE_NO_NUDGE; silent for every established user.
+    if !session_config.quiet {
+        if let Some(nudge) = tutorials::first_run_nudge() {
+            println!("{}", crate::theme::muted(nudge));
         }
     }
 

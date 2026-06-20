@@ -41,6 +41,13 @@ mod cost_extensions;
 #[path = "ci_report.rs"]
 mod ci_report;
 
+// Compact ₹ cost dashboard, declared inline next to its only call site (the
+// early dashboard branch in `handle_cost`). Mirrors the `patch_stats` pattern so
+// wiring it does not widen the `commands` module surface. Opt-in via the env
+// gate `BHARATCODE_COST_DASHBOARD`; default OFF => existing cost output.
+#[path = "cost_dashboard.rs"]
+mod cost_dashboard;
+
 /// Options for the `cost` subcommand.
 pub struct CostOptions {
     /// Show every session with a recorded cost instead of just the most recent.
@@ -180,6 +187,26 @@ fn render_known_models(rate: f64, candidates: &[String], active: Option<&str>) {
 /// Entry point for `bharatcode cost`.
 pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
     let ledger = cost_ledger::build_ledger().await?;
+
+    // Compact dashboard view: opt-in via the `BHARATCODE_COST_DASHBOARD` env
+    // gate only (the `cost` CLI surface is owned elsewhere). Builds on the same
+    // ledger, paints the themed panel itself (colour routed through theme roles
+    // so it honours NO_COLOR), and returns early so plain `bharatcode cost` is
+    // byte-identical when the gate is unset.
+    if cost_dashboard::is_enabled() {
+        let active_model = Config::global().get_bharatcode_model().ok();
+        let candidates = candidate_models().await;
+        print!(
+            "{}",
+            cost_dashboard::render_dashboard(
+                &ledger,
+                ledger.rate,
+                &candidates,
+                active_model.as_deref(),
+            )
+        );
+        return Ok(());
+    }
 
     println!();
     println!(

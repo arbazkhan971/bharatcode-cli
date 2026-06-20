@@ -460,6 +460,7 @@ fn print_help() {
         "help.footer",
         "Tip: start any line with '/' to autocomplete the commands above.",
     );
+    let help_index_hint = crate::commands::help_index::help_footer_line();
 
     println!(
         "{title}
@@ -497,7 +498,8 @@ fn print_help() {
   Ctrl+{newline_key}                 Insert a newline (configurable via BHARATCODE_CLI_NEWLINE_KEY)
   Up / Down arrows       Browse command history
 
-{footer}"
+{footer}
+{help_index_hint}"
     );
 }
 
