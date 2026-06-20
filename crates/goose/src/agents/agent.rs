@@ -71,6 +71,12 @@ use tracing::{debug, error, info, instrument, warn};
 #[path = "../verify.rs"]
 pub mod verify;
 
+// Post-edit test-generation nudge lives in crates/goose/src/testgen.rs. It shares
+// the same finalization point as the verify hook below; registering it here keeps
+// the feature self-contained.
+#[path = "../testgen.rs"]
+pub mod testgen;
+
 const DEFAULT_MAX_TURNS: u32 = 1000;
 const DEFAULT_STOP_HOOK_BLOCK_CAP: u32 = 8;
 const COMPACTION_THINKING_TEXT: &str = "bharatcode is compacting the conversation...";
@@ -133,6 +139,44 @@ fn stop_hook_block_cap_warning(plugin: &str, cap: u32) -> Message {
             "Stop hook `{plugin}` blocked the turn from ending more than {cap} consecutive times — overriding and ending turn to avoid an infinite loop. Set BHARATCODE_STOP_HOOK_BLOCK_CAP to raise this limit."
         ),
     )
+}
+
+/// Best-effort list of files changed in the working tree, derived from
+/// `git status --porcelain`. Returns absolute paths (joined onto `working_dir`)
+/// for the post-edit test-generation nudge. Any failure (no git, not a repo,
+/// spawn error) yields an empty list so the caller silently skips the nudge.
+async fn git_changed_files(working_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let output = tokio::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(working_dir)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut files = Vec::new();
+    for line in text.lines() {
+        // Porcelain lines are `XY <path>`; renames use `orig -> new`.
+        let rest = line.get(3..).unwrap_or("").trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let path = rest.rsplit(" -> ").next().unwrap_or(rest).trim();
+        let path = path.trim_matches('"');
+        if path.is_empty() {
+            continue;
+        }
+        files.push(working_dir.join(path));
+    }
+    files
 }
 
 /// Context needed for the reply function
@@ -2588,6 +2632,18 @@ impl Agent {
                             status_line,
                         ),
                     );
+                }
+
+                if testgen::is_enabled() {
+                    let changed_files = git_changed_files(&working_dir).await;
+                    if let Some(nudge) = testgen::suggest_testgen(&changed_files) {
+                        yield AgentEvent::Message(
+                            Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                nudge,
+                            ),
+                        );
+                    }
                 }
             }
 

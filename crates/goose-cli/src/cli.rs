@@ -52,6 +52,12 @@ mod model_pack;
 #[path = "commands/gen_tests.rs"]
 mod gen_tests;
 
+// `commands/mod.rs` is contended in this wave, so the multi-file refactor
+// preview subcommand is declared here (the file that owns this feature) via an
+// explicit `#[path]`, keeping `commands/mod.rs` untouched.
+#[path = "commands/refactor.rs"]
+mod refactor;
+
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -1286,6 +1292,32 @@ enum Command {
         #[arg(long = "write")]
         write: bool,
     },
+    /// Multi-file find/replace preview (dry-run by default).
+    ///
+    /// Walks the working tree honouring `.gitignore`, does a literal substring
+    /// replacement of `--find` with `--replace`, prints a per-file diff preview
+    /// of the matches, and only writes to disk when `--apply` is passed.
+    #[command(
+        about = "Preview a gitignore-respecting multi-file find/replace (dry-run unless --apply)"
+    )]
+    Refactor {
+        /// Literal substring to search for (not a regex).
+        #[arg(long, value_name = "PATTERN")]
+        find: String,
+
+        /// Replacement string substituted for every occurrence of --find.
+        #[arg(long, value_name = "STRING")]
+        replace: String,
+
+        /// Optional glob restricting which files are scanned (e.g. '*.rs').
+        #[arg(long, value_name = "GLOB")]
+        glob: Option<String>,
+
+        /// Write changes to disk. Without this flag the run is a dry preview.
+        #[arg(long)]
+        apply: bool,
+    },
+
     #[command(
         name = "validate-extensions",
         about = "Validate a bundled-extensions.json file",
@@ -1469,6 +1501,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::ReviewDiff { .. }) => "review-diff",
         Some(Command::GenTests { .. }) => "gen-tests",
         Some(Command::GenDocs { .. }) => "gen-docs",
+        Some(Command::Refactor { .. }) => "refactor",
         Some(Command::ValidateExtensions { .. }) => "validate-extensions",
         None => "default_session",
     }
@@ -2390,6 +2423,17 @@ pub async fn cli() -> anyhow::Result<()> {
             })
             .await
         }
+        Some(Command::Refactor {
+            find,
+            replace,
+            glob,
+            apply,
+        }) => refactor::handle_refactor(refactor::RefactorOptions {
+            find,
+            replace,
+            glob,
+            apply,
+        }),
         Some(Command::ValidateExtensions { file }) => {
             use goose::agents::validate_extensions::validate_bundled_extensions;
             match validate_bundled_extensions(&file) {

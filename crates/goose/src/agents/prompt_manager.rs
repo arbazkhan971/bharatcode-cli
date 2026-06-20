@@ -28,6 +28,12 @@ mod provider_caps;
 #[path = "codebase_index.rs"]
 mod codebase_index;
 
+// Explicit plan-mode planner block (opt-in via BHARATCODE_PLAN). Declared inline
+// via `#[path]` so the feature stays confined to the prompt-assembly path and
+// its own file, keeping lib.rs untouched.
+#[path = "../plan_mode.rs"]
+pub mod plan_mode;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -209,6 +215,12 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
                     system_prompt_extras.insert("bharatcode_codebase_index".to_string(), block);
                 }
             }
+        }
+
+        // Explicit plan-mode planner directive (opt-in via BHARATCODE_PLAN).
+        // When disabled this is None and the prompt is unchanged.
+        if let Some(plan) = plan_mode::plan_block() {
+            system_prompt_extras.insert("bharatcode_plan".to_string(), plan);
         }
 
         if goose_mode == GooseMode::Chat {

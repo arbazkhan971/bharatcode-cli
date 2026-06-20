@@ -1,3 +1,9 @@
+// Opt-in doc-generation context preservation. Declared inline against the
+// shared source file so the digest helper lives beside its only call site
+// (`do_compact`) without adding a new top-level `pub mod`.
+#[path = "../docgen.rs"]
+mod docgen;
+
 use crate::conversation::message::{ActionRequiredData, MessageMetadata};
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::{merge_consecutive_messages, Conversation};
@@ -316,11 +322,21 @@ async fn do_compact(
     // current behavior.
     let budget = (provider.get_model_config().context_limit() as f64 * DEFAULT_COMPACTION_THRESHOLD)
         as usize;
-    let agent_visible_messages = if diff_compact::is_enabled() {
+    let mut agent_visible_messages = if diff_compact::is_enabled() {
         diff_compact::select_diff_aware_owned(&agent_visible_messages, budget)
     } else {
         agent_visible_messages
     };
+
+    // Opt-in doc-gen preservation: when BHARATCODE_DOCGEN is enabled, distill the
+    // public-API surface from code shared in the conversation and prepend it as a
+    // retained note so those symbols survive compaction (the model is being asked
+    // to document them). Disabled by default => `None` => compaction unchanged.
+    if docgen::is_enabled() {
+        if let Some(digest) = docgen::api_digest_block(&agent_visible_messages) {
+            agent_visible_messages.insert(0, Message::user().with_text(digest));
+        }
+    }
 
     // Try progressively removing more tool response messages from the middle to reduce context length
     let removal_percentages = [0, 10, 20, 50, 100];

@@ -14,6 +14,7 @@ pub mod recipes;
 pub mod scenario_tests;
 pub mod session;
 pub mod signal;
+pub mod subagent_settings;
 pub mod theme;
 
 // Re-export commonly used types

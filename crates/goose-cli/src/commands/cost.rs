@@ -17,6 +17,12 @@ use goose::utils::safe_truncate;
 
 use crate::commands::cost_ledger::{self, format_inr, format_inr_compact, SessionCost};
 
+// Apply-patch hunk stats, declared inline so the helper lives next to its only
+// caller without widening the `commands` module surface. Used below to render a
+// "Recent patch activity" footer when a session patch sidecar is present.
+#[path = "patch_stats.rs"]
+mod patch_stats;
+
 /// Options for the `cost` subcommand.
 pub struct CostOptions {
     /// Show every session with a recorded cost instead of just the most recent.
@@ -201,6 +207,20 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
     let active_model = Config::global().get_bharatcode_model().ok();
     let candidates = candidate_models().await;
     render_known_models(ledger.rate, &candidates, active_model.as_deref());
+
+    // Optional "Recent patch activity" footer. Rendered only when a session
+    // patch sidecar exists and holds an apply-patch envelope; absent that data
+    // nothing is printed, keeping the default cost output byte-identical.
+    if let Some(envelope) = patch_stats::recent_patch_envelope() {
+        let stats = patch_stats::parse_patch_stats(&envelope);
+        if !stats.is_empty() {
+            println!(
+                "  {} {}",
+                style(label("cost.patch_activity", "Recent patch activity:")).bold(),
+                crate::theme::muted(patch_stats::render_diffstat(&stats)),
+            );
+        }
+    }
 
     if ledger.sessions.is_empty() {
         println!();

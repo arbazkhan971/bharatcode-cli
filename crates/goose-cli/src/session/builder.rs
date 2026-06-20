@@ -684,6 +684,9 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let keybindings = crate::keybindings::Keybindings::from_config(config);
     tracing::debug!(?keybindings, "Loaded interactive keybindings");
 
+    let subagent_settings = crate::subagent_settings::SubagentSettings::from_config(config);
+    tracing::debug!(?subagent_settings, "Loaded subagent settings");
+
     let debug_mode = session_config.debug || config.get_param("BHARATCODE_DEBUG").unwrap_or(false);
 
     let session = CliSession::new(
