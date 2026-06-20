@@ -37,6 +37,7 @@ pub mod offline;
 #[cfg(feature = "otel")]
 pub mod otel;
 pub mod permission;
+pub mod plugin_sdk;
 pub mod plugins;
 #[cfg(feature = "telemetry")]
 pub mod posthog;

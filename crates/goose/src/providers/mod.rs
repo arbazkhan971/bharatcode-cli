@@ -17,6 +17,7 @@ mod catalog_util;
 pub mod catalog {
     pub use super::catalog_util::*;
 }
+pub mod catalog_index;
 pub mod chatgpt_codex;
 pub mod claude_acp;
 pub mod claude_code;

@@ -842,6 +842,31 @@ enum RecipeCommand {
         )]
         verbose: bool,
     },
+
+    /// Export a recipe and its referenced sub-recipes into a portable bundle
+    #[command(about = "Export a recipe into a portable, checksummed bundle (.bcr)")]
+    Export {
+        /// Recipe name or full path to the recipe file to export
+        #[arg(help = "recipe name or full path to the recipe file to export")]
+        name: String,
+
+        /// Output bundle path (defaults to <recipe-name>.bcr)
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "FILE",
+            help = "Output bundle path (defaults to <recipe-name>.bcr)"
+        )]
+        output: Option<std::path::PathBuf>,
+    },
+
+    /// Import a recipe bundle (.bcr file or URL) into the recipe library
+    #[command(about = "Import a portable recipe bundle (.bcr file or URL)")]
+    Import {
+        /// Path to a .bcr bundle file or an http(s) URL
+        #[arg(help = "path to a .bcr bundle file or an http(s) URL")]
+        input: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2120,6 +2145,14 @@ fn handle_recipe_subcommand(command: RecipeCommand) -> Result<()> {
             params,
         } => handle_open(&recipe_name, &params),
         RecipeCommand::List { format, verbose } => handle_list(&format, verbose),
+        RecipeCommand::Export { name, output } => {
+            crate::recipes::share::export_recipe(&name, output)?;
+            Ok(())
+        }
+        RecipeCommand::Import { input } => {
+            crate::recipes::share::import_recipe(&input)?;
+            Ok(())
+        }
     }
 }
 

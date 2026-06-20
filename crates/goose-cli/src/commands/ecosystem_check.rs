@@ -102,11 +102,6 @@ fn hooks_row(pre: bool, post: bool) -> EcoRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // `BHARATCODE_PATH_ROOT` is process-global; serialize the tests that mutate
-    // it so they cannot race with one another.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Render a row the way the doctor command would, exercising the
     /// `Status::glyph()` mapping so it must compile and produce a glyph.
@@ -116,19 +111,12 @@ mod tests {
 
     #[test]
     fn empty_environment_reports_three_rows_all_zero() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
         let empty = tempfile::tempdir().unwrap();
-        let prev = std::env::var("BHARATCODE_PATH_ROOT").ok();
-        unsafe { std::env::set_var("BHARATCODE_PATH_ROOT", empty.path()) };
+        // The shared workspace env lock serializes every BHARATCODE_PATH_ROOT
+        // mutator across the whole crate so this never races another test.
+        let _guard = env_lock::lock_env([("BHARATCODE_PATH_ROOT", empty.path().to_str())]);
 
         let rows = ecosystem_rows();
-
-        // Restore the env before asserting so a failure cannot leak it.
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BHARATCODE_PATH_ROOT", v) },
-            None => unsafe { std::env::remove_var("BHARATCODE_PATH_ROOT") },
-        }
 
         // Exactly three rows in the section.
         assert_eq!(rows.len(), 3, "ecosystem section must have exactly 3 rows");

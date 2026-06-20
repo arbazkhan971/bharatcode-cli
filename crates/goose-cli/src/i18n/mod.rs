@@ -10,6 +10,8 @@
 //! set of high-traffic strings currently routes through [`t`]; English output is
 //! unchanged because `en.json` holds the exact original English strings.
 
+pub mod ecosystem_keys;
+
 use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
 

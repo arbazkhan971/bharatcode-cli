@@ -83,6 +83,14 @@ pub mod testgen;
 #[path = "../ci_integration.rs"]
 pub mod ci_integration;
 
+// Post-turn editor/IDE changed-files manifest sidecar lives in
+// crates/goose/src/editor_bridge.rs. It shares the same finalization point as
+// the testgen nudge above and reuses the already-computed set of changed files
+// to write a small JSON manifest an editor/IDE/watcher can poll. Off by default
+// behind BHARATCODE_EDITOR_BRIDGE.
+#[path = "../editor_bridge.rs"]
+mod editor_bridge;
+
 // Parallel tool-execution governor (concurrency cap + per-tool timeout) lives in
 // crates/goose/src/tool_governor.rs. It wraps the concurrent tool fan-out built
 // just before `stream::select_all`; registering it here keeps it next to its
@@ -2688,8 +2696,11 @@ impl Agent {
                     );
                 }
 
-                if testgen::is_enabled() || ci_integration::is_enabled() {
+                if testgen::is_enabled() || ci_integration::is_enabled() || editor_bridge::is_enabled() {
                     let changed_files = git_changed_files(&working_dir).await;
+                    if editor_bridge::is_enabled() {
+                        editor_bridge::write_change_manifest(&working_dir, &changed_files).await;
+                    }
                     if testgen::is_enabled() {
                         if let Some(nudge) = testgen::suggest_testgen(&changed_files) {
                             yield AgentEvent::Message(

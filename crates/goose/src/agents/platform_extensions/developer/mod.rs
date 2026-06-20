@@ -2,6 +2,7 @@ pub mod apply_patch;
 pub mod delegate;
 pub mod edit;
 pub mod editor_locator;
+pub mod git_advanced;
 pub mod image;
 pub mod read_lines;
 pub mod redact;
@@ -22,6 +23,7 @@ use async_trait::async_trait;
 use delegate::{DelegateParams, DelegateTool};
 use edit::{EditTools, FileEditParams, FileWriteParams};
 use editor_locator::EditorLocatorParams;
+use git_advanced::GitAdvancedParams;
 use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
 use read_lines::{ReadLinesParams, ReadLinesTool};
@@ -347,6 +349,25 @@ impl DeveloperClient {
                 Some(false),
                 Some(true),
             )),
+            Tool::new(
+                "git_advanced".to_string(),
+                "Read-only deep-git inspection. `op: \"worktree_list\"` lists every linked/main \
+                 work tree (path, HEAD, branch, flags). `op: \"blame\"` with `file` (and optional \
+                 1-based `range` like \"10,40\") returns per-line authorship as (commit, line) \
+                 pairs. `op: \"pr_context\"` reports the current branch, its upstream, ahead/behind \
+                 counts, and the files changed against the merge-base with that upstream. Runs only \
+                 read-only git query subcommands; never mutates the repo and never touches the \
+                 network."
+                    .to_string(),
+                Self::schema::<GitAdvancedParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Git Advanced".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
         ];
 
         if run_script::is_enabled() {
@@ -499,6 +520,20 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "git_advanced" => match Self::parse_args::<GitAdvancedParams>(arguments) {
+                Ok(params) => match git_advanced::run_git_advanced(params, working_dir) {
+                    Ok(result) => Ok(result),
+                    Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Error: {}",
+                        error.message
+                    ))
+                    .with_priority(0.0)])),
+                },
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "run_script" => match Self::parse_args::<run_script::RunScriptParams>(arguments) {
                 Ok(params) => Ok(run_script::run(params, working_dir).await),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -554,7 +589,8 @@ mod tests {
                 "read_image",
                 "web_search",
                 "rename_symbol",
-                "delegate"
+                "delegate",
+                "git_advanced"
             ]
         );
         assert!(!names.iter().any(|n| n == "run_script"));

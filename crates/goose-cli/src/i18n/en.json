@@ -48,5 +48,12 @@
   "privacy.egress_passthrough": "installed (pass-through)",
   "privacy.locked_down": "All pillars locked down: strict residency, offline, redaction on, telemetry off, local provider.",
   "privacy.hint": "Tighten posture: BHARATCODE_OFFLINE=1, BHARATCODE_RESIDENCY=strict, BHARATCODE_REDACT=1, BHARATCODE_AUDIT=1.",
-  "db.preflight.hint": "Warning: the session database may be corrupted."
+  "db.preflight.hint": "Warning: the session database may be corrupted.",
+  "ecosystem.recipe_exported": "Recipe exported to bundle",
+  "ecosystem.recipe_imported": "Recipe imported from bundle",
+  "ecosystem.checksum_failed": "Bundle integrity check failed: recipe content does not match its recorded checksum.",
+  "ecosystem.mcp_registry_header": "MCP extension registry",
+  "ecosystem.ci_ready": "CI-ready",
+  "ecosystem.ci_no_step": "no CI step detected",
+  "ecosystem.automation_on": "Automation enabled"
 }

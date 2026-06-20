@@ -9,6 +9,7 @@ pub mod gateway;
 pub mod gen_docs;
 pub mod git_helper;
 pub mod info;
+pub mod mcp_registry;
 pub mod plugin;
 pub mod presets;
 pub mod privacy;
@@ -39,3 +40,11 @@ pub use gen_docs::{doc_guide_section, handle_gen_docs, GenDocsOptions};
 // gate so default behavior is unchanged.
 pub use recipe_share::{export as recipe_share_export, import as recipe_share_import};
 pub use recipe_share::{run as run_recipe_share, RecipeBundle};
+
+// Re-export the curated `mcp-registry` entry point so the read-only MCP-server
+// registry is reachable as crate API. The live CLI dispatch for
+// `bharatcode mcp-registry [list|search|show]` lives in `cli.rs` (owned by a
+// sibling in this wave), which calls `handle_mcp_registry` with the parsed
+// `McpRegistryAction`; the listing is offline, embedded, and has no side
+// effects, so default behavior is unchanged.
+pub use mcp_registry::{handle_mcp_registry, McpRegistryAction};

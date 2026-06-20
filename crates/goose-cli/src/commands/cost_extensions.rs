@@ -157,16 +157,6 @@ pub fn extensions_footer() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    /// `is_enabled` and the path-root override both read process-global env, so
-    /// the env-touching tests must not run concurrently.
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
 
     #[test]
     fn is_truthy_accepts_common_spellings() {
@@ -180,31 +170,27 @@ mod tests {
 
     #[test]
     fn is_enabled_false_when_env_unset() {
-        let _guard = env_lock();
-        std::env::remove_var(COST_EXTENSIONS_ENABLED_KEY);
+        let _guard = env_lock::lock_env([(COST_EXTENSIONS_ENABLED_KEY, None::<&str>)]);
         assert!(!is_enabled());
     }
 
     #[test]
     fn footer_none_when_disabled() {
-        let _guard = env_lock();
-        std::env::remove_var(COST_EXTENSIONS_ENABLED_KEY);
+        let _guard = env_lock::lock_env([(COST_EXTENSIONS_ENABLED_KEY, None::<&str>)]);
         assert!(extensions_footer().is_none());
     }
 
     #[test]
     fn footer_none_when_enabled_but_no_plugins_installed() {
-        let _guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
-
-        std::env::set_var(COST_EXTENSIONS_ENABLED_KEY, "1");
-        // Point the plugins/MCP discovery at an empty temp root.
-        std::env::set_var("BHARATCODE_PATH_ROOT", temp.path());
+        // Hold the shared workspace env lock so this never races another
+        // BHARATCODE_PATH_ROOT mutator elsewhere in the crate.
+        let _guard = env_lock::lock_env([
+            (COST_EXTENSIONS_ENABLED_KEY, Some("1")),
+            ("BHARATCODE_PATH_ROOT", temp.path().to_str()),
+        ]);
 
         let footer = extensions_footer();
-
-        std::env::remove_var("BHARATCODE_PATH_ROOT");
-        std::env::remove_var(COST_EXTENSIONS_ENABLED_KEY);
 
         assert!(
             footer.is_none(),
