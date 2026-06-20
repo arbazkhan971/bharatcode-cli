@@ -99,6 +99,15 @@ pub mod desktop_notify;
 #[path = "../editor_bridge.rs"]
 mod editor_bridge;
 
+// Finalization-time trademark / compliance self-scan lives in
+// crates/goose/src/compliance_gate.rs. It shares the same finalization point as
+// the testgen/ci/editor_bridge hooks below: when enabled it scans the finalized
+// assistant text for residual third-party marks and emits a single inline
+// compliance advisory. Off by default behind BHARATCODE_COMPLIANCE_GATE => the
+// finalization path is byte-identical when unset.
+#[path = "../compliance_gate.rs"]
+mod compliance_gate;
+
 // Parallel tool-execution governor (concurrency cap + per-tool timeout) lives in
 // crates/goose/src/tool_governor.rs. It wraps the concurrent tool fan-out built
 // just before `stream::select_all`; registering it here keeps it next to its
@@ -2712,6 +2721,17 @@ impl Agent {
                             status_line,
                         ),
                     );
+                }
+
+                if compliance_gate::is_enabled() {
+                    if let Some(advisory) = compliance_gate::scan_output(&last_assistant_text) {
+                        yield AgentEvent::Message(
+                            Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                advisory,
+                            ),
+                        );
+                    }
                 }
 
                 if testgen::is_enabled() || ci_integration::is_enabled() || editor_bridge::is_enabled() {

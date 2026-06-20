@@ -4,6 +4,7 @@ pub mod budget;
 pub mod configure;
 pub mod cost;
 pub mod cost_ledger;
+pub mod docs_gen;
 pub mod doctor;
 pub mod doctor_checks;
 pub mod eval;
@@ -36,6 +37,22 @@ pub mod update;
 // reachable as crate API. The CLI dispatch lives in `cli.rs` (owned by a
 // sibling in this wave) and wires `bharatcode gen-docs` to this handler.
 pub use gen_docs::{doc_guide_section, handle_gen_docs, GenDocsOptions};
+
+// Re-export the `docs-gen` entry points so the deterministic Markdown docs-set
+// generator is reachable as crate API. Unlike `crate::docsite` (which walks the
+// live clap tree), this generator is pure over two embedded static tables —
+// `COMMANDS` and the `BHARATCODE_*` `FEATURE_FLAGS` (every gate default-OFF) —
+// and the three core fns (`cli_reference`, `feature_flag_table`, `index_page`)
+// return `String` with no I/O. `write_site` is the only fs-touching helper and
+// writes atomically + idempotently. The CLI dispatch (`bharatcode docs-gen`)
+// is the one-line wiring added in `cli.rs`, owned by a sibling in this wave,
+// which calls `write_site`/the renderers; there is no env gate (the generator is
+// a pure, read-only API) so default behavior is unchanged.
+pub use docs_gen::{
+    cli_reference as docs_cli_reference, feature_flag_table as docs_feature_flag_table,
+    index_page as docs_index_page, write_site as write_docs_site, CommandDoc, FeatureFlagDoc,
+    COMMANDS as DOCS_COMMANDS, FEATURE_FLAGS as DOCS_FEATURE_FLAGS,
+};
 
 // Re-export the `help-index` entry point so the localized, grouped command and
 // feature-flag index is reachable as crate API. The `help_index` table is

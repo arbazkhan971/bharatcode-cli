@@ -94,6 +94,13 @@ mod transcript;
 #[path = "commands/welcome.rs"]
 mod welcome;
 
+// Same rationale as the modules above: the bounded, concurrency-capped
+// multi-session registry for the headless `bharatcode serve` path is declared
+// here, from cli.rs (the file that owns this feature), via an explicit `#[path]`
+// rather than editing the contended `commands/mod.rs`.
+#[path = "serve_registry.rs"]
+mod serve_registry;
+
 // Same rationale as the modules above: the opt-in headless multi-session
 // supervisor (`bharatcode serve-sessions`) is declared here, from cli.rs, via an
 // explicit `#[path]` rather than editing the contended `commands/mod.rs`.
@@ -1764,6 +1771,13 @@ async fn handle_serve_command(
     } else {
         None
     };
+
+    // Stand up the bounded, concurrency-capped session registry for this
+    // headless process and log its capacity before the server boots. The cap is
+    // read from `BHARATCODE_MAX_SESSIONS` (default 8); single-session behaviour
+    // is unchanged.
+    let registry = serve_registry::SessionRegistry::from_env();
+    tracing::info!("{}", registry.capacity_line());
 
     let builtins = if builtins.is_empty() {
         vec!["developer".to_string()]

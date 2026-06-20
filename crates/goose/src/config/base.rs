@@ -82,6 +82,15 @@ pub(crate) mod ecosystem_caps;
 #[path = "../streaming_perf.rs"]
 pub(crate) mod streaming_perf;
 
+// Named perf-release profile selector (v97). Resolves the optional
+// `BHARATCODE_PERF_PROFILE` key (balanced|low-latency|throughput|battery) into
+// concrete advisory perf knobs. The parser/resolver/summary helpers live in
+// `perf_release.rs`, wired in here (rather than via lib.rs) so the module is
+// reachable from the running binary alongside its config key. The selected
+// profile's knobs are surfaced through `Config::perf_release_summary`.
+#[path = "../perf_release.rs"]
+pub(crate) mod perf_release;
+
 // The v94 release packaging matrix + offline checksum verifier (deb/rpm/brew)
 // lives in `packaging.rs`, wired in here (rather than via lib.rs, which v95
 // owns) so the module is reachable from the running binary alongside the
@@ -716,6 +725,20 @@ impl Config {
     /// the CLI streaming buffer's render reads can share.
     pub fn streaming_perf_summary(&self) -> Vec<String> {
         streaming_perf::summary_lines_for_config(self)
+    }
+
+    /// Human-readable rows for the v97 named perf-release profile selector: a
+    /// `profile: <name>` row plus one advisory-knob row each for the stream-flush
+    /// cadence, the max-concurrent-tools hint, and the context-budget hint,
+    /// resolved env-first from the optional `BHARATCODE_PERF_PROFILE` key. The
+    /// selector is purely advisory and changes no default on its own; when the
+    /// key is unset (or unrecognised) it resolves to `balanced`, whose knobs equal
+    /// the current defaults, so default behaviour is unchanged. Gives doctor/info
+    /// one validated source of truth alongside the other `*_summary` rows. The
+    /// parser/resolver/summary helpers live in `perf_release` (wired via the
+    /// `#[path]` mod decl above).
+    pub fn perf_release_summary(&self) -> Vec<String> {
+        perf_release::summary_lines_for_config(self)
     }
 
     /// Human-readable rows for the v94 release packaging matrix: one header line
@@ -1440,6 +1463,18 @@ config_value!(BHARATCODE_MAX_SESSION_TOKENS, Option<u64>);
 config_value!(BHARATCODE_STREAM_FLUSH_MS, Option<u64>);
 config_value!(BHARATCODE_MAX_CODE_BLOCK_LINES, Option<usize>);
 config_value!(BHARATCODE_STREAM_COALESCE_LINES, Option<usize>);
+
+// Named perf-release profile selector (v97). Registered as a first-class typed
+// getter so doctor/info can read it via the standard accessor path (env over
+// config). Defaults to `None` -> the resolver treats it as the `balanced`
+// profile, whose advisory knobs equal the current defaults, so default behaviour
+// is unchanged until the key is set. `read_key` in `perf_release` reads raw env
+// first so a bare profile name (e.g. `low-latency`) survives the config
+// number-coercion as a string. An unrecognised name falls back to `balanced`
+// (never panics). The parser/resolver/summary helpers live in `perf_release`
+// (wired via the `#[path]` mod decl above) and are surfaced through
+// `Config::perf_release_summary`.
+config_value!(BHARATCODE_PERF_PROFILE, Option<String>);
 
 // v94 packaging verifier target. Resolves the `dist/` directory the offline
 // SHA256SUMS verifier walks, so doctor/release tooling can locate built

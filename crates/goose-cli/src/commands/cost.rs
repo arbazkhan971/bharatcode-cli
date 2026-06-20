@@ -353,6 +353,17 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
         println!("{f}");
     }
 
+    // Opt-in, strictly-local aggregated usage footer (BHARATCODE_ANALYTICS_LOCAL).
+    // Renders ONE muted line of monotonic counters (turns, tool calls, sessions,
+    // tokens, days active) read from a single rolling JSON aggregate under the
+    // config dir. No network, no per-event detail. Default OFF => `usage_footer`
+    // returns None => nothing printed and no file is touched, so the cost output
+    // is byte-identical. Rendered here, before the empty-sessions early return,
+    // so it shows with or without recorded spend.
+    if let Some(line) = analytics_local::usage_footer() {
+        println!("{}", crate::theme::muted(&line));
+    }
+
     // Optional storage-health footer. Rendered only when the session store
     // (`sessions.db`) exists and is non-empty; absent or empty, nothing is
     // printed, keeping the default cost output byte-identical. Read-only: it
