@@ -1,0 +1,26 @@
+{
+  "name": "krutrim",
+  "engine": "openai",
+  "display_name": "Krutrim (Ola)",
+  "description": "India-hosted Krutrim Cloud models (OpenAI-compatible).",
+  "api_key_env": "KRUTRIM_API_KEY",
+  "base_url": "https://cloud.krutrim.com/v1",
+  "dynamic_models": false,
+  "models": [
+    {
+      "name": "Llama-3.3-70B-Instruct",
+      "context_limit": 131072
+    },
+    {
+      "name": "DeepSeek-R1",
+      "context_limit": 65536
+    }
+  ],
+  "supports_streaming": true,
+  "model_doc_link": "https://docs.olakrutrim.com",
+  "setup_steps": [
+    "Sign in to https://cloud.olakrutrim.com",
+    "Open API Keys and create a new key",
+    "Copy the key and paste it above"
+  ]
+}

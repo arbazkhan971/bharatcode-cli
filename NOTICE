@@ -1,0 +1,45 @@
+BharatCode
+Copyright 2026 BharatCode contributors
+
+This product is a derivative work ("fork") of Goose, and is distributed under
+the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Goose
+Copyright 2024 Block, Inc.
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/block/goose  (see LICENSES/LICENSE-goose)
+------------------------------------------------------------------------------
+OpenAI Codex
+Copyright 2025 OpenAI
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/openai/codex  (see LICENSES/LICENSE-codex)
+
+Portions of the apply-patch parser/applier (crates/bharatcode-apply-patch:
+parser.rs, streaming_parser.rs, seek_sequence.rs, and the compute/apply
+replacement core) are derived from the codex-apply-patch crate. The vendored
+subset depends only on thiserror; Codex's Ratatui (MIT) attribution does not
+apply here because the apply-patch crate does not pull Ratatui.
+
+Portions of the in-process Linux exec sandbox (crates/bharatcode-linux-sandbox:
+the set_no_new_privs, Landlock filesystem ruleset, and Restricted-mode network
+seccomp primitives in src/lib.rs) are derived from Codex's codex-linux-sandbox
+crate (linux-sandbox/src/landlock.rs). The vendored subset depends only on
+thiserror (all targets) plus landlock and seccompiler (Linux only); Codex's
+bubblewrap launcher, proxy-routed network mode, and seatbelt/windows backends
+are not included.
+------------------------------------------------------------------------------
+
+Modifications by the BharatCode project (per Apache-2.0 Section 4(b)):
+  - Rebranded the product, binary, configuration, and environment variables to
+    "BharatCode"; removed upstream trademarks (names, logos) from user-facing
+    surfaces. Trademarks are not licensed and remain the property of their owners.
+  - Disabled third-party product analytics/telemetry by default.
+  - Re-oriented defaults toward local-first / India-hosted model providers.
+  - Ported the apply-patch file editor from OpenAI Codex (Apache-2.0) into the
+    crates/bharatcode-apply-patch crate, exposed as the developer `apply_patch`
+    tool. LICENSES/LICENSE-codex and the Codex attribution above accompany it.
+  - Ported the in-process Linux exec sandbox (landlock + seccomp) from OpenAI
+    Codex (Apache-2.0) into the crates/bharatcode-linux-sandbox crate, wired
+    behind the opt-in `BHARATCODE_SANDBOX` shell-tool toggle (default off).
+See MODIFICATIONS.md for details.

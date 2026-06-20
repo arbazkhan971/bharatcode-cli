@@ -1,0 +1,22 @@
+{
+  "name": "sarvam",
+  "engine": "openai",
+  "display_name": "Sarvam AI",
+  "description": "India-hosted Sarvam models (OpenAI-compatible).",
+  "api_key_env": "SARVAM_API_KEY",
+  "base_url": "https://api.sarvam.ai/v1",
+  "dynamic_models": false,
+  "models": [
+    {
+      "name": "sarvam-m",
+      "context_limit": 32768
+    }
+  ],
+  "supports_streaming": true,
+  "model_doc_link": "https://docs.sarvam.ai",
+  "setup_steps": [
+    "Sign in to https://dashboard.sarvam.ai",
+    "Open API Keys and create a new key",
+    "Copy the key and paste it above"
+  ]
+}

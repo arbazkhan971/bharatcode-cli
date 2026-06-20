@@ -1,0 +1,488 @@
+# BharatCode (Rust) — fork of Goose, donor Codex
+
+**Goal:** Build **BharatCode**, an Indian, local-first, **Apache-2.0-compliant** Rust
+terminal AI coding agent, by **forking `block/goose`** (Apache-2.0) as the base and
+**porting the best of `openai/codex`** (Apache-2.0) as a donor. Do it **compliantly
+from commit 1** (the opposite of the earlier crush/FSL mistake): keep upstream
+licenses, attribute both projects, state our changes, strip only trademarks.
+
+## Why this base (decided, with evidence)
+- **Local-first** is built into Goose: `crates/goose/src/providers/{ollama.rs,
+  openai_compatible.rs}` + ~30 declarative providers + an in-process engine
+  (`local_inference/`: llama.cpp/candle/mlx). Codex is hard-bound to the OpenAI
+  Responses API (Chat Completions removed) → local-first would be weeks of surgery.
+- **Rebrand surface** is far smaller on Goose; it even ships an official white-label
+  guide (`CUSTOM_DISTROS.md`). Codex = 92 crates `codex_*` + ~1,012 `CODEX_*` refs.
+- **Port FROM Codex** (its best, as isolated crates behind adapters): `apply-patch`
+  streaming file editor; multi-OS exec sandbox (landlock/seccomp + seatbelt) +
+  Starlark `execpolicy`; selective Ratatui TUI / MCP polish. (Avoid Codex `bwrap` →
+  pulls LGPL bubblewrap.)
+
+## License / compliance (Apache-2.0, both upstreams)
+- Keep `LICENSE` (Apache-2.0); add `LICENSES/LICENSE-goose` (© Block, Inc.) and
+  `LICENSES/LICENSE-codex` (© OpenAI) when Codex code is ported.
+- `NOTICE` (mandatory — Codex ships one): BharatCode line + **add** Block attribution
+  (Goose ships no NOTICE) + propagate Codex's NOTICE (OpenAI + Ratatui) + a §4(b)
+  "we modified these files" statement. Also `MODIFICATIONS.md`.
+- **Keep upstream git provenance** (do NOT wipe `.git` — that was the crush mistake).
+- **Strip trademarks only** (Goose/Block/Square/CashApp/Tidal, Codex/OpenAI/ChatGPT)
+  from user-facing surfaces; enforce with a CI grep gate over source AND binary.
+- **Disable PostHog telemetry** by default (`crates/goose/src/posthog.rs` phones home
+  to Block).
+
+## Environment / build
+- Goose workspace: edition 2021, toolchain pin **1.92** (rust-toolchain.toml). Host
+  has rustup + Rust 1.96; cargo honors the pin (auto-fetches 1.92).
+- CLI crate: `crates/goose-cli` → binary **`goose`** (also `goosed` in goose-server).
+- **Light build** (v0, no native engines): `cargo build -p goose-cli
+  --no-default-features --features portable-default` (drops local-inference / code-mode
+  / mlx / nostr / system-keyring). Wrapper: `/home/arbaz/cargobc.sh`.
+- Branding surface: `GOOSE_` env in ~90 files; `goose` ~4,224 lines; config `app_name
+  = "goose"` (`crates/goose/src/config/paths.rs`); identity "My name is Goose…Block".
+
+## Rebrand strategy — SURGICAL (build-safe)
+Rust crate names (`goose`, `goose-cli`, …) are identifiers used in path-deps and
+`use goose::` — a blanket rename would break the build. So v0 rebrands the
+**user-facing surface only**, leaving internal crate/symbol names (full crate rename
+is a later polish phase):
+- binary names (`goose`→`bharatcode`, `goosed`→`bharatcoded`),
+- config `app_name`/dir (`goose`→`bharatcode`),
+- env var **string literals** (`GOOSE_`→`BHARATCODE_`),
+- brand/identity/help/about display strings, ASCII/logo, "Block"/"Goose" marks,
+- telemetry default off.
+
+## Definition of DONE (this session's milestone, v1)
+1. ✅ Builds: `cargo build -p goose-cli --features portable-default` (binary `bharatcode`).
+2. ✅ Runs: `bharatcode --help` / `--version` show BharatCode; **zero** Goose/Block in
+   user-facing output.
+3. ✅ Rebranded: binary, env, config dir/app_name, brand + identity strings, marks/logos.
+4. ✅ Telemetry OFF by default (no PostHog call to Block).
+5. ✅ Compliant: `LICENSE` + `LICENSES/LICENSE-goose` + `NOTICE` (Block attribution +
+   §4(b)) + `MODIFICATIONS.md`; upstream git history preserved.
+6. ✅ Trademark gate passes (grep over source + built binary, user-facing surfaces).
+
+**Follow-on (post-v1, documented not blocking):** port Codex `apply-patch` + sandbox;
+full local-first in-process engine defaults; full crate rename; TUI uplift; Indic
+i18n + India model presets; release engineering + `THIRD_PARTY_LICENSES`.
+
+## Worker streams
+- **R — Recon** (dynamic workflow, parallel read-only): exact rebrand+compliance spec.
+- **S — Scaffold+Rebrand** (single-writer): compliance files + surgical rebrand + telemetry-off.
+- **B — Build & verify** (loop): light build green; runs; trademark gate; compliance present.
+
+## Iteration log
+(append-only; newest at bottom)
+
+### 2026-06-20 — Iteration 0: setup
+- Chose base = Goose (option A) after a verified design workflow (local-first +
+  rebrand surface both favor Goose; Codex = donor).
+- Cloned `block/goose` → `/home/arbaz/bharatcode-rs` (KEEP its `.git` = provenance),
+  `openai/codex` → `/home/arbaz/codex` (donor). Rust 1.96 via rustup; cargo honors
+  Goose's 1.92 pin.
+- Confirmed `portable-default` feature set avoids the heavy native build.
+- Kicked off the baseline light build (warms dep cache; confirms buildability).
+- Next: dynamic recon workflow → surgical rebrand + compliance scaffold → build/verify loop.
+
+### 2026-06-20 — Iteration 1: rebrand applied; build-break diagnosed + fixed
+- Detached runner applied: compliance scaffold; env GOOSE_->BHARATCODE_ (86 vars);
+  bin names; config app_name x2 (paths.rs + goose-mcp/lib.rs); telemetry hard-off +
+  PostHog key neutralized; .goosehints->.bharatcodehints; display-string rebrand
+  (27 rust files, string-literals only); prompt/identity markdown.
+- BUILD FAILED (20 errors): the `config_value!` macro (base.rs:207) derives getter
+  names from the env-key token via pastey::paste!, so renaming GOOSE_*->BHARATCODE_*
+  made it generate `get_bharatcode_*` while ~26 call sites still called `get_goose_*`.
+  Type names (GooseMode, GooseError, ...) are hand-written + consistent (left as-is).
+- FIX: uniform rename of generated/hand-written getter prefixes
+  get_goose_/set_goose_/with_goose_ -> *_bharatcode_* (added to runner Phase 2g).
+- Re-running detached runner (idempotent) → rebuild + test.
+
+### 2026-06-20 — Iteration 2: display-rebrand regex bug → reverted → Rust-aware lexer
+- 2nd build FAILED (46 errors): the regex display-rebrand was NOT Rust-aware — a `'"'`
+  char literal made it pair quotes across CODE, corrupting identifiers
+  (`use goose::`→`use bharatcode::`, `GooseMode`→`BharatCodeMode`, call/def mismatch).
+- Recovery: `git checkout -- crates/` → pristine goose restored (structural rebrand
+  steps in Phase 2 are build-safe and kept in the runner).
+- Built `/home/arbaz/rebrand_strings.py`: a Rust-aware string lexer that rebrands
+  ONLY inside real string literals (skips char literals incl `'"'`, line/block
+  comments, lifetimes, and is raw-string-safe). Self-tested 6/6 incl. the bug case.
+- Runner Phase 3 rewritten to use the lexer (goose-cli display) + prompt md + a
+  phrase-targeted identity de-brand (AAIF/Block creator attributions; "Block" by
+  phrase only to keep ContentBlock / "Blocked malicious package").
+- Re-running detached runner from pristine → build + test.
+
+### 2026-06-20 — Iteration 3: lexer broke inline format captures → made it brace-aware
+- 3rd build FAILED (1+ errors): the lexer rebranded inside `{..}` format placeholders,
+  so `format!("{goose_mode}")` -> `{bharatcode_mode}` referenced a non-existent var;
+  term.rs had ~10 `{goose_bin}` shell-alias captures broken too.
+- FIX: lexer now brands only OUTSIDE `{..}` placeholders (keeps inline captures; `{{`/`}}`
+  escapes handled). Self-tested 5/5 incl. format-capture + char-literal + alias cases.
+- Also identified CORE semantic strings to PROTECT (do NOT blind-rebrand): provider_id
+  "goose", KEYRING_SERVICE, ACP metadata key "goose", x-client header, hardcoded
+  `.config/goose` path joins. Core display leaks to fix surgically: 4 (checks "goose
+  review", acp "gooseThinkingEffort", kimicode temp file, nostr "Goose Nostr").
+- Revert to pristine + re-run runner with brace-aware lexer.
+
+### 2026-06-20 — Iteration 4: BUILD GREEN ✅ (brace-aware lexer worked)
+- `cargo build -p goose-cli --features portable-default` → BUILD OK; binary
+  `target/debug/bharatcode` (`--version` 1.38.0). `--help` trademark gate: CLEAN.
+- CLI lib tests: 230 passed, 4 failed — all rebrand-related TEST FIXTURES:
+  test_what_is_your_name (recording says "My name is goose, created by Block"),
+  term nushell hooks script test, 2 recipe-extract tests. To fix as test data.
+- Launching dynamic AUDIT workflow (parallel): CLI surfaces ∥ binary strings ∥
+  core display leaks ∥ compliance → consolidated leak/fix list.
+
+### 2026-06-20 — Iteration 5: dynamic AUDIT workflow → dynamic FIX workflow
+- Audit workflow (4 parallel auditors) found ZERO binary company-mark leaks and
+  PASSING compliance, but ~47+ user-facing Goose/goose leaks: clap `///` doc
+  comments (lexer skips comments) in cli.rs (review/term help), and CORE display
+  strings in crates/goose/src (the lexer had only run on goose-cli). Pattern:
+  "goose configure" / "goose run" / "Use goose with" / "Goose (Default)" /
+  "You are Goose" across providers/*_acp.rs, acp/*, otel, doctor, platform_extensions.
+  Plus data files: goose_doc_guide skill + goose-self-test.yaml recipe; latent
+  block.xyz author in Cargo.toml.
+- FIX workflow launched (parallel, disjoint): (1) lexer over crates/goose{,-mcp,
+  -providers}/src core strings; (2) doc-comment rebrand in goose-cli/src; (3) data
+  files + Cargo author. Then sequential build+test (fix rebrand-broken fixtures) →
+  verify surfaces clean.
+- Note: lexer on core will also rename a few SEMANTIC strings (provider_id "goose",
+  KEYRING_SERVICE, ACP gooseThinkingEffort, x-client) consistently to bharatcode —
+  acceptable for a new local-first product; flagged for review.
+
+### 2026-06-20 — Iteration 6: ✅ DONE (v1 milestone met)
+FIX workflow result: BUILD OK; **234 passed / 0 failed** tests. It fixed the
+rebrand-broken fixtures correctly (term `/tmp/goose`→`/tmp/bharatcode`; 5 VCR
+`what_is_your_name` recordings rebranded; and smartly REVERTED `goose_provider`/
+`goose_model` serde keys that must stay internal). Verify phase: clean=true across
+ALL surfaces. Independent spot-check confirmed:
+
+| DONE criterion | Result |
+|---|---|
+| Builds + tests | ✅ `cargo build` OK; **234/234** cli tests pass |
+| Runs; zero user-facing Goose/Block leak | ✅ 0 across --help, all 20 subcmds + nested, review/term/configure/doctor, skills/recipe, info -v, completion |
+| Rebranded (binary/env/config/identity/marks) | ✅ binary `bharatcode`; `~/.config/bharatcode`; `BHARATCODE_*`; identity = BharatCode |
+| Telemetry OFF | ✅ `is_telemetry_enabled`→false; `POSTHOG_API_KEY=""` |
+| Apache-2.0 compliant | ✅ LICENSE + LICENSES/LICENSE-goose + NOTICE + MODIFICATIONS; upstream git provenance kept |
+| Trademark gate | ✅ clean (the only `block` matches are the USER's external ~/.agents HyperFrames skills, "registry block" — not BharatCode) |
+
+**v1 DONE.** BharatCode is a building, running, fully-rebranded, telemetry-free,
+Apache-2.0-compliant Rust terminal AI coding agent forked from Goose, with both
+upstreams attributed.
+
+**Follow-on (post-v1, not blocking):** port Codex `apply-patch` + exec sandbox;
+local-first default provider (Ollama/in-process) + onboarding; full internal crate
+rename (goose-* → bharatcode-*); Indic/Hindi i18n + India model presets; release
+engineering (THIRD_PARTY_LICENSES, installers, Dockerfile); LICENSES/LICENSE-codex
++ Codex NOTICE when Codex code is ported.
+
+### 2026-06-20 — v2 ✅ Local-first defaults (dynamic workflow)
+- get_active_provider() now defaults to Ollama ("ollama") and get_active_model() to
+  qwen3 when nothing is configured (providers.rs:13/111/140); env/config/cloud still
+  take precedence (opt-in). First-run onboarding (configure.rs) offers "Local model —
+  Ollama (Recommended)"; provider picker preselects Ollama. No forced cloud sign-in.
+- Build OK; 234/234 cli tests pass (incl. updated provider-default tests). Binary rebuilt.
+- Chaining v3 (Codex apply-patch port).
+
+### 2026-06-20 — v3 ✅ Codex apply-patch port (dynamic workflow)
+- Discovered Codex's apply-patch is no longer self-contained (needs codex-exec-server),
+  so vendored the PURE layer: new crate crates/bharatcode-apply-patch (edition 2024,
+  dep: thiserror only) = seek_sequence + streaming_parser (verbatim) + parser (adapted,
+  dropped PathUri) + new std::fs apply.rs. Wired as `apply_patch` tool in goose's
+  DeveloperClient platform extension (developer/apply_patch.rs + mod.rs).
+- COMPLIANCE: LICENSES/LICENSE-codex (Apache-2.0, © OpenAI); NOTICE Codex section;
+  MODIFICATIONS.md line. Both upstreams (Goose + Codex) now attributed.
+- Build OK; bharatcode-apply-patch 27/0 tests; goose-cli 234/0. cargo fmt clean.
+- Chaining v4 (Codex exec sandbox).
+
+### 2026-06-20 — v4 ✅ Codex exec sandbox (landlock + seccomp, behind an exec trait)
+- Vendored the PURE in-process Linux sandbox primitives from Codex
+  linux-sandbox/src/landlock.rs into a new crate crates/bharatcode-linux-sandbox
+  (edition 2021; deps: thiserror all-targets + landlock 0.4.x/seccompiler 0.5/libc
+  Linux-only): set_no_new_privs (PR_SET_NO_NEW_PRIVS), Landlock ABI::V5 FS ruleset
+  (read-all of /, write to /dev/null + writable_roots), and the Restricted-mode
+  network seccomp filter (denies ptrace/process_vm_*/io_uring + connect/bind/listen/
+  send*/sockopt and socket()/socketpair() for every family except AF_UNIX). Public
+  surface = plain SandboxPolicy { writable_roots, allow_network } + thiserror
+  SandboxError; codex_protocol/AbsolutePathBuf dropped. ProxyRouted mode, bubblewrap,
+  launcher, seatbelt/windows dropped; unsupported-arch panic → SandboxError::UnsupportedArch;
+  no-op stub on non-Linux.
+- EXEC-TRAIT SEAM: subprocess.rs gains `SandboxExt::apply_sandbox(&SandboxPolicy)` for
+  tokio::process::Command + std::process::Command, registering a cfg(linux) pre_exec
+  hook (mirrors configure_parent_death_signal).
+- WIRING: developer/shell.rs build_shell_command reads opt-in BHARATCODE_SANDBOX
+  (off|read-only|workspace-write, DEFAULT OFF); when on and not flatpak, builds a
+  SandboxPolicy (workspace-write → working_dir writable + network allowed; read-only →
+  no writable roots + network denied) and calls apply_sandbox before spawn.
+- COMPLIANCE: NOTICE Codex section + MODIFICATIONS.md extended for the linux-sandbox
+  port; LICENSES/LICENSE-codex reused.
+- Default-OFF keeps invariants green: goose-cli portable-default build OK; goose-cli
+  234/234 lib tests; bharatcode-linux-sandbox 3/3 tests. cargo fmt clean.
+- Remainder (documented, out of scope): bubblewrap FS isolation, proxy-routed network,
+  macOS seatbelt / Windows backends; precomputing the BPF program before fork (the
+  filter is currently built inside pre_exec, matching Codex).
+
+### 2026-06-20 — v4 ✅ Codex exec sandbox (dynamic workflow)
+- New crate crates/bharatcode-linux-sandbox (landlock 0.4 + seccompiler, edition 2021):
+  ports Codex's pure landlock/seccomp primitives (apply_to_current_thread; SandboxPolicy
+  {writable_roots, allow_network}); non-linux = no-op; avoids bwrap/LGPL. 3/3 crate tests.
+- Exec-trait seam in goose/src/subprocess.rs (apply_sandbox via pre_exec, mirrors
+  configure_parent_death_signal); shell.rs reads opt-in BHARATCODE_SANDBOX (default OFF,
+  so portable-default build/behavior unchanged). NOTICE + MODIFICATIONS extended (Codex).
+- Build OK; goose-cli 234/234; sandbox default off. (Note: version engine's `args`
+  channel didn't bind — agents recovered via versions.md; baking spec inline for v5+.)
+- Chaining v5 (Release engineering).
+
+### 2026-06-20 — v5 ✅ Release engineering (THIRD_PARTY_LICENSES + packaging rebrand)
+- DELIVERABLE A — THIRD_PARTY_LICENSES.md (NEW, repo root, zero build impact): cargo-about
+  not installed/offline, so used the reliable fallback — scoped the crate set to the actual
+  release build via `cargo tree -e no-dev -p goose-cli --no-default-features --features
+  portable-default`, joined name+version against `cargo metadata --format-version 1`
+  license/repository fields (Python generator), excluded the 13 first-party workspace crates,
+  deduped, grouped by SPDX expression. Result: 619 third-party crates across 41 SPDX license
+  expressions (MIT OR Apache-2.0 dominates at 262); ALL carry an SPDX license field (zero
+  UNKNOWN). Header states BharatCode is Apache-2.0 + derivative of Goose, attribution in
+  NOTICE/MODIFICATIONS. Code-mode/desktop/v8 deps correctly excluded (not in portable-default).
+- DELIVERABLE B — packaging rebrand (sed/targeted, NOT the Rust lexer; converge on the names
+  the running self-updater update.rs already expects):
+  - Dockerfile: COPY/ENTRYPOINT/useradd/HOME/WORKDIR + LABELs → bharatcode; FIXED broken
+    binary path (release/goose → release/bharatcode); source LABEL → aaif-bharatcode/bharatcode;
+    vendor=BharatCode. Kept `--package goose-cli` (internal crate).
+  - download_cli.sh + download_cli.ps1: REPO=aaif-bharatcode/bharatcode; OUT_FILE=bharatcode[.exe];
+    GOOSE_*→BHARATCODE_* env vars; asset filenames bharatcode-<triple>.tar.bz2/.zip (EXACT match
+    to update.rs asset_name()); bharatcode-package subdir (matches update.rs:408); /tmp temp dir,
+    chmod/mv basenames, and all user-facing messages. `bash -n` clean.
+  - .github/workflows/build-cli.yml (CRITICAL): `--bin goose`→`--bin bharatcode` (musl release),
+    goose.exe checks, goose-package→bharatcode-package, tar/zip + ARTIFACT_* + upload-artifact
+    name → bharatcode-${TARGET}. Kept `-p goose-cli`.
+  - release.yml/canary.yml: CLI artifact globs goose-*→bharatcode-* (kept Goose*.zip desktop
+    glob = remainder); publish-docker.yml: ghcr image + subject-name → .../bharatcode.
+  - Justfile: copy-binary/copy-binary-intel/copy-binary-windows/release-windows binary basenames
+    goosed→bharatcoded, goose→bharatcode (were BROKEN); run-server `--bin goosed`→`--bin bharatcoded`;
+    FIXED `GOOSE_RECORD_MCP=1`→`BHARATCODE_RECORD_MCP=1` (test reads BHARATCODE_); product-name
+    echoes. Kept all `-p goose-*` crate refs + Goose.app desktop path (remainder).
+  - Docs: RELEASE.md/RELEASE_CHECKLIST.md (product/config-dir ~/.config/bharatcode/deeplink
+    bharatcode://); CUSTOM_DISTROS.md (TARGETED line-addressed sed: product name, GOOSE_PROVIDER/
+    MODEL/DISABLE_KEYRING/TELEMETRY→BHARATCODE_, config dir, repo clone, trademark wording rewrite
+    to keep upstream Goose/Block marks with their owners). KEPT crate paths crates/goose…, the
+    architecture-diagram boxes, the literal recipe-schema keys `goose_provider`/`goose_model`
+    (mod.rs:101/104), and `GOOSE_BUNDLE_NAME` (read by un-rebranded desktop).
+  - Build-safe metadata: workspace Cargo.toml repository + deny.toml issue-URL → aaif-bharatcode.
+- GUARD (invariants proven, not assumed): cargo fmt = no-op (tree already clean, --check passes);
+  `cargo build -p goose-cli --no-default-features --features portable-default` GREEN; goose-cli
+  234/234 lib tests; all 4 touched workflows yaml-parse OK; grep gate over packaging files =
+  zero residual aaif-goose / block/goose / ghcr goose / user-facing goose.
+- REMAINDER (documented, tied to un-rebranded ui/desktop + internal CI; out of v5 core):
+  desktop bundle naming (Goose*.zip / Goose.app / Goose-darwin-* / GOOSE_BUNDLE_NAME), publish-npm
+  + bundle-desktop*.yml, the CI-bot workflows goose-{issue-solver,pr-reviewer,release-notes}.yml /
+  code-review.yml / test-finder.yml (pull ghcr.io/aaif-goose/goose image), and goose-docs.ai in
+  two .github issue/discussion templates. Crate rename goose-*→bharatcode-* stays v8.
+- Chaining v6 (Indic i18n scaffold).
+
+### 2026-06-20 — v5 ✅ Release engineering (dynamic workflow)
+- THIRD_PARTY_LICENSES.md (NEW, 889 lines): aggregated from the actual portable-default
+  dep tree (`cargo tree` + `cargo metadata` license/repo fields), grouped by SPDX.
+- Packaging rebranded to bharatcode (binary path fixes too): Dockerfile, download_cli.sh
+  (84 bharatcode refs, 0 goose), download_cli.ps1, Justfile copy-binary, and the main CI
+  release workflows (build-cli/release/canary/publish-docker artifact names + --bin).
+- Build OK (6m04s); 234/234; leak-free. Documented remainder (partial): desktop/CI-bot
+  workflows tied to the un-rebranded ui/desktop (deferred). The one Dockerfile `goose`
+  ref is the intentional `cargo -p goose-cli` crate name (renamed at v8).
+- Chaining v6 (Indic i18n scaffold).
+
+### 2026-06-20 — v6 ✅ Indic i18n scaffold (dynamic workflow)
+- New crates/goose-cli/src/i18n/ (mod.rs + en.json + hi.json), std-only (LazyLock maps).
+  Locale resolver: BHARATCODE_LANG -> config bharatcode_lang -> LANG -> "en". `tr!(key)`
+  macro + t() with English fallback. Wired a starter set of high-traffic strings (ready
+  banner, "No provider/model configured", configure welcome) through tr!; Hindi table for them.
+- Original work (not a Codex port → no extra license files). English output byte-identical.
+- Build OK; 239/239 lib tests (5 new i18n tests); leak-free.
+- Chaining v7 (India model presets).
+
+### 2026-06-20 — v7 ✅ India model presets (dynamic workflow)
+- New declarative providers: sarvam.json (Sarvam AI), krutrim.json (Ola Krutrim) — India-
+  hosted openai-compatible, auto-registered. New presets module + configure hook offering
+  "Recommended (India / open-weight)": local Ollama (qwen2.5-coder, deepseek-coder) +
+  hosted (Sarvam, Krutrim, Qwen/DeepSeek). i18n keys added. Build OK; tests green; leak-free.
+- v8 (internal crate rename) DEFERRED to late (high-churn/internal); proceeding with feature batch.
+- Switching to PARALLEL BATCH engine: firing v8-v14 (ledger, budget? no—execpolicy, slash,
+  verify-before-done, residency, doctor) implemented in parallel + single integrate.
+
+### 2026-06-20 — v8–v14 ✅ PARALLEL BATCH integrated (green build)
+- Integration: `cargo fmt` clean; `cargo check`/`cargo build -p goose-cli --no-default-features --features portable-default` OK; 242/242 lib tests pass; no Goose/Block user-facing leak (--help, `cost`, doctor surfaces clean).
+- v8 ✅ INR cost ledger — new commands/cost_ledger.rs + cost.rs, `bharatcode cost` subcommand wired in cli.rs/mod.rs, ₹ footer in session/output.rs. Compiled & integrated; done.
+- v10 ✅ Codex-style exec policy (opt-in, default-off) — new goose/src/exec_policy.rs, gate in developer/shell.rs, pub mod in lib.rs. Compiled & integrated; done.
+- v11 ✅ Slash-command & /help polish — grouped help + help_tr fallback in session/input.rs. Compiled & integrated; done.
+- v12 ✅ Verify-before-done — new goose/src/verify.rs (#[path] mod in agent.rs), guarded finalization call. Compiled & integrated; done.
+- v13 ✅ Data-residency guard (opt-in) — new goose/src/residency.rs, guard_endpoint call in providers/openai.rs, pub mod in lib.rs. Compiled & integrated; done.
+- v14 ✅ Doctor enhancements — read-only BharatCode settings summary in commands/doctor.rs. Compiled & integrated; done.
+
+### 2026-06-20 — BATCH v8,v10-v14 ✅ (PARALLEL workflow, ~16 min for 6 versions)
+- v8 INR cost ledger: cost_ledger.rs + `bharatcode cost` (₹ summary, USD->INR via
+  BHARATCODE_USD_INR), compact ₹ in session footer.
+- v10 execpolicy: clean-room opt-in command allow/deny gate (BHARATCODE_EXEC_POLICY, default off).
+- v11 slash/help polish: grouped interactive /help, i18n-ready.
+- v12 verify-before-done: verify.rs runs project test/build, emits Verified/Failed/Skipped
+  (BHARATCODE_VERIFY, default off).
+- v13 data-residency guard: residency.rs egress allowlist (BHARATCODE_RESIDENCY, default off).
+- v14 doctor enhancements: richer settings summary.
+- Integrate: clean first compile; build OK; 242/0 lib tests; leak-free. (Numbering is
+  execution-sequential; maps to roadmap content, not 1:1 with versions.md rows.)
+- Firing batch 2 (v15-v20): budget gate, approval modes, recipe library, cost-aware routing,
+  MCP polish, offline/privacy mode.
+
+### 2026-06-20 — v15–v20 ✅ PARALLEL BATCH integrated (green build)
+- Integration: `cargo fmt` clean; `cargo check`/`cargo build -p goose-cli --no-default-features --features portable-default` OK (first compile clean, no fixups needed); 250/250 lib tests pass (+8 new); no Goose/Block user-facing leak (--help, recipes-library surfaces clean; only internal GooseMode/GooseClient type names + BudgetAction::Block enum retained per invariant).
+- v15 ✅ Budget gate (₹ INR spend cap, default OFF via BHARATCODE_BUDGET_INR) — new commands/budget.rs (reuses cost_ledger), session/mod.rs per-turn guard, mod.rs pub mod, en/hi i18n keys. Compiled & integrated; done.
+- v16 ✅ Approval modes refinement — new goose/src/permission/approval_mode.rs (ApprovalMode<->GooseMode, BHARATCODE_APPROVAL opt-in, resolve_mode no-op when unset), permission/mod.rs re-exports. Compiled & integrated; done.
+- v17 ✅ India recipe library — new commands/recipes_library.rs + 4 embedded YAML templates, `bharatcode recipes-library [--show <id>]` wired in cli.rs/mod.rs, en/hi i18n keys. Compiled & integrated; done.
+- v18 ✅ Cost-aware model routing (opt-in, default OFF via BHARATCODE_COST_ROUTING) — new goose/src/cost_routing.rs, lib.rs pub mod, model_config.rs with_configured_fast_model hook. Compiled & integrated; done.
+- v19 ✅ MCP UX polish — additive in goose/src/agents/mcp_client.rs (connection_status, describe_service_error, summarize_tools/resources/prompts + tests). Compiled & integrated; done.
+- v20 ✅ Offline / no-egress mode (single BHARATCODE_OFFLINE switch, default OFF) — new goose/src/offline.rs (composes residency/telemetry/local-host guard), lib.rs pub mod. Compiled & integrated; done.
+
+### 2026-06-20 — BATCH v15-v20 ✅ (PARALLEL, clean first compile, 250/0 tests)
+- v15 budget gate (BHARATCODE_BUDGET_INR + warn|deny, ₹, default off, reuses ledger).
+- v16 approval modes (BHARATCODE_APPROVAL: chat/ask/auto/full+yolo, safe default).
+- v17 India recipe library (`bharatcode recipes-library`: UPI review, Aadhaar/PII+DPDP
+  audit, GST helper, Indic localization — 4 templates + --show).
+- v18 cost-aware model routing (BHARATCODE_COST_ROUTING, prefers cheap/local, default off).
+- v19 MCP UX polish (clearer client errors/status).
+- v20 offline/no-egress mode (BHARATCODE_OFFLINE composes local-only+residency+telemetry-off).
+- Build OK; 250/0; leak-free. 20 versions delivered. Firing batch 3 (v21-v26).
+
+### 2026-06-20 — v21–v26 ✅ PARALLEL BATCH integrated (green build)
+- Integration: `cargo fmt` clean; `cargo check` + `cargo build -p goose-cli --no-default-features --features portable-default` OK (first compile clean, no fixups needed); 260/260 lib tests pass (+10 new: v21 theme 6, v25 keybindings 4); no Goose/Block user-facing leak (--help + `git --help`/`git` surfaces clean; the only "goose" strings in `git` output are real working-tree filenames/paths the read-only helper reports, not hardcoded UI). New-file grep for user-facing goose/Block = none.
+- v21 ✅ CLI theming (Tiranga) — new goose-cli/src/theme.rs (DEFAULT/TIRANGA/NONE Style sets, NO_COLOR + BHARATCODE_THEME resolution, unset = byte-identical default), lib.rs pub mod. 6 tests. Compiled & integrated; done.
+- v22 ✅ `bharatcode git` read-only repo summary — new commands/git_helper.rs (branch/commit/status/ahead-behind/recent commits via read-only git subcommands), cli.rs Command::Git + dispatch + get_command_name, commands/mod.rs pub mod. Compiled & integrated; done.
+- v23 ✅ Opt-in on-disk prompt cache (default OFF via BHARATCODE_CACHE) — new goose/src/prompt_cache.rs (SHA-256 key, JSON store, cached_complete hook), lib.rs pub mod, githubcopilot.rs request-boundary wrap. 4 tests. Compiled & integrated; done.
+- v24 ✅ Retry/backoff hardening — new goose/src/retry_policy.rs (exp backoff + jitter, BHARATCODE_RETRY_* env, clamped defaults, retry_async wrapper), lib.rs pub mod, nanogpt.rs fetch_supported_models wired. 8 tests. Compiled & integrated; done.
+- v25 ✅ Customizable interactive keybindings — new goose-cli/src/keybindings.rs (Keybindings::default reproduces built-ins, from_config honors legacy BHARATCODE_CLI_NEWLINE_KEY + BHARATCODE_KEYS, tolerant parse_key), lib.rs pub mod, session/builder.rs config read. 4 tests. Compiled & integrated; done.
+- v26 ✅ Codebase context (RAG-lite, default OFF via BHARATCODE_CODEBASE_CONTEXT) — new goose/src/codebase_context.rs (bounded gitignore-respecting scanner, compact layout/manifest/README blob), lib.rs pub mod. 7 tests. Compiled & integrated; done.
+- Build OK; 260/0; leak-free. 26 versions delivered.
+
+### 2026-06-20 — BATCH v21-v26 ✅ (PARALLEL, clean first compile, 260/0)
+- v21 Tiranga CLI theming (BHARATCODE_THEME; NO_COLOR respected). v22 `bharatcode git`
+  read-only repo summary. v23 prompt/response cache (BHARATCODE_CACHE, default off).
+  v24 retry/backoff policy (BHARATCODE_RETRY_*). v25 keybindings config. v26 codebase
+  RAG-lite scanner (BHARATCODE_CODEBASE_CONTEXT, default off).
+- Build OK; 260/0; leak-free. 26 versions delivered.
+- NEXT: adversarial REVIEW pass (parallel critics) over v8-v26 — flagged risk: some
+  features (cache/retry/cost-routing) wired into a single provider, may be dead for others.
+
+### 2026-06-20 — WIRING/BUG-FIX INTEGRATION ✅ (dead features now fire for ALL providers)
+- Resolves the flagged risk above: cache/retry/cost-routing/residency were single-site
+  (dead for most providers). Re-wired at central choke points + fixed safety bugs.
+- Integration gate: `cargo fmt` clean; `cargo check` + `cargo build -p goose-cli
+  --no-default-features --features portable-default` OK (clean first compile, NO fixups
+  needed — every changed file compiled as-is). `bharatcode --help` leak-free; binary 1.38.0.
+- Tests: goose-cli `--lib` 261/0 pass. goose `--lib` with `--features rustls-tls`
+  (the meaningful run; portable-default pulls rustls-tls) = 1564 pass / 9 fail — ALL 9 are
+  PRE-EXISTING rebrand artifacts, none caused by this integration:
+  prompt_manager insta snapshots (system prompt now says "bharatcode", .snap not regenerated),
+  toolshim test (input literal still "goose-fork" vs expected "bharatcode-fork"),
+  session-backed tests (stale dev sessions.db still has `goose_mode` column vs renamed
+  `bharatcode_mode` read — migration gap; fresh/CI DB unaffected), 2 acp + 1 skills env tests.
+  NOTE: the bare `cargo test -p goose --lib` from the prompt is itself broken in this repo
+  (goose `default = []` enables no sqlx/jsonwebtoken runtime feature) → 120 spurious
+  "runtime-tokio feature must be enabled" panics; only meaningful under a TLS feature.
+- (1) RESIDENCY+OFFLINE egress guard: now central in goose-providers/api_client.rs
+  `send_request` → `screen_endpoint` (hook installed by goose::offline::install_egress_guard
+  → enforce_egress_policy → residency::guard_endpoint_with_mode), registered at
+  init_registry(). Fires for EVERY provider (incl. declarative sarvam/krutrim); redundant
+  openai.rs single-site call removed.
+- (2) PROMPT CACHE: wired into the streaming path (reply_parts.rs stream_response_from_provider)
+  the agent loop actually uses — HIT short-circuits to zero-cost stream, MISS tees+stores on
+  completion. cached_complete HIT cost bug fixed (zeroes usage). No-op unless BHARATCODE_CACHE.
+- (3) COST ROUTING: route_lead_model now applied to the LEAD model in both central
+  model_config constructors (was fast-model only). Default off = unchanged.
+- (4) RETRY: BHARATCODE_RETRY_* now applied centrally in ProviderRetry::with_retry via
+  RetryConfig::with_env_overrides() (all providers honor it); dead parallel retry_policy.rs
+  stack deleted (pub mod removed, no dangling refs — build confirms).
+- BUG FIXES verified firing: approval_mode "never"/"untrusted"/"read-only" now → Ask (was the
+  inverted-safety Full/yolo); exec_policy splitter hardened ($(...)/backtick/subshell/group);
+  computercontroller automation_script gated via self-contained exec_policy_gate; cost_ledger
+  day/month buckets now IST (+05:30); doctor.rs reports REAL keys (RESIDENCY_MODE_KEY,
+  BUDGET_INR_KEY, usd_inr_rate(), offline) — phantom keys gone; theme applied at doctor/cost/
+  git_helper sites; i18n cost.* keys 29/29 en↔hi parity. Leak fixes landed (agent.rs
+  ~/.config/bharatcode/adversary.md, mcp_client.rs doc "BharatCode").
+- Build OK; goose-cli 261/0; goose 1564/9 (9 pre-existing rebrand, 0 integration regressions);
+  leak-free (--help + integration-added code). Residual brand strings in touched files are
+  pre-existing internal Rust identifiers (GooseClient/GoosePlatform/goose.external_dispatch/
+  goose_mode col) + one stale computercontroller cache-path comment — out of scope, not user-facing.
+
+### 2026-06-20 — 9-TEST FIX INTEGRATION ✅ (goose suite now 1573/0)
+- Integrated the fixes for the 9 pre-existing rebrand-artifact failures from the prior batch.
+  `cargo fmt` clean; **goose `--lib --features rustls-tls` = 1573 passed / 0 failed** (was
+  1564/9); **goose-cli `--no-default-features --features portable-default --lib` = 261/0**
+  (held green). `bharatcode --help` runs, BharatCode branding, zero user-facing Goose/Block.
+- Mix of CODE-FIXES (real regressions) and FIXTURE/IDENTITY updates, all verified:
+  - CODE: session_manager.rs — CURRENT_SCHEMA_VERSION 14→15 + migration arm 15 renames the
+    on-disk `goose_mode`→`bharatcode_mode` column (pragma-guarded ALTER … RENAME COLUMN; no-op
+    on fresh DBs, adds col if neither exists). Fixes prepare_tools_returns_sorted_tools_… which
+    panicked at create_session on the renamed column. Live dev DB migrated to v15.
+  - CODE: acp/server.rs — `ClientCapabilitiesMeta.goose` field got `#[serde(rename =
+    "bharatcode", default)]` so the BharatCode client's customNotifications/mcpHostCapabilities
+    are read from the `bharatcode` meta key (was silently dropped). Fixes
+    test_goose_custom_notifications_capability_reads_client_meta.
+  - FIXTURE: 4 prompt_manager insta snapshots regenerated to the rebranded "bharatcode" identity
+    header (old goose/AAIF text + code_execution block removed — code_execution is
+    `cfg(feature="code-mode")`-gated, not in rustls-tls/portable-default).
+  - FIXTURE: skills/client.rs test writes SKILL.md to `.bharatcode/skills` (discovery dropped
+    `.goose`); toolshim.rs windows-path test uses `BharatCode-fork` (input+expected consistent;
+    `\B` is not a JSON escape so the sanitizer is preserved — avoids the pre-existing `\b`
+    JSON-recovery corruption flagged as out-of-scope); onboarding.rs model-only import asserts
+    no `active_provider` persisted (local-first default makes get_bharatcode_provider() no longer
+    Err on empty config — intentional, not reverted).
+- LEAK GATE: grep of all 9 changed files for goose/Block → only internal Rust identifiers
+  (GooseMode/GooseAcpAgent/GooseClientCapabilities, `goose_*` field/fn/test names, `goose_providers`
+  crate paths), code comments, the English word "block" / ACP `ContentBlock` protocol type, and
+  wire keys that already emit `"bharatcode"`. Snapshots say "bharatcode"; onboarding label is
+  "BharatCode configuration". Zero user-facing leaks. leak_free = true.
+
+### 2026-06-20 — QUALITY PASS ✅ (review → wiring/bug fixes → fix9): full suite GREEN
+- Adversarial review found ~half of v8-v26 was dead/single-site or buggy. Fixed:
+  * Central egress guard (residency+offline) in goose-providers/api_client.rs → screens
+    ALL providers (was OpenAI-only). prompt_cache wired into the real stream path
+    (reply_parts.rs) + ₹-on-hit bug fixed. Retry folded into central ProviderRetry
+    (BHARATCODE_RETRY_*); deleted parallel retry_policy.rs. Cost-routing now routes the
+    LEAD model. approval "never" inversion fixed (→ safe Ask) + regression test.
+    exec_policy substitution/subshell bypass hardened + computercontroller gate. IST
+    day/month bucketing. 2 doc-comment leaks (agent.rs, mcp_client.rs) fixed.
+- CI gap fixed: was only testing goose-cli; now also `cargo test -p goose --lib
+  --features rustls-tls` (the goose crate needs that feature for sqlx runtime).
+- CRITICAL fix (fix9): rebrand renamed sessions DB column goose_mode→bharatcode_mode
+  with NO migration → existing users' DBs would break. Added schema v14→v15 migration
+  (idempotent RENAME COLUMN). Verified live DB migrated. Also fixed ACP _meta namespace
+  regression; updated rebrand snapshot/fixture tests.
+- RESULT: goose 1573/0 + goose-cli 261/0 = **1834 tests pass**; build green; 0 leaks;
+  6/6 compliance files. 26 versions of real, now-actually-wired features. → release track.
+
+### 2026-06-20 — PRE-RELEASE GATE ✅ (release binary built, RELEASE-READY)
+- FINAL release gate run against the green tree. All five gates pass; release_ready = true.
+- RELEASE BUILD: `cargo build -p goose-cli --release --no-default-features --features
+  portable-default` → `Finished release in 10m46s`, exit 0. Binary:
+  `target/release/bharatcode` (ELF x86-64, 146 MB). After the one leak fix below, an
+  incremental rebuild (`Finished in 2m39s`, exit 0) reproduced the clean binary.
+- FULL TESTS: `cargo test -p goose --lib --features rustls-tls` = **1573 passed / 0
+  failed**; `cargo test -p goose-cli --no-default-features --features portable-default
+  --lib` = **261 passed / 0 failed**. Total 1834/0.
+- ALL-COMMAND SMOKE: `--version` (1.38.0) + `doctor` (exit 0, BharatCode branding) +
+  `<cmd> --help` for all 23 subcommands present in the build (configure, info, doctor,
+  session, run, mcp, acp, serve, project, projects, recipe, recipes-library, skills,
+  plugin, schedule, gateway, term, tui, completion, cost, git, presets, review) — all
+  exit 0. NOTE: the top-level `update` (self-update) command is `#[cfg(feature="update")]`
+  -gated and `update` is intentionally NOT in `portable-default` (it pulls
+  `sigstore-verify`), so it is by-design absent from the portable release binary.
+- LEAK GATE: found + fixed ONE real user-facing leak — the embedded `load_tutorial`
+  content `crates/goose-mcp/src/tutorial/tutorials/build-mcp-extension.md` (embedded via
+  `include_dir!`, served to users) contained `goose session` / `goose run` command
+  examples (matched `strings | grep "goose run"`). Rebranded all 11 `goose`→`bharatcode`
+  refs; rebuilt; re-ran gate → `strings target/release/bharatcode | grep -iE "created by
+  Block|Block's|goose configure|goose run"` now CLEAN, broader `goose <cmd>` scan CLEAN,
+  and all help outputs CLEAN. (Out-of-binary: `crates/goose/acp-schema.json` has one
+  "goose session" in a schema description, but it is a generated dev artifact, NOT
+  embedded in the binary — confirmed absent from `strings`.)
+- COMPLIANCE: LICENSE (Apache-2.0), LICENSES/LICENSE-goose (© Block), LICENSES/
+  LICENSE-codex (© OpenAI), NOTICE (Goose + Codex + §4(b)), MODIFICATIONS.md,
+  THIRD_PARTY_LICENSES.md (scoped to portable-default), README.md, CHANGELOG.md
+  (BharatCode 0.1.0) — all present and accurate.
+- release_ready = release_build_ok && full_tests_ok && all_commands_ok && leak_free &&
+  compliance_ok = **TRUE**.
