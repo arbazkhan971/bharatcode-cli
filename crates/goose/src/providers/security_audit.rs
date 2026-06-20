@@ -78,8 +78,18 @@ pub struct Posture {
 impl Posture {
     /// Snapshot the live, effective posture through each feature's own accessor.
     pub fn capture() -> Self {
-        // Telemetry: "not chosen" is treated as off.
-        let telemetry = crate::posthog::get_telemetry_choice().unwrap_or(false);
+        // Telemetry: "not chosen" is treated as off. When the `telemetry`
+        // feature is compiled out, telemetry can never run, so it is off.
+        let telemetry = {
+            #[cfg(feature = "telemetry")]
+            {
+                crate::posthog::get_telemetry_choice().unwrap_or(false)
+            }
+            #[cfg(not(feature = "telemetry"))]
+            {
+                false
+            }
+        };
         let offline = crate::offline::is_offline();
         let residency = crate::residency::residency_mode();
         let redaction = crate::agents::platform_extensions::developer::redact::is_enabled();
