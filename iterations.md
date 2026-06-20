@@ -512,3 +512,34 @@ engineering (THIRD_PARTY_LICENSES, installers, Dockerfile); LICENSES/LICENSE-cod
   (embedded via include_dir!, surfaces in `bharatcode skills list` as builtin://skills/ultracode);
   (2) ~/.codex/skills/ultracode/SKILL.md; (3) ~/.claude/skills/ultracode -> ~/.agents/skills/ultracode.
 - Verified: rebuilt goose-cli (portable-default) clean; `bharatcode skills list` shows ultracode.
+
+## v37 — Text embeddings client (default OFF) — done
+- Feature fires: `goose::providers::EmbeddingClient` (re-exported in providers/mod.rs) is built by
+  `EmbeddingClient::from_env()` gated on `BHARATCODE_EMBED_MODEL`; unset => `None` => zero behaviour change.
+  `embed_texts()` routes through the shared `ApiClient::api_post` path so the residency/offline egress
+  guard fires automatically. Real call site: re-exported public type reachable by RAG/codebase-context consumers.
+- Evidence: providers::embeddings unit tests pass (OpenAI-compatible vector parse, Ollama-suffix endpoint,
+  from_env None when key absent, empty-input short-circuit). 4/4 green.
+
+## v38 — Multimodal vision preflight guard on read_image (default OFF) — done
+- Feature fires: developer extension `call_tool` "read_image" arm now returns `Self::guard_image_result(result)`;
+  guard is a no-op unless `BHARATCODE_VISION_GUARD` is truthy, then it prepends a low-priority advisory when the
+  active model's v33 registry capabilities show vision=false. Real call site: the sole read_image result producer.
+- Evidence: vision_guard unit tests pass (text-only model => advisory, vision model => None, unknown => None,
+  is_enabled env toggle). 4/4 green.
+
+## v39 — Offline model pack manifest `bharatcode model-pack` — done (fixed)
+- Fix: `ModelPackEntry` fields changed `&'static str` -> `Cow<'static, str>` so the JSON round-trip test can
+  Deserialize into owned strings while `static PACK` keeps cheap `Cow::Borrowed` literals (E0597 'static borrow).
+- Feature fires: wired in goose-cli/src/cli.rs (mod decl, `Command::ModelPack`, get_command_name arm, dispatch to
+  `model_pack::handle_model_pack`). Verified: `bharatcode model-pack --help` and `bharatcode model-pack` render the
+  manifest (qwen2.5-coder ... with registry ctx windows), no network. cli lib tests + model_pack tests green.
+
+## v40 — Active-model capability advisory in system prompt (default OFF) — done
+- Feature fires: `SystemPromptBuilder::build()` inserts `bharatcode_model_caps` into system_prompt_extras when
+  `provider_caps::capability_block()` returns Some — only when `BHARATCODE_MODEL_CAPS` is truthy AND the active
+  model is in the v33 registry; otherwise None => byte-identical default prompt. Real call site: exercised prompt
+  assembly path. Updated the stale `all_platform_extensions` snapshot to include the tracked `ultracode` builtin
+  skill (no Goose reintroduced; only a builtin skill line + assertion-line metadata shift).
+- Evidence: provider_caps unit tests pass (disabled=>None, enabled+gpt-4o=>caps block <500 chars with vision/tools,
+  enabled+unknown=>None, is_truthy table). 4/4 green.

@@ -4,6 +4,7 @@ pub mod image;
 pub mod redact;
 pub mod shell;
 pub mod tree;
+pub mod vision_guard;
 pub mod web_search;
 
 use crate::agents::extension::PlatformExtensionContext;
@@ -129,6 +130,29 @@ impl DeveloperClient {
                     *s = redact::redact(s);
                 }
             }
+        }
+
+        result
+    }
+
+    /// Apply the opt-in vision preflight guard to a `read_image` result.
+    ///
+    /// When `BHARATCODE_VISION_GUARD` is unset (the default) the result is
+    /// returned unchanged. When enabled and the active model is recognised as
+    /// text-only, a single advisory line is prepended to the result content so
+    /// the user is warned the attached image may be ignored.
+    fn guard_image_result(mut result: CallToolResult) -> CallToolResult {
+        if !vision_guard::is_enabled() {
+            return result;
+        }
+
+        if let Some(advisory) = vision_guard::active_model_name()
+            .as_deref()
+            .and_then(vision_guard::vision_advisory)
+        {
+            result
+                .content
+                .insert(0, Content::text(advisory).with_priority(0.0));
         }
 
         result
@@ -300,10 +324,13 @@ impl McpClientTrait for DeveloperClient {
                 .with_priority(0.0)])),
             },
             "read_image" => match Self::parse_args::<ImageReadParams>(arguments) {
-                Ok(params) => Ok(self
-                    .image_tool
-                    .image_read_with_cwd(params, working_dir)
-                    .await),
+                Ok(params) => {
+                    let result = self
+                        .image_tool
+                        .image_read_with_cwd(params, working_dir)
+                        .await;
+                    Ok(Self::guard_image_result(result))
+                }
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))

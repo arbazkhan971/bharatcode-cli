@@ -16,6 +16,12 @@ use crate::{
 };
 use std::path::Path;
 
+// Active-model capability advisory (opt-in via BHARATCODE_MODEL_CAPS). Attached
+// here via `#[path]` rather than in lib.rs to keep this feature's footprint
+// confined to the prompt-assembly path and its own file.
+#[path = "../provider_caps.rs"]
+mod provider_caps;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -178,6 +184,13 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // When disabled or empty this is None and the prompt is unchanged.
         if let Some(memory_block) = crate::memory_store::recall_for_prompt() {
             system_prompt_extras.insert("bharatcode_memory".to_string(), memory_block);
+        }
+
+        // Active-model capability advisory (opt-in via BHARATCODE_MODEL_CAPS).
+        // When disabled or the active model is unknown this is None and the
+        // prompt is unchanged.
+        if let Some(caps) = provider_caps::capability_block() {
+            system_prompt_extras.insert("bharatcode_model_caps".to_string(), caps);
         }
 
         if goose_mode == GooseMode::Chat {

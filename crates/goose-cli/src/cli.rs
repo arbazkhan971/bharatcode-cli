@@ -40,6 +40,12 @@ use std::io::Read;
 use std::path::PathBuf;
 use tracing::warn;
 
+// `crates/goose-cli/src/commands/mod.rs` is a contended shared file in this
+// wave, so the offline model-pack module is declared here, from cli.rs (the
+// file that owns this feature), via an explicit `#[path]`.
+#[path = "commands/model_pack.rs"]
+mod model_pack;
+
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -831,6 +837,14 @@ enum Command {
     #[command(about = "List recommended India / open-weight model presets")]
     Presets {},
 
+    /// Print the offline model pack manifest (Ollama tags + sizes + pull commands)
+    #[command(about = "Print an offline, air-gap-friendly model pack manifest")]
+    ModelPack {
+        /// Emit the manifest as JSON
+        #[arg(long, help = "Emit the manifest as JSON")]
+        json: bool,
+    },
+
     /// Browse the curated India developer recipe/template library
     #[command(about = "List or print curated India developer recipe templates")]
     RecipesLibrary {
@@ -1380,6 +1394,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Doctor {}) => "doctor",
         Some(Command::Git { .. }) => "git",
         Some(Command::Presets {}) => "presets",
+        Some(Command::ModelPack { .. }) => "model-pack",
         Some(Command::RecipesLibrary { .. }) => "recipes-library",
         Some(Command::Cost { .. }) => "cost",
         Some(Command::Privacy { .. }) => "privacy",
@@ -2171,6 +2186,9 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Presets {}) => {
             crate::commands::presets::print_presets();
             Ok(())
+        }
+        Some(Command::ModelPack { json }) => {
+            model_pack::handle_model_pack(model_pack::ModelPackOptions { json }).await
         }
         Some(Command::RecipesLibrary { show }) => match show {
             Some(id) => crate::commands::recipes_library::show_recipe(&id),
