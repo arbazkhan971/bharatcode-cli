@@ -35,6 +35,13 @@ mod db_health;
 #[path = "cost_extensions.rs"]
 mod cost_extensions;
 
+// GA release-profile footer (BharatCode v97). Renders one read-only themed line
+// carrying the crate version, build profile (debug/release), and the GA
+// release-channel marker. Opt-in via `BHARATCODE_COST_RELEASE`; default OFF =>
+// the cost output is byte-identical. Declared inline next to its only call site.
+#[path = "release_profile.rs"]
+mod release_profile;
+
 // CI-only machine-readable footer + GitHub Actions annotation, declared inline
 // next to its only call site (the `cost` footer). Emitted only under CI; with
 // no CI signal the cost output is byte-identical to before.
@@ -342,6 +349,14 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
     // printed, keeping the default cost output byte-identical. Read-only: it
     // stats the DB + its WAL sidecar and queries the session read API.
     if let Some(line) = db_health::storage_footer().await {
+        println!("  {}", crate::theme::muted(line));
+    }
+
+    // Optional GA release-profile footer. Rendered only when
+    // `BHARATCODE_COST_RELEASE` is truthy; unset/falsey => nothing printed, so
+    // the default cost output stays byte-identical. Read-only: it reports only
+    // compile-time build identity (version + profile + GA channel).
+    if let Some(line) = release_profile::release_footer() {
         println!("  {}", crate::theme::muted(line));
     }
 

@@ -339,7 +339,7 @@ mod tests {
         assert!(out.contains("List the files please"));
         assert!(out.contains("Sure, running that now."));
         assert!(
-            out.contains("Tool shell:"),
+            out.contains("Tool call shell:"),
             "tool name line missing:\n{out}"
         );
         assert!(out.contains("ls -la"), "tool args missing:\n{out}");
