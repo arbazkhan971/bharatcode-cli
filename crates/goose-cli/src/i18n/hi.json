@@ -27,5 +27,9 @@
   "cost.empty": "अभी तक कोई LLM खर्च दर्ज नहीं हुआ। बही शुरू करने के लिए एक session चलाएँ।",
   "cost.sessions": "Sessions ({total} में से {shown})",
   "cost.more": "... {count} और (हर session देखने के लिए --all का उपयोग करें)",
-  "cost.by_month": "महीने के अनुसार"
+  "cost.by_month": "महीने के अनुसार",
+  "review.no_changes": "bharatcode review: समीक्षा के लिए कोई बदलाव नहीं",
+  "review.prompt_instructions": "आप नीचे दिए गए git diff की समीक्षा कर रहे हैं। correctness bugs, security समस्याएँ और स्पष्ट simplifications पहचानें। हर finding के लिए file और line बताएँ, समस्या समझाएँ और एक सुधार सुझाएँ। संक्षिप्त रहें और प्रशंसा छोड़ें। यदि कोई सार्थक समस्या न हो तो वैसा बताएँ।",
+  "review.findings_header": "## समीक्षा निष्कर्ष",
+  "review.scope_working_tree": "working tree बनाम HEAD"
 }

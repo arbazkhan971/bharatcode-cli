@@ -10,6 +10,7 @@ pub mod checks;
 pub mod codebase_context;
 pub mod config;
 pub mod context_mgmt;
+pub mod context_optimizer;
 pub mod cost_routing;
 pub mod conversation {
     pub use goose_providers::conversation::*;
@@ -27,6 +28,7 @@ pub mod hooks;
 pub mod instance_id;
 pub mod logging;
 pub mod mcp_utils;
+pub mod memory_store;
 pub mod model_config;
 pub mod oauth;
 pub mod offline;

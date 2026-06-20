@@ -3,6 +3,7 @@ pub mod edit;
 pub mod image;
 pub mod shell;
 pub mod tree;
+pub mod web_search;
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -23,6 +24,7 @@ use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tree::{TreeParams, TreeTool};
+use web_search::{WebSearchParams, WebSearchTool};
 
 pub static EXTENSION_NAME: &str = "developer";
 
@@ -32,6 +34,7 @@ pub struct DeveloperClient {
     edit_tools: Arc<EditTools>,
     tree_tool: Arc<TreeTool>,
     image_tool: Arc<ImageTool>,
+    web_search_tool: Arc<WebSearchTool>,
 }
 
 fn developer_instructions() -> &'static str {
@@ -80,6 +83,7 @@ impl DeveloperClient {
             edit_tools: Arc::new(EditTools::new()),
             tree_tool: Arc::new(TreeTool::new()),
             image_tool: Arc::new(ImageTool::new()),
+            web_search_tool: Arc::new(WebSearchTool::new()),
         })
     }
 
@@ -186,6 +190,22 @@ impl DeveloperClient {
                 Some(true),
                 Some(false),
             )),
+            Tool::new(
+                "web_search".to_string(),
+                "Search the web and return a list of result titles, URLs, and snippets. \
+                 Use this to look up current information, documentation, or facts that may \
+                 be outside your training data. Subject to the data-residency / offline egress \
+                 guard."
+                    .to_string(),
+                Self::schema::<WebSearchParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Web Search".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(true),
+            )),
         ]
     }
 }
@@ -256,6 +276,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "web_search" => match Self::parse_args::<WebSearchParams>(arguments) {
+                Ok(params) => Ok(self.web_search_tool.search(params).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -291,7 +318,8 @@ mod tests {
                 "apply_patch",
                 "shell",
                 "tree",
-                "read_image"
+                "read_image",
+                "web_search"
             ]
         );
     }

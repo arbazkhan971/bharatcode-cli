@@ -291,6 +291,22 @@ async fn do_compact(
         .map(|msg| msg.agent_visible_content())
         .collect();
 
+    // Opt-in smarter selection: when BHARATCODE_CONTEXT_OPTIMIZE is enabled,
+    // keep the most relevant/recent messages within a token budget before
+    // summarizing. Disabled by default, in which case this is a no-op that
+    // returns the full set unchanged (preserving current behavior).
+    let agent_visible_messages = if crate::context_optimizer::context_optimize_enabled() {
+        let context_limit = provider.get_model_config().context_limit();
+        let optimize_budget = (context_limit as f64 * DEFAULT_COMPACTION_THRESHOLD) as usize;
+        crate::context_optimizer::optimize_messages(
+            &agent_visible_messages,
+            optimize_budget,
+            TOOLCALL_SUMMARIZATION_BATCH_SIZE,
+        )
+    } else {
+        agent_visible_messages
+    };
+
     // Try progressively removing more tool response messages from the middle to reduce context length
     let removal_percentages = [0, 10, 20, 50, 100];
 

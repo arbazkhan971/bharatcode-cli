@@ -174,6 +174,12 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             system_prompt_extras.insert("hints".to_string(), hints);
         }
 
+        // Recall persisted cross-session memory (opt-in via BHARATCODE_MEMORY).
+        // When disabled or empty this is None and the prompt is unchanged.
+        if let Some(memory_block) = crate::memory_store::recall_for_prompt() {
+            system_prompt_extras.insert("bharatcode_memory".to_string(), memory_block);
+        }
+
         if goose_mode == GooseMode::Chat {
             system_prompt_extras.insert(
                 "chat_mode".to_string(),

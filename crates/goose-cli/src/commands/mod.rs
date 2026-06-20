@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod budget;
 pub mod configure;
 pub mod cost;
@@ -12,6 +13,7 @@ pub mod project;
 pub mod recipe;
 pub mod recipes_library;
 pub mod review;
+pub mod review_cmd;
 pub mod schedule;
 pub mod session;
 pub mod skills;

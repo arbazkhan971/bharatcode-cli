@@ -1195,6 +1195,33 @@ enum Command {
         #[arg(long = "severity", value_name = "LEVEL", default_value = "medium")]
         severity: String,
     },
+    /// Focused single-pass review of the working git diff.
+    ///
+    /// Gathers the working diff (or an explicit range), hands it to a single
+    /// review-focused agent turn through the shared run/session path, and
+    /// streams the agent's findings. The lightweight sibling of `review`.
+    #[command(
+        name = "review-diff",
+        about = "Review the working git diff in a single pass"
+    )]
+    ReviewDiff {
+        /// Diff range to review (e.g. "main...HEAD"). Defaults to the working
+        /// tree vs HEAD.
+        #[arg(value_name = "RANGE")]
+        range: Option<String>,
+
+        /// Provider for the review agent.
+        #[arg(long = "provider", value_name = "PROVIDER")]
+        provider: Option<String>,
+
+        /// Model for the review agent.
+        #[arg(long = "model", value_name = "MODEL")]
+        model: Option<String>,
+
+        /// Suppress non-result output from the underlying agent.
+        #[arg(long, short = 'q')]
+        quiet: bool,
+    },
     #[command(
         name = "validate-extensions",
         about = "Validate a bundled-extensions.json file",
@@ -1373,6 +1400,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::LocalModels { .. }) => "local-models",
         Some(Command::Completion { .. }) => "completion",
         Some(Command::Review { .. }) => "review",
+        Some(Command::ReviewDiff { .. }) => "review-diff",
         Some(Command::ValidateExtensions { .. }) => "validate-extensions",
         None => "default_session",
     }
@@ -2262,6 +2290,21 @@ pub async fn cli() -> anyhow::Result<()> {
                 checks_only,
                 summary_only,
                 severity,
+            })
+            .await
+        }
+        Some(Command::ReviewDiff {
+            range,
+            provider,
+            model,
+            quiet,
+        }) => {
+            use crate::commands::review_cmd::{handle_review_diff, ReviewDiffOptions};
+            handle_review_diff(ReviewDiffOptions {
+                range,
+                provider,
+                model,
+                quiet,
             })
             .await
         }
