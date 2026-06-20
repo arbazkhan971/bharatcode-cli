@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod bench;
 pub mod budget;
 pub mod configure;
 pub mod cost;
@@ -69,3 +70,16 @@ pub use mcp_registry::{handle_mcp_registry, McpRegistryAction};
 // `cli.rs`, owned by a sibling in this wave, dispatches to it. Every tutorial is
 // embedded and side-effect free, so default behavior is unchanged.
 pub use tutorials::{handle_tutorial, Tutorial, TUTORIALS};
+
+// Re-export the offline benchmark / eval harness entry point so it is reachable
+// as crate API. `handle_bench` runs each embedded `BenchCase` through one
+// headless turn via the shared session builder, grades the assistant reply with
+// a pure objective `Grader`, and reports an aggregate `BenchReport` (pass rate,
+// p50/p95 latency) as a table or `--json`. The embedded `recipes/bench.yaml`
+// data artifact (`BENCH_RECIPE_YAML`) documents the harness contract. Grading is
+// pure and the only env var is the per-case timeout clamp, so default behavior is
+// unchanged.
+pub use bench::{
+    grade, handle_bench, BenchCase, BenchOptions, BenchReport, CaseResult, Grader,
+    BENCH_RECIPE_YAML, CASES,
+};

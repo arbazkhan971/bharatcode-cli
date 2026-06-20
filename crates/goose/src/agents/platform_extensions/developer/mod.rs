@@ -1,4 +1,5 @@
 pub mod apply_patch;
+pub mod compliance;
 pub mod delegate;
 pub mod edit;
 pub mod editor_locator;
@@ -368,6 +369,7 @@ impl DeveloperClient {
                 Some(true),
                 Some(false),
             )),
+            compliance::compliance_tool(),
         ];
 
         if run_script::is_enabled() {
@@ -534,6 +536,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "verify_compliance" => match compliance::run(arguments, working_dir) {
+                Ok(result) => Ok(result),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "run_script" => match Self::parse_args::<run_script::RunScriptParams>(arguments) {
                 Ok(params) => Ok(run_script::run(params, working_dir).await),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -590,7 +599,8 @@ mod tests {
                 "web_search",
                 "rename_symbol",
                 "delegate",
-                "git_advanced"
+                "git_advanced",
+                "verify_compliance"
             ]
         );
         assert!(!names.iter().any(|n| n == "run_script"));

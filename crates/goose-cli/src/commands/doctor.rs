@@ -48,6 +48,14 @@ mod ci_check;
 #[path = "i18n_check.rs"]
 mod i18n_check;
 
+// Security hardening deep check (BharatCode v96). A read-only, always-on audit of
+// the six security pillars (exec sandbox, egress residency/offline, secret
+// redaction, exec policy, telemetry-off, config-dir permissions) plus a trailing
+// aggregate row. Declared inline alongside the other doctor checks, same posture
+// as `index_check`/`ecosystem_check` above; never mutates config or files.
+#[path = "security_check.rs"]
+mod security_check;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -301,6 +309,25 @@ async fn print_deep_checks() {
         Status::Fail => crate::theme::error(st.glyph()),
     };
     println!("  {} {}", glyph, msg);
+
+
+    // Security posture: a read-only, always-visible audit of the six security
+    // pillars (exec sandbox, egress residency/offline, secret redaction, exec
+    // policy, telemetry-off, config-dir permissions) with a trailing aggregate
+    // row = worst per-pillar status. Each pillar merely reflects its own feature
+    // env var; the audit itself is ungated and never gates the doctor run.
+    println!(
+        "{}",
+        crate::theme::heading(label("security.title", "Security"))
+    );
+    for row in security_check::security_rows(&security_check::gather()) {
+        let glyph = match row.status {
+            Status::Ok => crate::theme::success(row.status.glyph()),
+            Status::Warn => crate::theme::warning(row.status.glyph()),
+            Status::Fail => crate::theme::error(row.status.glyph()),
+        };
+        println!("  {} {}: {}", glyph, row.label, row.detail);
+    }
 
     println!();
 }

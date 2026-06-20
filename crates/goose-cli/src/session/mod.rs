@@ -46,16 +46,6 @@ mod status_banner;
 #[path = "../desktop_notify.rs"]
 mod desktop_notify;
 
-// BharatCode v98: 1.0 GA version policy + one-time GA welcome banner. The module
-// lives at crates/goose-cli/src/ga_release.rs and is pulled in here via #[path]
-// (the same out-of-tree precedent as `desktop_notify` above). Its only call site
-// is `ga_release::maybe_show_ga_banner()` near the top of `run_interactive`
-// below, which prints a brand-neutral one-time banner on an interactive TTY and
-// writes a state-dir marker so it fires at most once per install. After the
-// marker is written the default interactive output is unchanged.
-#[path = "../ga_release.rs"]
-mod ga_release;
-
 // BharatCode v99: release-readiness / no-egress assertion gate. Pure module; its
 // only call site is the start of `interactive()` below, right after the v63
 // recovery hint. It asserts this process's privacy invariants (telemetry off,
@@ -619,12 +609,6 @@ impl CliSession {
         let mut editor = self.create_editor()?;
         let history_manager = HistoryManager::new();
         history_manager.load(&mut editor);
-
-        // BharatCode v98: one-time 1.0 GA welcome banner. Fires exactly once per
-        // process and at most once per install — it self-gates on an interactive
-        // TTY and a state-dir marker, printing a brand-neutral line and writing
-        // the marker on first run, then staying silent thereafter.
-        ga_release::maybe_show_ga_banner();
 
         // BharatCode v89: one-line localized, theme-aware session banner. Only
         // shown on an interactive TTY with screen-reader mode off, so piped /

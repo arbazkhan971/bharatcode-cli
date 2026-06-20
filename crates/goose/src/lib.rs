@@ -52,11 +52,6 @@ pub mod providers;
 pub mod quickstart;
 pub mod recipe;
 pub mod recipe_deeplink;
-// BharatCode v94: canonical release asset names + SHA-256 manifest generator.
-// Kept in lock-step with the self-updater's `commands/update.rs::asset_name()`;
-// the module doctest is the live call site (asserting `asset_name(Target::LinuxX64)`
-// equals the exact string the updater expects), matching the v87 help_index pattern.
-pub mod release_packaging;
 pub mod residency;
 pub mod scheduler;
 pub mod scheduler_trait;
