@@ -33,6 +33,13 @@ mod ecosystem_check;
 #[path = "catalog.rs"]
 mod catalog;
 
+// CI-integration readiness deep check (BharatCode v77). A read-only probe that
+// detects a CI provider in the repo (GitHub Actions / GitLab CI / Jenkins) and
+// reports whether a non-interactive `bharatcode` step is present. Declared
+// inline alongside the other doctor checks, same posture as `index_check` above.
+#[path = "ci_check.rs"]
+mod ci_check;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -193,6 +200,28 @@ async fn print_deep_checks() {
         Status::Fail => crate::theme::error(st.glyph()),
     };
     println!("  {} {}", glyph, msg);
+
+    // CI-integration readiness: a read-only probe that detects a known CI
+    // provider in the tree (GitHub Actions / GitLab CI / Jenkins) and reports
+    // whether a non-interactive `bharatcode` step is already wired plus the
+    // `BHARATCODE_AUTOMATION` headless state. Always shown like the other deep
+    // checks; warns only when a provider is present without a bharatcode step.
+    // Reuses the cwd resolved above.
+    let (st, msg) = ci_check::ci_readiness(&cwd);
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+    // When CI is not yet wired (provider present without a bharatcode step, or
+    // no provider at all), surface a copy-paste GitHub Actions snippet as a
+    // muted hint so the operator has a known-good starting point.
+    if st != Status::Ok {
+        for line in ci_check::sample_workflow().lines() {
+            println!("      {}", crate::theme::muted(line));
+        }
+    }
 
     // Large-repo readiness: a read-only, bounded, gitignore-aware profile of the
     // current tree (file count, total bytes, deepest depth, largest file).

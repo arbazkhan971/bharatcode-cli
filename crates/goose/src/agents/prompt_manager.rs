@@ -55,6 +55,12 @@ mod ext_advisory;
 #[path = "../ext_digest.rs"]
 pub mod ext_digest;
 
+// Scripting/automation context block (opt-in via BHARATCODE_AUTOMATION).
+// Declared inline via `#[path]` so the wiring stays confined to the
+// prompt-assembly path and its own file, keeping lib.rs untouched.
+#[path = "../automation_mode.rs"]
+mod automation_mode;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -250,6 +256,12 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // When disabled this is None and the prompt is unchanged.
         if let Some(plan) = plan_mode::plan_block() {
             system_prompt_extras.insert("bharatcode_plan".to_string(), plan);
+        }
+
+        // Scripting/automation context block (opt-in via BHARATCODE_AUTOMATION).
+        // When disabled this is None and the prompt is byte-identical.
+        if let Some(b) = automation_mode::automation_block() {
+            system_prompt_extras.insert("bharatcode_automation".to_string(), b);
         }
 
         // Incremental-context repo digest (opt-in via BHARATCODE_REPO_DIGEST).

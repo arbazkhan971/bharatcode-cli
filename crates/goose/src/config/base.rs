@@ -23,6 +23,15 @@ use thiserror::Error;
 #[path = "../agent_caps.rs"]
 pub(crate) mod agent_caps;
 
+// Extension/plugin ecosystem config getters (plugin auto-update, MCP-registry
+// banner, recipe-share default output dir, automation-mode default) are read
+// through the typed `get_bharatcode_*` getters registered below. The
+// reader/summary helper lives in `ext_settings.rs`, wired in here (rather than
+// via lib.rs) so the module is reachable from the running binary alongside its
+// config keys, and surfaced through `Config::extension_settings_summary`.
+#[path = "../ext_settings.rs"]
+pub(crate) mod ext_settings;
+
 // Per-turn / per-session resource ceilings (v66) are read through the typed
 // `get_bharatcode_max_*` getters registered below. The reader/summary helpers
 // live in `resource_limits.rs`, wired in here (rather than via lib.rs) so the
@@ -583,6 +592,18 @@ impl Config {
     /// capabilities are active.
     pub fn agent_caps_summary(&self) -> Vec<String> {
         agent_caps::summary_lines_for_config(self)
+    }
+
+    /// Human-readable `key = value (source: env|config|default)` rows for the
+    /// extension/plugin ecosystem settings (plugin auto-update, MCP-registry
+    /// banner, recipe-share default output dir, automation-mode default),
+    /// resolved env-first from this config via the typed `get_bharatcode_*`
+    /// getters. Every setting defaults to its current behaviour (toggles off,
+    /// recipe output in the current directory), so the summary reflects
+    /// unchanged defaults until one is set. Gives doctor/info one source of
+    /// truth for these settings. Pure read: never mutates config.
+    pub fn extension_settings_summary(&self) -> Vec<String> {
+        ext_settings::summary_lines_for_config(self)
     }
 
     /// Human-readable `key = on/off` rows for the wave-v71-v80 ecosystem
@@ -1266,6 +1287,19 @@ config_value!(BHARATCODE_GIT_CONTEXT, String);
 config_value!(BHARATCODE_EXT_DIGEST, String);
 config_value!(BHARATCODE_MCP_REGISTRY_PIN, Option<String>);
 config_value!(BHARATCODE_AUTOMATION_SCRIPT, Option<String>);
+
+// Extension/plugin ecosystem settings (this wave). Plugin auto-update and the
+// MCP-registry banner are boolean toggles (default off); the recipe-share output
+// directory is a free-form path (default-empty => current directory). Registered
+// as first-class typed getters so doctor/info can read them via the standard
+// accessor path (which layers env over the config file) instead of raw env
+// lookups. All default to current behaviour, so default behaviour is unchanged.
+// The resolver/summary helper lives in `ext_settings` (wired via the `#[path]`
+// mod decl above) and is surfaced through `Config::extension_settings_summary`.
+// The automation-mode default reuses the existing `BHARATCODE_AUTOMATION` key.
+config_value!(BHARATCODE_PLUGIN_AUTO_UPDATE, Option<bool>);
+config_value!(BHARATCODE_MCP_REGISTRY_BANNER, Option<bool>);
+config_value!(BHARATCODE_RECIPE_OUT_DIR, Option<String>);
 
 // Per-turn / per-session resource ceilings (v66). Registered as first-class
 // typed getters so `bharatcode configure`/doctor can read them via the standard

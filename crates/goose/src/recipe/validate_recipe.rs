@@ -173,29 +173,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zzz_repro_target_sample() {
-        use crate::recipe::read_recipe_file_content::read_recipe_file;
-        let recipe_content = r#"version: 1.0.0
-title: Share Sample
-description: A recipe used to exercise the share bundle round-trip
-instructions: Do the thing carefully on {{ target }}
-prompt: Start the session for {{ target }}
-parameters:
-  - key: target
-    input_type: string
-    requirement: required
-    description: The target to operate on
-"#;
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("sample.yaml");
-        std::fs::write(&path, recipe_content).unwrap();
-        let rf = read_recipe_file(&path).unwrap();
-        eprintln!("PARENT_DIR: {:?}", rf.parent_dir);
-        let result = validate_recipe_template_from_file(&rf);
-        eprintln!("FROM_FILE RESULT: {:?}", result.as_ref().err());
-    }
-
-    #[test]
     fn test_validate_recipe_template_from_content_success() {
         let recipe_content = r#"
 version: 1.0.0

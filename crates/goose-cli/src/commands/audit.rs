@@ -427,8 +427,12 @@ mod tests {
     #[test]
     fn round_trip_through_a_temp_log() {
         let dir = std::env::temp_dir().join(format!("bc-audit-test-{}", std::process::id()));
-        std::env::set_var("BHARATCODE_PATH_ROOT", &dir);
-        std::env::set_var("BHARATCODE_AUDIT", "1");
+        // Hold the shared workspace env lock so neither BHARATCODE_PATH_ROOT nor
+        // BHARATCODE_AUDIT can be changed by a concurrent test mid-round-trip.
+        let _guard = env_lock::lock_env([
+            ("BHARATCODE_PATH_ROOT", dir.to_str()),
+            ("BHARATCODE_AUDIT", Some("1")),
+        ]);
 
         let path = audit_log_path();
         let _ = std::fs::remove_file(&path);
@@ -451,22 +455,20 @@ mod tests {
         assert_eq!(read[1].total_tokens, Some(15));
 
         let _ = std::fs::remove_file(&path);
-        std::env::remove_var("BHARATCODE_PATH_ROOT");
-        std::env::remove_var("BHARATCODE_AUDIT");
     }
 
     #[test]
     fn disabled_record_is_a_noop() {
         let dir = std::env::temp_dir().join(format!("bc-audit-off-{}", std::process::id()));
-        std::env::set_var("BHARATCODE_PATH_ROOT", &dir);
-        std::env::remove_var("BHARATCODE_AUDIT");
+        let _guard = env_lock::lock_env([
+            ("BHARATCODE_PATH_ROOT", dir.to_str()),
+            ("BHARATCODE_AUDIT", None),
+        ]);
 
         let path = audit_log_path();
         let _ = std::fs::remove_file(&path);
 
         record_turn("p", "m", "s", Some(1), Some(1), Some(2), 1.0);
         assert!(!path.exists());
-
-        std::env::remove_var("BHARATCODE_PATH_ROOT");
     }
 }
