@@ -272,12 +272,7 @@ pub fn render_list(cases: &[EvalCase]) -> String {
         "  {}\n\n",
         crate::theme::heading(label("eval.list.title", "BharatCode eval cases"))
     ));
-    let id_width = cases
-        .iter()
-        .map(|c| c.id.len())
-        .max()
-        .unwrap_or(0)
-        .max(2);
+    let id_width = cases.iter().map(|c| c.id.len()).max().unwrap_or(0).max(2);
     for c in cases {
         out.push_str(&format!(
             "  {:<id_width$}  {}\n",
@@ -342,7 +337,12 @@ pub fn render_scorecard(card: &ScoreCard) -> String {
             name_width = name_width,
         ));
         if !r.note.is_empty() {
-            out.push_str(&format!("  {:<name_width$}  {}\n", "", r.note, name_width = name_width));
+            out.push_str(&format!(
+                "  {:<name_width$}  {}\n",
+                "",
+                r.note,
+                name_width = name_width
+            ));
         }
     }
     out.push('\n');
@@ -399,10 +399,7 @@ async fn run_case(case: &EvalCase, timeout: Duration) -> EvalResult {
     let latency_ms = start.elapsed().as_millis() as u64;
 
     let (passed, note) = match turn {
-        Err(_elapsed) => (
-            false,
-            label("eval.note.timeout", "timeout"),
-        ),
+        Err(_elapsed) => (false, label("eval.note.timeout", "timeout")),
         Ok(Err(e)) => (false, format!("error: {e}")),
         Ok(Ok(())) => {
             let reply = last_assistant_text(&session.message_history());
@@ -458,10 +455,7 @@ pub async fn handle_eval(opts: EvalOptions) -> Result<()> {
         Some(id) => {
             let found: Vec<&EvalCase> = cases.iter().filter(|c| c.id == id).collect();
             if found.is_empty() {
-                anyhow::bail!(
-                    "{}: {id}",
-                    label("eval.unknown_case", "unknown eval case")
-                );
+                anyhow::bail!("{}: {id}", label("eval.unknown_case", "unknown eval case"));
             }
             found
         }

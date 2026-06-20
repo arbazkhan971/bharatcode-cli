@@ -1108,6 +1108,13 @@ enum Command {
             action = clap::ArgAction::Append
         )]
         builtins: Vec<String>,
+
+        #[arg(
+            long,
+            help = "Host many concurrent sessions in one process (cap via BHARATCODE_MAX_SESSIONS, default 1)",
+            long_help = "Opt into the headless multi-session manager. When set, the serve path routes concurrent agent sessions by id up to the BHARATCODE_MAX_SESSIONS cap (default 1, matching single-session behaviour). Omitted => the legacy single-session path is unchanged."
+        )]
+        multi: bool,
     },
 
     /// Start or resume interactive chat sessions
@@ -1721,13 +1728,42 @@ async fn handle_mcp_command(server: McpCommand) -> Result<()> {
     Ok(())
 }
 
-async fn handle_serve_command(host: String, port: u16, builtins: Vec<String>) -> Result<()> {
+/// Headless multi-session manager, shared verbatim with `goose-server`'s
+/// `multi` module. It is `#[path]`-included here so the real
+/// `bharatcode serve --multi` call site can drive the registry without pulling
+/// the whole server crate into the CLI's dependency graph.
+#[path = "../../goose-server/src/multi.rs"]
+mod bharatcode_multi;
+
+async fn handle_serve_command(
+    host: String,
+    port: u16,
+    builtins: Vec<String>,
+    multi: bool,
+) -> Result<()> {
     use goose::acp::server_factory::{AcpServer, AcpServerFactoryConfig};
     use goose::acp::transport::create_router;
     use goose::config::paths::Paths;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tracing::{info, warn};
+
+    let _multi_registry = if multi {
+        let registry = bharatcode_multi::MultiSessionRegistry::from_env();
+        // Reserve the primary slot up front so an explicit cap of 1 still hosts
+        // exactly one session, matching the legacy single-session path.
+        if let Err(err) = registry.register("primary") {
+            warn!("multi-session manager could not reserve the primary slot: {err}");
+        }
+        info!(
+            "Multi-session manager enabled (cap {}, {} active)",
+            registry.max_sessions(),
+            registry.active_count()
+        );
+        Some(Arc::new(registry))
+    } else {
+        None
+    };
 
     let builtins = if builtins.is_empty() {
         vec!["developer".to_string()]
@@ -2535,7 +2571,8 @@ pub async fn cli() -> anyhow::Result<()> {
             host,
             port,
             builtins,
-        }) => handle_serve_command(host, port, builtins).await,
+            multi,
+        }) => handle_serve_command(host, port, builtins, multi).await,
         Some(Command::Session {
             command: Some(cmd), ..
         }) => handle_session_subcommand(cmd).await,

@@ -19,6 +19,12 @@ path = "src/main.rs"
 name = "generate_manpages"
 path = "src/bin/generate_manpages.rs"
 
+# Thin entry point for the offline benchmark / eval harness. Keeps the harness
+# runnable as `bharatcode-bench` without touching the shared `cli.rs` dispatch.
+[[bin]]
+name = "bharatcode-bench"
+path = "src/bin/bharatcode-bench.rs"
+
 [dependencies]
 clap_mangen = { version = "0.3", default-features = false }
 goose = { path = "../goose", default-features = false }

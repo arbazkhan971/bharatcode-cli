@@ -48,6 +48,15 @@ mod release_profile;
 #[path = "ci_report.rs"]
 mod ci_report;
 
+// Strictly-local, opt-in, aggregated usage counters (BharatCode v92). Declared
+// inline next to its only call site (the `cost` footer). Renders ONE muted line
+// of monotonic counts (turns, tool calls, sessions, tokens, days active) read
+// from a single rolling JSON aggregate under the config dir — no network, no
+// per-event detail. Opt-in via `BHARATCODE_ANALYTICS_LOCAL`; default OFF => the
+// cost output is byte-identical and there is zero I/O.
+#[path = "analytics_local.rs"]
+mod analytics_local;
+
 // Privacy-preserving, strictly-local usage analytics, declared inline next to
 // its only call site (the `cost` footer). Renders a compact "Usage (local,
 // aggregated)" block of counts only. Opt-in via the env gate

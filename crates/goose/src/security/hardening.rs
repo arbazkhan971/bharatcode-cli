@@ -177,7 +177,7 @@ fn sandbox_armed() -> bool {
 fn analytics_is_local_only() -> bool {
     // `is_enabled()` reflects whether the local tally is recording this session;
     // either way the data never leaves the machine, so the pillar is strong.
-    let _recording = crate::usage_analytics::is_enabled();
+    let _recording = crate::config::base::usage_analytics::is_enabled();
     true
 }
 

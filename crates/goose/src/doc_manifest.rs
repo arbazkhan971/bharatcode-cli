@@ -141,7 +141,10 @@ mod tests {
             blob.push_str(p.summary);
         }
         let lower = blob.to_lowercase();
-        assert!(!lower.contains("goose"), "manifest leaked an upstream token");
+        assert!(
+            !lower.contains("goose"),
+            "manifest leaked an upstream token"
+        );
         assert!(
             !lower.contains("block, inc"),
             "manifest leaked an upstream token"

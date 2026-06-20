@@ -22,6 +22,12 @@ pub mod dictation;
 // `goose::doc_manifest::pages()` to seed the generated index, so this manifest
 // is the single source of truth that the generator is driven by (its live wire).
 pub mod doc_manifest;
+// BharatCode v95: reproducible Markdown reference generator for the docs site.
+// Exposed as goose-crate public API so the docs CI step / future `bharatcode
+// docs` command can call `docs_gen::render_reference()` / `docs_gen::write_site`
+// to rebuild `docs/generated` from source. The curated `BHARATCODE_*` flag table
+// and the top-level subcommand list mirror the real product surface, so the
+// generated reference is regenerable from code rather than hand-maintained.
 pub mod docs_gen;
 pub mod doctor;
 pub mod download_manager;

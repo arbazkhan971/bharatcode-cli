@@ -289,8 +289,7 @@ pub fn write_bundle_file(bundle: &SessionBundle, dir: &Path, session_id: &str) -
         .with_context(|| format!("creating bundle directory {}", dir.display()))?;
     let path = dir.join(format!("{session_id}.{BUNDLE_EXTENSION}"));
     let json = bundle.to_json()?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("writing bundle to {}", path.display()))?;
+    std::fs::write(&path, json).with_context(|| format!("writing bundle to {}", path.display()))?;
     Ok(path)
 }
 
@@ -298,8 +297,7 @@ pub fn write_bundle_file(bundle: &SessionBundle, dir: &Path, session_id: &str) -
 pub fn read_bundle_file(path: &Path) -> Result<SessionBundle> {
     let json = std::fs::read_to_string(path)
         .with_context(|| format!("reading bundle from {}", path.display()))?;
-    SessionBundle::from_json(&json)
-        .map_err(|e| anyhow!("{} (from {})", e, path.display()))
+    SessionBundle::from_json(&json).map_err(|e| anyhow!("{} (from {})", e, path.display()))
 }
 
 /// Auto-export hook for the agent finalization path.
@@ -386,8 +384,7 @@ mod tests {
         bundle.messages.push(Message::user().with_text("injected"));
         // Re-serialize with the stale checksum still in place.
         let json = serde_json::to_string(&bundle).unwrap();
-        let err = SessionBundle::from_json(&json)
-            .expect_err("a stale checksum must be rejected");
+        let err = SessionBundle::from_json(&json).expect_err("a stale checksum must be rejected");
         assert!(
             err.to_string().contains("checksum mismatch"),
             "unexpected error: {err}"

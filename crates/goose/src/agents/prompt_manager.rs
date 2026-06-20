@@ -68,6 +68,30 @@ mod automation_mode;
 #[path = "../a11y_prompt.rs"]
 mod a11y_prompt;
 
+// Opt-in GA/build identity line (BharatCode v98, via BHARATCODE_GA_BANNER).
+// Declared inline via `#[path]` alongside the sibling feature modules so the
+// wiring stays confined to the prompt-assembly path, keeping lib.rs untouched.
+// Default OFF => banner_block() is None and the prompt is byte-identical.
+#[path = "../ga_banner.rs"]
+mod ga_banner;
+
+// Runtime Apache-2.0 / upstream attribution footer (BharatCode v99, via
+// BHARATCODE_ATTRIBUTION). Declared inline via `#[path]` alongside the sibling
+// feature modules so the wiring stays confined to the prompt-assembly path,
+// keeping lib.rs untouched. This is a compliance feature, so it is DEFAULT-ON:
+// the block always carries the licence + both upstream owner attributions and
+// is suppressed only when the env var is explicitly falsey.
+#[path = "../compliance.rs"]
+mod compliance;
+
+// Opt-in GA release-identity + readiness banner (BharatCode v100, via
+// BHARATCODE_GA_IDENTITY). Declared inline via `#[path]` alongside the sibling
+// feature modules so the wiring stays confined to the prompt-assembly path,
+// keeping lib.rs untouched. Default OFF => release_context_block() is None and
+// the prompt is byte-identical (no extra tokens).
+#[path = "../ga_identity.rs"]
+mod ga_identity;
+
 const MAX_EXTENSIONS: usize = 5;
 const MAX_TOOLS: usize = 50;
 
@@ -277,6 +301,33 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // disabled this is None and the prompt is byte-identical.
         if let Some(block) = a11y_prompt::advisory_block() {
             system_prompt_extras.insert("bharatcode_a11y".to_string(), block);
+        }
+
+        // Opt-in GA/build identity line (via BHARATCODE_GA_BANNER). States the
+        // agent's exact release so it can answer version/build questions. When
+        // disabled this is None and the prompt is byte-identical.
+        if let Some(block) = ga_banner::banner_block() {
+            system_prompt_extras.insert("bharatcode_ga_banner".to_string(), block);
+        }
+
+        // Opt-in GA release-identity + readiness banner (via
+        // BHARATCODE_GA_IDENTITY). Stamps the shipped 1.0 GA identity, release
+        // channel, Apache-2.0 + local-first posture, and the current date so the
+        // agent self-identifies with the GA release. When disabled this is None
+        // and the prompt is byte-identical (no extra tokens).
+        if let Some(block) = ga_identity::release_context_block() {
+            system_prompt_extras.insert("bharatcode_ga_identity".to_string(), block);
+        }
+
+        // Runtime Apache-2.0 / upstream attribution footer (via
+        // BHARATCODE_ATTRIBUTION). Compliance feature => DEFAULT-ON: the agent's
+        // identity always carries correct provenance (licence + both upstream
+        // owners). Suppressed only when the env var is explicitly falsey.
+        if compliance::is_enabled() {
+            system_prompt_extras.insert(
+                "bharatcode_attribution".to_string(),
+                compliance::attribution_block(),
+            );
         }
 
         // Security hardening self-audit advisory (opt-in via BHARATCODE_HARDENING).
