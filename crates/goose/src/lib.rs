@@ -17,6 +17,7 @@ pub mod conversation {
     pub use goose_providers::conversation::*;
 }
 pub mod dictation;
+pub mod docs_gen;
 pub mod doctor;
 pub mod download_manager;
 pub mod elicitation;
@@ -44,8 +45,18 @@ pub mod posthog;
 pub mod prompt_cache;
 pub mod prompt_template;
 pub mod providers;
+// BharatCode v89: first-run quick-start splash + capability tour. The CLI
+// session builder calls `quickstart::maybe_render` on the very first
+// interactive launch; it returns `None` (default behavior unchanged) once the
+// `.quickstart_shown` sentinel exists or when `BHARATCODE_NO_SPLASH` is set.
+pub mod quickstart;
 pub mod recipe;
 pub mod recipe_deeplink;
+// BharatCode v94: canonical release asset names + SHA-256 manifest generator.
+// Kept in lock-step with the self-updater's `commands/update.rs::asset_name()`;
+// the module doctest is the live call site (asserting `asset_name(Target::LinuxX64)`
+// equals the exact string the updater expects), matching the v87 help_index pattern.
+pub mod release_packaging;
 pub mod residency;
 pub mod scheduler;
 pub mod scheduler_trait;

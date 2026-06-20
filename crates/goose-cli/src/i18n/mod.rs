@@ -11,7 +11,21 @@
 //! unchanged because `en.json` holds the exact original English strings.
 
 pub mod ecosystem_keys;
-pub mod hi_coverage;
+pub mod i18n_status;
+
+/// Hindi coverage manifest for the v82 "deepen Hindi" wave: the canonical list of
+/// long-tail namespaces (onboarding / help-index / a11y / tutorials / dashboard /
+/// notify) whose Hindi values `hi.json` now carries, plus a genuine-translation
+/// counter. Declared with an explicit `#[path]` so the file stays a flat sibling
+/// of `mod.rs` inside `i18n/`.
+#[path = "hi_coverage.rs"]
+mod hi_coverage;
+
+/// Locale catalogue (`SUPPORTED`) + Tamil (`ta`) table accessor (BharatCode
+/// v81). Declared with an explicit `#[path]` so the file stays a flat sibling of
+/// `mod.rs` inside `i18n/`.
+#[path = "locale_meta.rs"]
+pub mod locale_meta;
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
@@ -73,6 +87,23 @@ pub fn active_locale() -> Locale {
     current_locale()
 }
 
+/// Hindi coverage for the v82 "deepen Hindi" wave: `(translated, total)` over the
+/// canonical long-tail namespaces (onboarding / help-index / a11y / tutorials /
+/// dashboard / notify) that [`hi_coverage::hindi_coverage_keys`] enumerates.
+///
+/// `translated` counts the canonical keys the shipped `hi.json` fills with a
+/// genuine Devanagari Hindi value; `total` is the canonical key count. The
+/// help/doctor i18n surfaces call this to report Hindi depth without re-deriving
+/// the key list. Locale-independent: it measures the bundled `hi.json` table, so
+/// it never depends on (or changes) the active locale or any default behaviour.
+pub fn hindi_coverage() -> (usize, usize) {
+    // `&*HI` forces the `LazyLock` deref to the inner `HashMap` so the borrow
+    // type matches `count_translated`'s `&HashMap<String, String>` parameter.
+    let translated = hi_coverage::count_translated(&HI);
+    let total = hi_coverage::hindi_coverage_keys().len();
+    (translated, total)
+}
+
 fn resolve_locale() -> Locale {
     if let Some(loc) = std::env::var("BHARATCODE_LANG")
         .ok()
@@ -118,6 +149,41 @@ pub(crate) fn translate_in(locale: Locale, key: &str) -> String {
         return value.clone();
     }
     key.to_string()
+}
+
+/// The set of keys a `locale`'s OWN table defines (not the English fall-through).
+///
+/// Returned sorted for stable iteration. Used by [`crate::i18n::i18n_status`] to
+/// measure per-locale coverage against `en.json` without re-reading the bundled
+/// JSON: it shares the exact same `LazyLock` tables the runtime `t()` consults,
+/// so the coverage report reflects what the running binary would actually
+/// resolve.
+pub(crate) fn locale_table_keys(locale: Locale) -> Vec<&'static str> {
+    let table = match locale {
+        Locale::En => &*EN,
+        Locale::Hi => &*HI,
+        Locale::Ta => &*TA,
+    };
+    let mut keys: Vec<&'static str> = table.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys
+}
+
+/// Whether `locale`'s OWN table carries a non-empty value for `key`.
+///
+/// This deliberately ignores the English fall-through so a coverage report can
+/// distinguish "translated in this locale" from "rendered in English because the
+/// key is missing".
+pub(crate) fn locale_has_key(locale: Locale, key: &str) -> bool {
+    let table = match locale {
+        Locale::En => &*EN,
+        Locale::Hi => &*HI,
+        Locale::Ta => &*TA,
+    };
+    table
+        .get(key)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// Translate a key through the active locale table.

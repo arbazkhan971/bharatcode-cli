@@ -43,6 +43,16 @@ const MULTISELECT_VISIBILITY_HINT: &str = "<";
 #[path = "../i18n/ta_locale.rs"]
 mod ta_locale;
 
+// Marathi (mr) locale pack (BharatCode v81). Wired the same way as the Tamil
+// pack above: an inline `#[path]` module pulled into this command file, giving
+// `mr_locale::active_lang_name()` a real call site in the first-time-setup
+// banner. When `BHARATCODE_LANG=mr` (or config / `LANG=mr_IN`) is active the
+// banner renders the resolved language name in Devanagari (`मराठी`); otherwise
+// `is_marathi_active()` is `false` and the English / Hindi / Tamil output is
+// unchanged.
+#[path = "../i18n/mr_locale.rs"]
+mod mr_locale;
+
 pub async fn handle_configure() -> anyhow::Result<()> {
     if !std::io::stdin().is_terminal() {
         anyhow::bail!(
@@ -135,12 +145,20 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
     // Surface the resolved interface language (BharatCode v81). With the default
     // locale this prints "Language: English" unchanged; selecting BHARATCODE_LANG=ta
     // (or hi) swaps the label and the language name to that locale's own script.
+    // Prefer the Marathi pack's name when Marathi is the active locale; it falls
+    // back to the shared en/hi/ta scaffold otherwise, so this is a strict
+    // superset of the Tamil banner and leaves default output byte-identical.
+    let active_lang_name = if mr_locale::is_marathi_active() {
+        mr_locale::active_lang_name()
+    } else {
+        ta_locale::active_lang_name()
+    };
     println!(
         "{}",
         style(format!(
             "  {}: {}",
             crate::tr!("lang.row_label"),
-            ta_locale::active_lang_name()
+            active_lang_name
         ))
         .dim()
     );

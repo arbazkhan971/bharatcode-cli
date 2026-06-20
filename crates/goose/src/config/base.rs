@@ -32,6 +32,15 @@ pub(crate) mod agent_caps;
 #[path = "../ux_prefs.rs"]
 pub(crate) mod ux_prefs;
 
+// Locale & accessibility self-test (v90): a read-only diagnostic that asserts
+// en/hi/ta/mr key + `{placeholder}` parity and that every `BHARATCODE_*` UX
+// toggle is documented in the help-index. Wired in here (rather than via lib.rs)
+// alongside the UX config keys so it is reachable from the running binary, and
+// surfaced through `Config::ux_selftest_summary` for the doctor / i18n_check
+// surface. Pure: never mutates config.
+#[path = "../ux_selftest.rs"]
+pub mod ux_selftest;
+
 // Extension/plugin ecosystem config getters (plugin auto-update, MCP-registry
 // banner, recipe-share default output dir, automation-mode default) are read
 // through the typed `get_bharatcode_*` getters registered below. The
@@ -72,6 +81,14 @@ pub(crate) mod ecosystem_caps;
 // running binary alongside its config keys.
 #[path = "../streaming_perf.rs"]
 pub(crate) mod streaming_perf;
+
+// The v94 release packaging matrix + offline checksum verifier (deb/rpm/brew)
+// lives in `packaging.rs`, wired in here (rather than via lib.rs, which v95
+// owns) so the module is reachable from the running binary alongside the
+// `BHARATCODE_DIST_DIR` key the verifier resolves its `dist/` target from. The
+// matrix summary is surfaced through `Config::packaging_summary`.
+#[path = "../packaging.rs"]
+pub(crate) mod packaging;
 
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
@@ -615,6 +632,20 @@ impl Config {
         ux_prefs::summary_lines_for_config(self)
     }
 
+    /// Pass/fail report lines for the v90 locale & accessibility self-test:
+    /// en/hi/ta/mr key + `{placeholder}` parity over the embedded UX string
+    /// tables, plus a check that every `BHARATCODE_*` UX toggle (A11Y, NOTIFY,
+    /// COST_DASHBOARD, THEME, LANG, NUMFMT) is documented in the help-index. On
+    /// a healthy build this is a single PASS line; any drift is listed as an
+    /// individual problem so the doctor / i18n_check surface (and a CI parity
+    /// assertion) catches i18n regressions automatically. The check reads only
+    /// embedded tables, so it does not depend on this config and never mutates
+    /// it; the method lives here to share the typed accessor surface doctor /
+    /// ux_prefs already use.
+    pub fn ux_selftest_summary(&self) -> Vec<String> {
+        ux_selftest::summary_lines()
+    }
+
     /// Human-readable `key = value (source: env|config|default)` rows for the
     /// extension/plugin ecosystem settings (plugin auto-update, MCP-registry
     /// banner, recipe-share default output dir, automation-mode default),
@@ -665,6 +696,18 @@ impl Config {
     /// the CLI streaming buffer's render reads can share.
     pub fn streaming_perf_summary(&self) -> Vec<String> {
         streaming_perf::summary_lines_for_config(self)
+    }
+
+    /// Human-readable rows for the v94 release packaging matrix: one header line
+    /// plus one row per target triple listing its tar.bz2/zip/deb/rpm artifact
+    /// filenames, all derived from the `bharatcode-<triple>` naming the
+    /// self-updater expects. The matrix is a compile-time constant, so this is a
+    /// pure read independent of config; the method lives here to give
+    /// doctor/release tooling one source of truth alongside the
+    /// `BHARATCODE_DIST_DIR` getter the offline checksum verifier uses to locate
+    /// `dist/`.
+    pub fn packaging_summary(&self) -> Vec<String> {
+        packaging::matrix_summary_lines()
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
@@ -1344,6 +1387,15 @@ config_value!(BHARATCODE_MAX_SESSION_TOKENS, Option<u64>);
 config_value!(BHARATCODE_STREAM_FLUSH_MS, Option<u64>);
 config_value!(BHARATCODE_MAX_CODE_BLOCK_LINES, Option<usize>);
 config_value!(BHARATCODE_STREAM_COALESCE_LINES, Option<usize>);
+
+// v94 packaging verifier target. Resolves the `dist/` directory the offline
+// SHA256SUMS verifier walks, so doctor/release tooling can locate built
+// artifacts via the standard accessor path (env over config). Defaults to
+// `None` -> the verifier falls back to `./dist` (`packaging::DEFAULT_DIST_DIR`),
+// so default behaviour is unchanged until the key is set. The matrix/verifier
+// helpers live in `packaging` (wired via the `#[path]` mod decl above) and are
+// surfaced through `Config::packaging_summary`.
+config_value!(BHARATCODE_DIST_DIR, Option<String>);
 
 impl Config {
     pub fn get_bharatcode_context_limit(&self) -> Result<Option<usize>, ConfigError> {

@@ -17,6 +17,15 @@ use std::process;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
+// Opt-in accessibility / screen-reader-friendly output mode (BHARATCODE_A11Y).
+// The module physically lives at the crate root (`../a11y.rs`) and is already
+// declared canonically as `crate::a11y` in `lib.rs`; we alias that canonical
+// module here (rather than re-declaring it via `#[path]`, which would mint a
+// second, type-incompatible `A11yProfile`) so the profile we resolve below is
+// the exact type `crate::session::output::set_a11y` consumes. Default (unset)
+// leaves `build_session` output byte-identical.
+use crate::a11y;
+
 // `session/mod.rs` is a contended shared file in this wave, so the opt-in
 // framework-migration advisory module is declared here, from builder.rs (the
 // file that wires it into the session build path), via an explicit `#[path]`.
@@ -28,6 +37,15 @@ mod migrate;
 // integrity quick-check into the session build path.
 #[path = "db_preflight.rs"]
 mod db_preflight;
+
+// Canonical GA release-info source (semantic GA version, channel, Apache-2.0
+// attribution) and the brand-clean one-line startup banner. Lives at the crate
+// root, but `lib.rs` is owned by a sibling in this wave, so it is declared here
+// (the file that wires the one-time banner into the session build path) via an
+// explicit `#[path]`. The banner is interactive-only and default-quiet under
+// `--quiet`; `BHARATCODE_NO_BANNER` suppresses it.
+#[path = "../release_info.rs"]
+mod release_info;
 
 // Opt-in recipe import/export round-trip hardening lives in an owned crate-root
 // module. It is wired in from builder.rs (the session-build path) via an
@@ -49,7 +67,52 @@ mod git_context;
 #[path = "../commands/tutorials.rs"]
 mod tutorials;
 
+// Themed boxed-banner / divider drawing helper. Lives at the crate root, but
+// `lib.rs` is owned by a sibling in this wave, so it is declared here (the file
+// that wires the framed welcome banner into the session build path) via an
+// explicit `#[path]`. NO_COLOR- and width-aware; default behaviour is unchanged
+// (the extra frame is opt-in via `BHARATCODE_BANNER_BOX`).
+#[path = "../ui_box.rs"]
+mod ui_box;
+
+// Opt-in, grouped in-app command index (BHARATCODE_HELP_INDEX). Lives under
+// `commands/`, but `commands/mod.rs` is owned by a sibling in this wave, so it
+// is declared here (the file that wires the startup hint into the session build
+// path) via an explicit `#[path]`. Default (unset) leaves `build_session`
+// output unchanged.
+#[path = "../commands/command_index.rs"]
+mod command_index;
+
 const EXTENSION_HINT_MAX_LEN: usize = 5;
+
+/// Width budget for the optional framed welcome banner. Probed from the real
+/// terminal, clamped to a sane range so the frame stays readable on very wide
+/// or very narrow terminals.
+fn banner_width() -> usize {
+    use console::Term;
+    let cols = Term::stdout()
+        .size_checked()
+        .map(|(_h, w)| w as usize)
+        .unwrap_or(80);
+    cols.clamp(24, 72)
+}
+
+/// Emit the optional themed, framed welcome banner just after the standard
+/// session-info banner. Opt-in via `BHARATCODE_BANNER_BOX`; when unset the
+/// default first-screen output is byte-for-byte unchanged. The frame is
+/// NO_COLOR- and width-aware via [`ui_box`]: with `NO_COLOR` it is plain ASCII
+/// with zero ANSI escapes.
+fn print_framed_banner(provider: &str, model: &str, session_id: &str) {
+    if std::env::var_os("BHARATCODE_BANNER_BOX").is_none() {
+        return;
+    }
+    let title = crate::tr!("session.ready");
+    let lines = vec![
+        format!("{provider} · {model}"),
+        format!("session {session_id}"),
+    ];
+    println!("{}", ui_box::boxed(&title, &lines, banner_width()));
+}
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     let truncated: String = s.chars().take(max_len).collect();
@@ -557,6 +620,22 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // BHARATCODE_DB_PREFLIGHT set, points the user at `bharatcode db --vacuum`).
     let _ = db_preflight::preflight().await;
 
+    // Announce the GA milestone once at startup with a brand-clean one-line
+    // banner (`BharatCode <ga-version> (GA) — Apache-2.0`). Interactive-only and
+    // default-quiet under `--quiet` / non-interactive launches; suppressible via
+    // BHARATCODE_NO_BANNER. Mirrors how the recipe-lock / subagent outcomes are
+    // logged below: the line is also recorded at `info` for diagnostics.
+    if release_info::should_show(session_config.interactive, session_config.quiet) {
+        let banner = release_info::banner_line();
+        let info = release_info::current();
+        tracing::info!(
+            ga_version = info.ga_version,
+            channel = info.channel,
+            "release banner"
+        );
+        println!("{}", crate::theme::muted(&banner));
+    }
+
     let config = Config::global();
     let agent: Agent = Agent::new();
 
@@ -775,6 +854,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let subagent_settings = crate::subagent_settings::SubagentSettings::from_config(config);
     tracing::debug!(?subagent_settings, "Loaded subagent settings");
 
+    // Resolve the opt-in accessibility profile (BHARATCODE_A11Y, default OFF)
+    // once per session and install it into the render layer so screen-reader /
+    // no-spinner output paths can consult it without re-reading the environment.
+    let a11y = a11y::A11yProfile::from_env();
+    output::set_a11y(a11y);
+    tracing::debug!(?a11y, "Loaded accessibility profile");
+
     let debug_mode = session_config.debug || config.get_param("BHARATCODE_DEBUG").unwrap_or(false);
 
     let session = CliSession::new(
@@ -798,9 +884,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             session_config.resume,
             &effective_provider_name,
             &effective_model_name,
-            &Some(session_id),
+            &Some(session_id.clone()),
         );
+        // Additive, opt-in (BHARATCODE_BANNER_BOX) themed frame around the
+        // first-screen ready banner. Default output is unchanged.
+        print_framed_banner(&effective_provider_name, &effective_model_name, &session_id);
     }
+
+    // Opt-in, grouped command index startup hint (BHARATCODE_HELP_INDEX). Helps
+    // new users discover the subcommands and key slash-commands. Printed to
+    // stderr so it never pollutes piped stdout; default (unset) is a no-op, so
+    // `build_session` output is unchanged.
+    if command_index::is_enabled() {
+        eprintln!("{}", command_index::render_index());
+    }
+
     session
 }
 
