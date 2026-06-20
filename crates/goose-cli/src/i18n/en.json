@@ -31,5 +31,21 @@
   "review.no_changes": "bharatcode review: no changes to review",
   "review.prompt_instructions": "You are reviewing the following git diff. Identify correctness bugs, security issues, and clear simplifications. For each finding, name the file and line, explain the problem, and suggest a fix. Be concise and skip praise. If there are no meaningful issues, say so.",
   "review.findings_header": "## Review findings",
-  "review.scope_working_tree": "the working tree vs HEAD"
+  "review.scope_working_tree": "the working tree vs HEAD",
+  "privacy.title": "BharatCode privacy posture",
+  "privacy.subtitle": "Resolved data-governance posture for this session",
+  "privacy.row_residency": "Data residency",
+  "privacy.row_offline": "Offline / no-egress",
+  "privacy.row_redact": "Secret redaction",
+  "privacy.row_audit": "DPDP audit log",
+  "privacy.row_telemetry": "Telemetry",
+  "privacy.row_provider": "Local-first provider",
+  "privacy.row_egress": "Egress guard",
+  "privacy.src_offline_forced": "forced by offline mode (BHARATCODE_OFFLINE)",
+  "privacy.src_builtin": "built-in (telemetry disabled)",
+  "privacy.src_builtin_guard": "built-in egress guard",
+  "privacy.egress_enforcing": "installed (enforcing)",
+  "privacy.egress_passthrough": "installed (pass-through)",
+  "privacy.locked_down": "All pillars locked down: strict residency, offline, redaction on, telemetry off, local provider.",
+  "privacy.hint": "Tighten posture: BHARATCODE_OFFLINE=1, BHARATCODE_RESIDENCY=strict, BHARATCODE_REDACT=1, BHARATCODE_AUDIT=1."
 }

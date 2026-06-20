@@ -100,6 +100,91 @@ async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>)
     ))
 }
 
+/// Attempt to create the provider stream, transparently falling back through
+/// the configured model chain (`BHARATCODE_FALLBACK_MODELS`) on a
+/// fallback-worthy error.
+///
+/// Behaviour:
+/// - Always tries the primary `provider` / `model_config` first.
+/// - If that fails with a non-fallback-worthy error, or the chain is empty,
+///   the original error is returned immediately (current behaviour).
+/// - Otherwise each chain entry is tried in order, rebuilding the provider and
+///   model config as needed, until one succeeds or the chain is exhausted (in
+///   which case the *last* error is returned).
+///
+/// This is a thin wrapper called on the real streaming path, so the fallback
+/// feature is genuinely reachable in the running binary.
+async fn stream_with_fallback(
+    provider: &Arc<dyn Provider>,
+    model_config: &goose_providers::model::ModelConfig,
+    session_id: &str,
+    system_prompt: &str,
+    messages: &[Message],
+    tools: &[Tool],
+) -> Result<MessageStream, ProviderError> {
+    let primary = provider
+        .stream(model_config, session_id, system_prompt, messages, tools)
+        .await;
+
+    let mut last_err = match primary {
+        Ok(stream) => return Ok(stream),
+        Err(e) => e,
+    };
+
+    let chain = crate::providers::fallback::fallback_chain_from_env();
+    if chain.is_empty() || !crate::providers::fallback::is_fallback_worthy(&last_err) {
+        return Err(last_err);
+    }
+
+    let primary_provider_name = provider.get_name().to_string();
+    for target in chain {
+        // Stop early if a prior attempt produced a non-retryable error.
+        if !crate::providers::fallback::is_fallback_worthy(&last_err) {
+            break;
+        }
+
+        let provider_name = target
+            .provider
+            .as_deref()
+            .unwrap_or(primary_provider_name.as_str());
+
+        let fallback_provider = match crate::providers::create_with_named_model(
+            provider_name,
+            &target.model,
+            Vec::new(),
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "model fallback: failed to build provider '{}' model '{}': {}",
+                    provider_name, target.model, e
+                );
+                continue;
+            }
+        };
+
+        let fallback_config = fallback_provider
+            .get_model_config()
+            .with_default_thinking_effort(Config::global().get_bharatcode_thinking_effort());
+
+        debug!(
+            "model fallback: retrying request against provider '{}' model '{}'",
+            provider_name, target.model
+        );
+        match fallback_provider
+            .stream(&fallback_config, session_id, system_prompt, messages, tools)
+            .await
+        {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_err = e,
+        }
+    }
+
+    Err(last_err)
+}
+
 fn coerce_value(s: &str, schema: &Value) -> Value {
     let type_str = schema.get("type");
 
@@ -358,17 +443,23 @@ impl Agent {
         let provider = provider.clone();
 
         // Capture errors during stream creation and return them as part of the stream
-        // so they can be handled by the existing error handling logic in the agent
+        // so they can be handled by the existing error handling logic in the agent.
+        //
+        // The opt-in model fallback chain (BHARATCODE_FALLBACK_MODELS) is wired in
+        // here on the real streaming path: on a fallback-worthy stream error we
+        // transparently retry the same request against the next configured model
+        // before surfacing the failure. With no chain configured this is exactly
+        // one attempt against the primary provider (unchanged behaviour).
         debug!("WAITING_LLM_STREAM_START");
-        let stream_result = provider
-            .stream(
-                &model_config,
-                session_id,
-                system_prompt.as_str(),
-                messages_for_provider.messages(),
-                &tools,
-            )
-            .await;
+        let stream_result = stream_with_fallback(
+            &provider,
+            &model_config,
+            session_id,
+            system_prompt.as_str(),
+            messages_for_provider.messages(),
+            &tools,
+        )
+        .await;
         debug!("WAITING_LLM_STREAM_END");
 
         // If there was an error creating the stream, return a stream that yields that error

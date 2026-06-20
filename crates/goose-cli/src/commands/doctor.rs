@@ -9,6 +9,7 @@ const OLLAMA_DEFAULT_PORT: u16 = 11434;
 
 pub async fn handle_doctor() -> Result<()> {
     print_settings_summary().await;
+    print_deep_checks().await;
 
     let mut session = build_session(SessionBuilderConfig {
         no_session: true,
@@ -119,6 +120,37 @@ async fn print_settings_summary() {
         &label("doctor.inr_rate", "INR rate (USD to INR)"),
         &inr_rate,
     );
+    println!();
+}
+
+/// Run and print the deep diagnostic checks (provider reachability, config dir
+/// writability, git, offline/residency coherence, session DB storage). The
+/// probes touch the network/disk and block, so they run on a blocking task to
+/// keep the async runtime responsive; each result prints with a ✓/⚠/✗ glyph and
+/// an optional hint, matching the summary's spacing.
+async fn print_deep_checks() {
+    use crate::commands::doctor_checks::{run_all, Status};
+
+    let results = tokio::task::spawn_blocking(run_all)
+        .await
+        .unwrap_or_default();
+
+    println!(
+        "{}",
+        crate::theme::heading(label("doctor.checks_title", "Deep checks"))
+    );
+    for result in results {
+        let glyph = result.status.glyph();
+        let painted = match result.status {
+            Status::Ok => crate::theme::success(glyph),
+            Status::Warn => crate::theme::warning(glyph),
+            Status::Fail => crate::theme::error(glyph),
+        };
+        println!("  {} {}", painted, result.label);
+        if !result.hint.is_empty() {
+            println!("      {}", crate::theme::muted(&result.hint));
+        }
+    }
     println!();
 }
 

@@ -859,6 +859,10 @@ enum Command {
         limit: usize,
     },
 
+    /// Report the resolved data-governance / privacy posture
+    #[command(about = "Show the resolved data-governance and privacy posture")]
+    Privacy {},
+
     /// Manage system prompts and behaviors
     #[command(about = "Run one of the mcp servers bundled with bharatcode")]
     Mcp {
@@ -1378,6 +1382,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Presets {}) => "presets",
         Some(Command::RecipesLibrary { .. }) => "recipes-library",
         Some(Command::Cost { .. }) => "cost",
+        Some(Command::Privacy { .. }) => "privacy",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
@@ -2178,6 +2183,7 @@ pub async fn cli() -> anyhow::Result<()> {
             crate::commands::cost::handle_cost(crate::commands::cost::CostOptions { all, limit })
                 .await
         }
+        Some(Command::Privacy {}) => crate::commands::privacy::handle_privacy().await,
         Some(Command::Info { verbose, check }) => handle_info(verbose, check).await,
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins }) => goose::acp::server::run(builtins).await,

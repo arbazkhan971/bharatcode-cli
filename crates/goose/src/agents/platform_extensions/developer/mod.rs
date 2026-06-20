@@ -1,6 +1,7 @@
 pub mod apply_patch;
 pub mod edit;
 pub mod image;
+pub mod redact;
 pub mod shell;
 pub mod tree;
 pub mod web_search;
@@ -16,7 +17,7 @@ use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    ServerCapabilities, Tool, ToolAnnotations,
+    RawContent, ServerCapabilities, Tool, ToolAnnotations,
 };
 use schemars::{schema_for, JsonSchema};
 use serde_json::Value;
@@ -102,6 +103,35 @@ impl DeveloperClient {
             .map(Value::Object)
             .ok_or_else(|| "Missing arguments".to_string())?;
         serde_json::from_value(value).map_err(|e| format!("Failed to parse arguments: {e}"))
+    }
+
+    /// Apply opt-in egress secret redaction to a shell tool result.
+    ///
+    /// When `BHARATCODE_REDACT` is unset (the default) the result is returned
+    /// unchanged. When enabled, every text content block and the `stdout` /
+    /// `stderr` fields of the structured output are scanned for high-confidence
+    /// secrets, which are replaced with a `[REDACTED]` sentinel before the
+    /// output reaches the model.
+    fn redact_shell_result(mut result: CallToolResult) -> CallToolResult {
+        if !redact::is_enabled() {
+            return result;
+        }
+
+        for block in result.content.iter_mut() {
+            if let RawContent::Text(text) = &mut block.raw {
+                text.text = redact::redact(&text.text);
+            }
+        }
+
+        if let Some(Value::Object(map)) = result.structured_content.as_mut() {
+            for field in ["stdout", "stderr"] {
+                if let Some(Value::String(s)) = map.get_mut(field) {
+                    *s = redact::redact(s);
+                }
+            }
+        }
+
+        result
     }
 
     pub(crate) fn get_tools() -> Vec<Tool> {
@@ -235,7 +265,10 @@ impl McpClientTrait for DeveloperClient {
         let working_dir = ctx.working_dir.as_deref();
         match name {
             "shell" => match Self::parse_args::<ShellParams>(arguments) {
-                Ok(params) => Ok(self.shell_tool.shell_with_cwd(params, working_dir).await),
+                Ok(params) => {
+                    let result = self.shell_tool.shell_with_cwd(params, working_dir).await;
+                    Ok(Self::redact_shell_result(result))
+                }
                 Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
             },
             "write" => match Self::parse_args::<FileWriteParams>(arguments) {
