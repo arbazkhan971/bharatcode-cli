@@ -76,11 +76,29 @@ pub mod catalog_cmd;
 #[path = "commands/mcp_registry.rs"]
 pub mod mcp_registry_cmd;
 
-// Same rationale as the modules above: the interactive first-run onboarding
-// wizard (`bharatcode onboard`) is declared here, from cli.rs, via an explicit
+// Same rationale as the modules above: the guided first-run onboarding wizard
+// (`bharatcode onboard`) is declared here, from cli.rs, via an explicit
 // `#[path]` rather than editing the contended `commands/mod.rs`.
-#[path = "commands/onboarding.rs"]
-mod onboarding;
+#[path = "commands/onboard.rs"]
+mod onboard;
+
+// Same rationale as the modules above: the read-only screen-reader transcript
+// export (`bharatcode session transcript`) is declared here, from cli.rs, via an
+// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
+#[path = "commands/transcript.rs"]
+mod transcript;
+
+// Same rationale as the modules above: the localized, screen-reader-friendly
+// first-run checklist (`bharatcode welcome`) is declared here, from cli.rs, via
+// an explicit `#[path]` rather than editing the contended `commands/mod.rs`.
+#[path = "commands/welcome.rs"]
+mod welcome;
+
+// Same rationale as the modules above: the opt-in headless multi-session
+// supervisor (`bharatcode serve-sessions`) is declared here, from cli.rs, via an
+// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
+#[path = "commands/serve_sessions.rs"]
+mod serve_sessions;
 
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
@@ -630,6 +648,19 @@ enum SessionCommand {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+    #[command(about = "Render a session as a flat, screen-reader-friendly plain-text transcript")]
+    Transcript {
+        /// Session identifier to render (defaults to the most recent session)
+        #[command(flatten)]
+        identifier: Option<Identifier>,
+
+        #[arg(
+            long = "out",
+            value_name = "FILE",
+            help = "Write the transcript to a file instead of stdout"
+        )]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -923,11 +954,26 @@ enum Command {
         about = "Guided first-run setup: language, provider/model preset, and privacy posture"
     )]
     Onboard {
-        /// Print the localized step outline and next-steps summary without
+        /// Print the localized step outline and next-steps plan without
         /// prompting or saving choices. Also implied automatically when no
         /// terminal is attached (e.g. CI).
         #[arg(long)]
-        noninteractive: bool,
+        non_interactive: bool,
+    },
+
+    /// Localized, screen-reader-friendly first-run setup checklist (read-only by default)
+    ///
+    /// Walks through locale, local-vs-hosted provider, theme and privacy posture,
+    /// printing the exact env/config it would set. Nothing is written unless
+    /// `--apply` is passed.
+    #[command(
+        about = "First-run checklist: locale, provider, theme, privacy (read-only unless --apply)"
+    )]
+    Welcome {
+        /// Persist the confirmed choices to the config. Without this flag the
+        /// run is a read-only preview that changes nothing.
+        #[arg(long)]
+        apply: bool,
     },
 
     /// List curated India / open-weight model presets
@@ -1453,6 +1499,22 @@ enum Command {
     },
 
     #[command(
+        name = "serve-sessions",
+        about = "Run a headless, loopback-only multi-session supervisor (opt-in)"
+    )]
+    ServeSessions {
+        /// Loopback bind address, e.g. '127.0.0.1:7878' (default: 127.0.0.1:0).
+        /// Non-loopback addresses are refused unless BHARATCODE_SERVE_BIND
+        /// whitelists the host.
+        #[arg(long, value_name = "ADDR")]
+        addr: Option<String>,
+
+        /// Optional cap on the number of concurrently registered sessions.
+        #[arg(long, value_name = "N")]
+        max_sessions: Option<usize>,
+    },
+
+    #[command(
         name = "validate-extensions",
         about = "Validate a bundled-extensions.json file",
         hide = true
@@ -1606,6 +1668,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Doctor {}) => "doctor",
         Some(Command::Git { .. }) => "git",
         Some(Command::Onboard { .. }) => "onboard",
+        Some(Command::Welcome { .. }) => "welcome",
         Some(Command::Presets {}) => "presets",
         Some(Command::ModelPack { .. }) => "model-pack",
         Some(Command::RecipesLibrary { .. }) => "recipes-library",
@@ -1640,6 +1703,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::GenTests { .. }) => "gen-tests",
         Some(Command::GenDocs { .. }) => "gen-docs",
         Some(Command::Refactor { .. }) => "refactor",
+        Some(Command::ServeSessions { .. }) => "serve-sessions",
         Some(Command::ValidateExtensions { .. }) => "validate-extensions",
         None => "default_session",
     }
@@ -1787,6 +1851,17 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
                 }
             };
             crate::commands::session::handle_diagnostics(&session_id, output).await?;
+        }
+        SessionCommand::Transcript { identifier, out } => {
+            // Read-only: when no identifier is given, the handler defaults to
+            // the most recent ("current/last") session deterministically — no
+            // interactive prompt, which keeps the surface accessibility-safe.
+            let session_id = match identifier {
+                Some(id) => Some(lookup_session_id(id).await?),
+                None => None,
+            };
+            transcript::handle_transcript(transcript::TranscriptOptions { session_id, out })
+                .await?;
         }
     }
     Ok(())
@@ -2410,9 +2485,13 @@ pub async fn cli() -> anyhow::Result<()> {
                 path,
             })
         }
-        Some(Command::Onboard { noninteractive }) => {
-            onboarding::handle_onboard(onboarding::OnboardOptions {
-                no_prompt: noninteractive,
+        Some(Command::Onboard { non_interactive }) => {
+            onboard::handle_onboard(onboard::OnboardOptions { non_interactive }).await
+        }
+        Some(Command::Welcome { apply }) => {
+            welcome::handle_welcome(welcome::WelcomeOptions {
+                apply,
+                non_interactive: false,
             })
             .await
         }
@@ -2600,6 +2679,13 @@ pub async fn cli() -> anyhow::Result<()> {
             glob,
             apply,
         }),
+        Some(Command::ServeSessions { addr, max_sessions }) => {
+            serve_sessions::handle_serve_sessions(serve_sessions::ServeSessionsOptions {
+                addr,
+                max_sessions,
+            })
+            .await
+        }
         Some(Command::ValidateExtensions { file }) => {
             use goose::agents::validate_extensions::validate_bundled_extensions;
             match validate_bundled_extensions(&file) {

@@ -46,6 +46,14 @@ mod stream_meter;
 #[path = "../ide_bridge.rs"]
 mod ide_bridge;
 
+// Opt-in localized, screen-reader-friendly streaming progress announcer
+// (BHARATCODE_A11Y). Registered here via `#[path]` so the feature stays confined
+// to the shared provider-streaming path (where every streamed chunk passes) and
+// its own file. When the switch is off no announcer is constructed and no extra
+// frames are emitted, so the default visual-spinner behaviour is unchanged.
+#[path = "../stream_announcer.rs"]
+mod stream_announcer;
+
 /// Wrap a provider stream so that, on successful completion, the fully-assembled
 /// assistant message and final usage are written to the prompt cache under `key`.
 ///
@@ -542,6 +550,16 @@ impl Agent {
         // when BHARATCODE_STREAM_STATS is enabled (no-op otherwise).
         let mut meter = stream_meter::StreamMeter::start();
 
+        // Opt-in accessible streaming progress announcer (BHARATCODE_A11Y). When
+        // enabled, periodically emit a localized, screen-reader-friendly status
+        // line (e.g. "Working… 12s elapsed") as a plain assistant text frame so
+        // a11y / NO_COLOR users get linear progress feedback in place of the
+        // visual-only spinner. Disabled by default: `None` here means no
+        // announcer is constructed and no extra frames are ever yielded.
+        let stream_started = std::time::Instant::now();
+        let mut announcer =
+            stream_announcer::announcer_enabled().then(stream_announcer::Announcer::new);
+
         let produced: MessageStream = Box::pin(try_stream! {
             if config.toolshim {
                 // Toolshim mode: accumulate the full response before processing
@@ -555,6 +573,13 @@ impl Agent {
 
                     if let Some(msg) = &msg_opt {
                         meter.tick(&msg.as_concat_text());
+                    }
+
+                    if let Some(line) = announcer
+                        .as_mut()
+                        .and_then(|a| a.tick(std::time::Instant::now(), stream_started.elapsed()))
+                    {
+                        yield (Some(Message::assistant().with_text(line)), None);
                     }
 
                     if let Some(msg) = msg_opt {
@@ -600,6 +625,13 @@ impl Agent {
 
                     if let Some(msg) = &message {
                         meter.tick(&msg.as_concat_text());
+                    }
+
+                    if let Some(line) = announcer
+                        .as_mut()
+                        .and_then(|a| a.tick(std::time::Instant::now(), stream_started.elapsed()))
+                    {
+                        yield (Some(Message::assistant().with_text(line)), None);
                     }
 
                     yield (message, usage);

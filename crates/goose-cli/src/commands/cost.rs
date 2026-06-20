@@ -41,12 +41,41 @@ mod cost_extensions;
 #[path = "ci_report.rs"]
 mod ci_report;
 
+// Privacy-preserving, strictly-local usage analytics, declared inline next to
+// its only call site (the `cost` footer). Renders a compact "Usage (local,
+// aggregated)" block of counts only. Opt-in via the env gate
+// `BHARATCODE_ANALYTICS`; default OFF => the cost output is byte-identical.
+#[path = "usage_analytics.rs"]
+mod usage_analytics;
+
 // Compact ₹ cost dashboard, declared inline next to its only call site (the
 // early dashboard branch in `handle_cost`). Mirrors the `patch_stats` pattern so
 // wiring it does not widen the `commands` module surface. Opt-in via the env
 // gate `BHARATCODE_COST_DASHBOARD`; default OFF => existing cost output.
 #[path = "cost_dashboard.rs"]
 mod cost_dashboard;
+
+// Locale-aware (Indian lakh / crore) number + currency grouping, declared
+// inline next to its only call site (the headline ₹ totals below). Mirrors the
+// `cost_dashboard` pattern so wiring it does not widen the `commands` module
+// surface. Opt-in via the env gate `BHARATCODE_NUMFMT=indian`; default OFF =>
+// existing ₹ formatting, byte-identical to before.
+#[path = "indic_format.rs"]
+mod indic_format;
+
+/// Render an INR amount for the headline totals, honouring the
+/// `BHARATCODE_NUMFMT=indian` grouping switch.
+///
+/// When Indian grouping is enabled the amount is routed through
+/// [`indic_format::format_inr_indian`]; otherwise it uses the ledger's existing
+/// [`format_inr`], so default output is byte-identical to before.
+fn fmt_inr(inr: f64) -> String {
+    if indic_format::indian_grouping_enabled() {
+        indic_format::format_inr_indian(inr)
+    } else {
+        format_inr(inr)
+    }
+}
 
 /// Options for the `cost` subcommand.
 pub struct CostOptions {
@@ -130,6 +159,29 @@ async fn candidate_models() -> Vec<String> {
 /// that the static [`model_registry`] recognises, show its provider, context
 /// window and per-1K-token ₹ cost (input / output) at the ledger `rate`.
 ///
+/// Build the dashboard's "top models by spend" list from the resolved model
+/// `candidates`, ranked highest first.
+///
+/// The cost ledger does not record per-model spend, so each recognised model's
+/// blended ₹/1K reference rate (mean of input/output at `rate`) stands in as a
+/// spend proxy: it is the best per-model ₹ signal the data affords and gives the
+/// dashboard a meaningful, stable ordering. De-duplicates registry aliases so a
+/// model is not listed twice. Returns `(name, ₹ proxy)` pairs; empty when no
+/// candidate is recognised, in which case the dashboard simply omits the section.
+fn top_models_by_spend(rate: f64, candidates: &[String]) -> Vec<(String, f64)> {
+    let mut out: Vec<(String, f64)> = Vec::new();
+    let mut shown: BTreeSet<&'static str> = BTreeSet::new();
+    for name in candidates {
+        if let Some(info) = model_registry::lookup(name) {
+            if shown.insert(info.name) {
+                let blended = (info.input_per_1k_inr(rate) + info.output_per_1k_inr(rate)) / 2.0;
+                out.push((name.clone(), blended));
+            }
+        }
+    }
+    out
+}
+
 /// Only recognised models are shown. When none of the candidates are known,
 /// nothing is printed so default output is unchanged.
 fn render_known_models(rate: f64, candidates: &[String], active: Option<&str>) {
@@ -189,21 +241,22 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
     let ledger = cost_ledger::build_ledger().await?;
 
     // Compact dashboard view: opt-in via the `BHARATCODE_COST_DASHBOARD` env
-    // gate only (the `cost` CLI surface is owned elsewhere). Builds on the same
-    // ledger, paints the themed panel itself (colour routed through theme roles
-    // so it honours NO_COLOR), and returns early so plain `bharatcode cost` is
-    // byte-identical when the gate is unset.
+    // gate only (the `--dashboard` clap flag lives on the `cost` CLI surface,
+    // which is owned by another version; this gate is the in-binary call site
+    // until that flag lands and can simply OR into the condition here). Builds on
+    // the same ledger, derives a "top models by spend" list from the resolved
+    // candidates, prints the themed panel via `theme::neutral`, and returns early
+    // so plain `bharatcode cost` is byte-identical when the gate is unset.
     if cost_dashboard::is_enabled() {
-        let active_model = Config::global().get_bharatcode_model().ok();
         let candidates = candidate_models().await;
+        let models = top_models_by_spend(ledger.rate, &candidates);
         print!(
             "{}",
-            cost_dashboard::render_dashboard(
+            crate::theme::neutral(cost_dashboard::render_dashboard(
                 &ledger,
                 ledger.rate,
-                &candidates,
-                active_model.as_deref(),
-            )
+                &models,
+            ))
         );
         return Ok(());
     }
@@ -229,17 +282,17 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
     println!(
         "  {:<12} {}",
         style(label("cost.total", "Total spend")).bold(),
-        style(format_inr(ledger.total_inr)).green().bold(),
+        style(fmt_inr(ledger.total_inr)).green().bold(),
     );
     println!(
         "  {:<12} {}",
         style(label("cost.today", "Today")).bold(),
-        crate::theme::success(format_inr(ledger.today_inr())),
+        crate::theme::success(fmt_inr(ledger.today_inr())),
     );
     println!(
         "  {:<12} {}",
         style(label("cost.this_month", "This month")).bold(),
-        crate::theme::success(format_inr(ledger.this_month_inr())),
+        crate::theme::success(fmt_inr(ledger.this_month_inr())),
     );
     println!(
         "  {:<12} {}",
@@ -275,6 +328,15 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
         println!("{f}");
     }
 
+    // Opt-in, strictly-local usage analytics footer (BHARATCODE_ANALYTICS).
+    // Summarizes the locally-aggregated usage counters (turns, tool-call
+    // counts, tokens, ₹ spend by day) as one muted block. Default OFF => None
+    // => nothing printed, so the cost output is byte-identical. Rendered here,
+    // before the empty-sessions early return, so it shows with or without spend.
+    if let Some(f) = usage_analytics::analytics_footer() {
+        println!("{f}");
+    }
+
     // Optional storage-health footer. Rendered only when the session store
     // (`sessions.db`) exists and is non-empty; absent or empty, nothing is
     // printed, keeping the default cost output byte-identical. Read-only: it
@@ -306,8 +368,8 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
             "cost.ci_summary",
             "BharatCode spend: today {day}, month {month}",
         )
-        .replace("{day}", &format_inr(day_inr))
-        .replace("{month}", &format_inr(month_inr));
+        .replace("{day}", &fmt_inr(day_inr))
+        .replace("{month}", &fmt_inr(month_inr));
         if let Some(annotation) = ci_report::github_annotation(over_budget, &msg) {
             println!("{annotation}");
         }
@@ -379,7 +441,7 @@ pub async fn handle_cost(opts: CostOptions) -> anyhow::Result<()> {
         println!(
             "    {}  {}",
             style(month).dim(),
-            crate::theme::success(format_inr(*inr)),
+            crate::theme::success(fmt_inr(*inr)),
         );
     }
 

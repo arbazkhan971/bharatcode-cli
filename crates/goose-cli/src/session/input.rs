@@ -1,6 +1,16 @@
 use super::completion::GooseCompleter;
 use super::{CompletionCache, HintStatus};
 use anyhow::Result;
+
+// BharatCode v82: right-prompt language indicator + quick `/lang` locale switch.
+// The module lives at crates/goose-cli/src/session/locale_badge.rs and is
+// CLI-local; it is pulled in here via `#[path]` (the same out-of-tree-module
+// precedent as `plan_file`/`status_line`/`desktop_notify` in `session/mod.rs`)
+// so the only call sites — the prompt label and the slash-command dispatcher in
+// this file — can reach it without editing `session/mod.rs`. The whole feature
+// is inert for English/unset sessions, so the default prompt is unchanged.
+#[path = "locale_badge.rs"]
+mod locale_badge;
 use goose::config::{Config, GooseMode};
 use rustyline::Editor;
 use shlex;
@@ -178,7 +188,10 @@ pub fn get_input(
         rustyline::EventHandler::Conditional(Box::new(CtrlCHandler::new(completion_cache))),
     );
 
-    let input = match editor.readline("> ") {
+    // Append the active-locale badge (e.g. `[hi]`) to the prompt for non-English
+    // sessions; returns `"> "` unchanged for English/unset locales.
+    let prompt_label = locale_badge::prompt_with_badge("> ");
+    let input = match editor.readline(&prompt_label) {
         Ok(text) => text,
         Err(e) => match e {
             rustyline::error::ReadlineError::Interrupted => return Ok(InputResult::Exit),
@@ -242,6 +255,42 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         "/?" | "/help" => {
             print_help();
             print_editor_help();
+            Some(InputResult::Retry)
+        }
+        "/help-index" | "/commands" => {
+            // BharatCode v87: print the full localized, category-grouped command
+            // and feature-flag index inline, mirroring how `/help` renders. This
+            // reaches `crate::commands::help_index::render_text` from the running
+            // binary so the index stays discoverable from inside a session; it is
+            // read-only, so we return `Retry` to redraw the prompt.
+            print!("{}", crate::commands::help_index::render_text("en"));
+            Some(InputResult::Retry)
+        }
+        s if s == "/lang" || s.starts_with("/lang ") => {
+            // BharatCode v82: switch the active locale for the rest of the
+            // session. A matched `/lang <code>` updates BHARATCODE_LANG so the
+            // existing locale lookups (and the prompt badge) pick it up on the
+            // next turn, then echoes a localized confirmation. A bare/invalid
+            // `/lang` is handled here too so it never leaks to the model.
+            match locale_badge::parse_lang_command(s) {
+                Some(code) => {
+                    let confirmation = locale_badge::apply_lang_switch(&code);
+                    println!("{confirmation}");
+                }
+                None => {
+                    println!("{}", crate::tr!("onboarding.lang_prompt"));
+                }
+            }
+            Some(InputResult::Retry)
+        }
+        "/i18n" => {
+            // BharatCode v90: print the localized i18n coverage report (the
+            // `i18n-status` command surface) inline. Read-only — it reports
+            // en/hi/ta parity and never mutates locale/config state — so it is
+            // handled here and returns `Retry` so it never leaks to the model.
+            if let Err(err) = crate::i18n::i18n_status::handle_i18n_status() {
+                println!("{}", crate::theme::error(format!("i18n-status: {err}")));
+            }
             Some(InputResult::Retry)
         }
         "/t" => Some(InputResult::ToggleTheme),
@@ -492,6 +541,7 @@ fn print_help() {
   /t                     Toggle the Light / Dark / Ansi theme
   /t <name>              Set the theme directly (light, dark, ansi)
   /r                     Toggle full tool output (show complete parameters without truncation)
+  /i18n                  Show i18n coverage (en/hi/ta key parity, the i18n-status report)
 
 {g_navigation}
   Ctrl+C                 Clear the current line, or leave the session when the line is empty
@@ -551,6 +601,20 @@ mod tests {
         ));
         assert!(matches!(
             handle_slash_command("/?"),
+            Some(InputResult::Retry)
+        ));
+        assert!(matches!(
+            handle_slash_command("/help-index"),
+            Some(InputResult::Retry)
+        ));
+        assert!(matches!(
+            handle_slash_command("/commands"),
+            Some(InputResult::Retry)
+        ));
+
+        // Test i18n coverage report (the i18n-status command surface)
+        assert!(matches!(
+            handle_slash_command("/i18n"),
             Some(InputResult::Retry)
         ));
 

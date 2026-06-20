@@ -1,5 +1,10 @@
 mod builder;
 mod cancel_flush;
+// BharatCode v87: inline fuzzy command palette. Pure module (no new deps); its
+// only call site is the `/find` / `/?`-with-query intercept at the top of
+// `handle_message_input` below, which renders ranked matches through the active
+// theme without otherwise disturbing the interactive loop.
+mod command_palette;
 mod completion;
 mod editor;
 mod elicitation;
@@ -25,6 +30,13 @@ mod plan_file;
 #[path = "status_line.rs"]
 mod status_line;
 
+// BharatCode v89: localized, theme-aware session status banner / footer. The
+// only call sites are the start/end of `run_interactive` below, which print one
+// banner before the input loop and one footer after, gated on an interactive
+// TTY with screen-reader mode off so non-interactive output is unchanged.
+#[path = "status_banner.rs"]
+mod status_banner;
+
 // Best-effort desktop notifications for long interactive turns. The module lives
 // at crates/goose-cli/src/desktop_notify.rs and is CLI-local; it is pulled in
 // here via #[path] (the same out-of-tree precedent as `plan_file` above) so the
@@ -33,6 +45,24 @@ mod status_line;
 // default), so the default interactive loop is unchanged.
 #[path = "../desktop_notify.rs"]
 mod desktop_notify;
+
+// BharatCode v98: 1.0 GA version policy + one-time GA welcome banner. The module
+// lives at crates/goose-cli/src/ga_release.rs and is pulled in here via #[path]
+// (the same out-of-tree precedent as `desktop_notify` above). Its only call site
+// is `ga_release::maybe_show_ga_banner()` near the top of `run_interactive`
+// below, which prints a brand-neutral one-time banner on an interactive TTY and
+// writes a state-dir marker so it fires at most once per install. After the
+// marker is written the default interactive output is unchanged.
+#[path = "../ga_release.rs"]
+mod ga_release;
+
+// BharatCode v99: release-readiness / no-egress assertion gate. Pure module; its
+// only call site is the start of `interactive()` below, right after the v63
+// recovery hint. It asserts this process's privacy invariants (telemetry off,
+// egress guard installed, offline implies strict) and emits at most one line —
+// and only when a violation is found, so a healthy default session is unchanged.
+#[path = "release_gate.rs"]
+mod release_gate;
 
 use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
@@ -540,6 +570,19 @@ impl CliSession {
             }
         }
 
+        // BharatCode v99: release-readiness assertion. Silent when all privacy
+        // invariants hold (a healthy default session is byte-identical); on a
+        // violation it prints one line — muted by default, escalated to a
+        // prominent warning when BHARATCODE_STRICT_RELEASE is set.
+        if let Some(line) = release_gate::hint_line(&release_gate::assess(&release_gate::gather()))
+        {
+            if release_gate::strict_mode() {
+                eprintln!("  {}", console::style(line).red().bold());
+            } else {
+                eprintln!("  {}", console::style(line).yellow().dim());
+            }
+        }
+
         let result = self.run_interactive(prompt).await;
 
         self.agent
@@ -577,6 +620,22 @@ impl CliSession {
         let history_manager = HistoryManager::new();
         history_manager.load(&mut editor);
 
+        // BharatCode v98: one-time 1.0 GA welcome banner. Fires exactly once per
+        // process and at most once per install — it self-gates on an interactive
+        // TTY and a state-dir marker, printing a brand-neutral line and writing
+        // the marker on first run, then staying silent thereafter.
+        ga_release::maybe_show_ga_banner();
+
+        // BharatCode v89: one-line localized, theme-aware session banner. Only
+        // shown on an interactive TTY with screen-reader mode off, so piped /
+        // non-interactive output and a11y plain mode are unchanged.
+        let banner_ctx = self.banner_ctx().await;
+        if let Some(ref ctx) = banner_ctx {
+            if std::io::stdout().is_terminal() && !crate::a11y::is_enabled() {
+                println!("  {}", status_banner::render_start(ctx));
+            }
+        }
+
         loop {
             self.display_context_usage().await?;
 
@@ -602,7 +661,26 @@ impl CliSession {
                 .await?;
         }
 
+        // BharatCode v89: matching end-of-session footer, under the same TTY /
+        // screen-reader gate as the start banner.
+        if let Some(ref ctx) = banner_ctx {
+            if std::io::stdout().is_terminal() && !crate::a11y::is_enabled() {
+                println!("  {}", status_banner::render_end(ctx));
+            }
+        }
+
         Ok(())
+    }
+
+    /// Build the [`status_banner::BannerCtx`] for this session, or `None` if the
+    /// active provider cannot be resolved (in which case the banner is skipped).
+    async fn banner_ctx(&self) -> Option<status_banner::BannerCtx> {
+        let provider = self.agent.provider().await.ok()?;
+        let model = provider.get_model_config().model_name;
+        Some(status_banner::BannerCtx::from_session(
+            provider.get_name(),
+            &model,
+        ))
     }
 
     fn create_editor(
@@ -748,6 +826,22 @@ impl CliSession {
         history: &HistoryManager,
         editor: &mut rustyline::Editor<GooseCompleter, rustyline::history::DefaultHistory>,
     ) -> Result<()> {
+        // BharatCode v87: inline command palette. `/find <q>` and `/? <q>` (the
+        // help shortcut with a query) reach here as plain messages because the
+        // input parser only matches bare `/?`/`/help`. Intercept them, print the
+        // fuzzy-ranked, localized matches through the active theme, and return
+        // without sending anything to the agent. A bare `/find` lists everything.
+        if let Some(query) = Self::palette_query(content) {
+            let entries = command_palette::entries_from_help_index();
+            const PALETTE_LIMIT: usize = 8;
+            print!(
+                "{}",
+                command_palette::render(query, &entries, PALETTE_LIMIT)
+            );
+            history.save(editor);
+            return Ok(());
+        }
+
         match self.run_mode {
             RunMode::Normal => {
                 history.save(editor);
@@ -797,6 +891,33 @@ impl CliSession {
         Ok(())
     }
 
+    /// BharatCode v87: recognize the inline-command-palette triggers in raw
+    /// interactive input and return the (possibly empty) search query.
+    ///
+    /// Returns `Some(query)` for `/find`, `/find <q>`, and `/? <q>` (the help
+    /// shortcut carrying a query); a bare `/find` yields `Some("")`, which the
+    /// palette renders as "all commands". Returns `None` for everything else —
+    /// including a bare `/?`/`/help`, which the input parser already handles —
+    /// so ordinary messages flow through untouched.
+    fn palette_query(content: &str) -> Option<&str> {
+        let trimmed = content.trim();
+        if let Some(rest) = trimmed.strip_prefix("/find") {
+            // `/find`, `/find foo` -> match; `/findxyz` -> not the palette.
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                return Some(rest.trim());
+            }
+            return None;
+        }
+        if let Some(rest) = trimmed.strip_prefix("/?") {
+            // Only `/? <query>` reaches here; bare `/?` is consumed upstream.
+            let q = rest.trim();
+            if !q.is_empty() {
+                return Some(q);
+            }
+        }
+        None
+    }
+
     fn handle_toggle_theme(&self) {
         let current = output::get_theme();
         let new_theme = match current {
@@ -837,22 +958,29 @@ impl CliSession {
 
     fn handle_toggle_full_tool_output(&self) {
         let enabled = output::toggle_full_tool_output();
-        if enabled {
-            println!(
-                "{}",
-                console::style(
-                    "✓ Full tool output enabled - tool parameters will no longer be truncated"
-                )
-                .green()
-            );
+        let status = if enabled {
+            "✓ Full tool output enabled - tool parameters will no longer be truncated"
         } else {
+            "✓ Full tool output disabled - tool parameters will be truncated to fit terminal width"
+        };
+
+        // v83: in screen-reader / a11y mode, emit a plain, role-labelled line
+        // (ANSI and decorative glyphs stripped) so the toggle status announces
+        // linearly. Default (mode OFF) keeps the original styled output below
+        // byte-for-byte.
+        if crate::a11y::is_enabled() {
             println!(
-                "{}",
-                console::style(
-                    "✓ Full tool output disabled - tool parameters will be truncated to fit terminal width"
-                )
-                .dim()
+                "{} {}",
+                crate::a11y::label("system"),
+                crate::a11y::plain(status)
             );
+            return;
+        }
+
+        if enabled {
+            println!("{}", console::style(status).green());
+        } else {
+            println!("{}", console::style(status).dim());
         }
     }
 
@@ -1247,6 +1375,12 @@ impl CliSession {
     ) -> Result<()> {
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
+
+        // BharatCode v88: wall-clock start of this turn, captured at entry so the
+        // opt-in desktop notification on the clean-completion path below can tell
+        // whether the turn ran long enough to be worth a ping. Cheap and always
+        // taken; only consulted when BHARATCODE_NOTIFY is on.
+        let turn_start = std::time::Instant::now();
 
         // BharatCode v15: INR budget gate. Optional, default OFF — when a ₹ cap
         // (BHARATCODE_BUDGET_INR) is configured, warn as spend nears it and, in
@@ -1685,6 +1819,18 @@ impl CliSession {
                 .find_map(|m| m.id.clone())
                 .unwrap_or_default();
             goose::turn_checkpoint::record(&self.session_id, turn_index, &last_message_id);
+        }
+
+        // BharatCode v88: opt-in desktop notification on long interactive-turn
+        // completion. Best-effort and OFF by default — fires only when this was an
+        // interactive turn, BHARATCODE_NOTIFY is truthy, and the turn ran at least
+        // BHARATCODE_NOTIFY_THRESHOLD_SECS (default 30s). The notify call swallows
+        // all platform errors, so a missing/unavailable backend is a silent no-op.
+        if interactive
+            && crate::notify::is_enabled()
+            && turn_start.elapsed() >= crate::notify::threshold()
+        {
+            crate::notify::notify("BharatCode", &crate::tr!("notify.turn_done"));
         }
 
         Ok(())
@@ -2593,6 +2739,21 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
     use test_case::test_case;
+
+    #[test]
+    fn palette_query_recognizes_find_and_help_with_query() {
+        // `/find` with and without a query.
+        assert_eq!(CliSession::palette_query("/find cost"), Some("cost"));
+        assert_eq!(CliSession::palette_query("/find"), Some(""));
+        assert_eq!(CliSession::palette_query("  /find   cst  "), Some("cst"));
+        // `/?` only when it carries a query (bare `/?` is handled upstream).
+        assert_eq!(CliSession::palette_query("/? spend"), Some("spend"));
+        // Non-palette input flows through untouched.
+        assert_eq!(CliSession::palette_query("/?"), None);
+        assert_eq!(CliSession::palette_query("/findxyz"), None);
+        assert_eq!(CliSession::palette_query("hello world"), None);
+        assert_eq!(CliSession::palette_query("/help"), None);
+    }
 
     #[test]
     fn test_format_elapsed_time_under_60_seconds() {

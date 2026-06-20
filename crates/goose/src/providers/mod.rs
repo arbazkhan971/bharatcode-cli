@@ -57,8 +57,27 @@ pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
+// Perf-release profile (v97): one named switch (`BHARATCODE_PERF_PROFILE`)
+// resolving to a coherent, clamped bundle of the already-shipped perf tunables
+// (stream flush cadence, coalescing, parallel-tool concurrency, retry budget,
+// deadline) so the streaming/coalesce paths and doctor read one validated
+// source. Default unset = None = today's behaviour; it only reads and reports,
+// and an explicit individual BHARATCODE_* var still wins. Reachable public API,
+// same posture as the sibling `coalesce` / `deadline` / `planner_presets`
+// modules consumed by the streaming/embeddings layer.
+pub mod perf_profile;
 pub mod pi_acp;
 pub mod planner_presets;
+// Localized provider/model picker labels (v88): turns a raw provider id into a
+// friendly, India-context display name + residency hint in the active regional
+// locale. The module file lives at `src/provider_labels.rs`; it is wired in
+// here (rather than via lib.rs) with `#[path]` so it is reachable from the
+// running binary and importable by both the CLI `configure` provider picker and
+// the planner-preset surface. English / unset-locale output is the raw id, so
+// default behavior is unchanged.
+#[path = "../provider_labels.rs"]
+pub mod provider_labels;
+pub use provider_labels::{display_label, display_label_active, residency_hint};
 pub mod provider_registry;
 pub mod provider_test;
 mod retry {
