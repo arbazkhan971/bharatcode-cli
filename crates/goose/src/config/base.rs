@@ -90,16 +90,6 @@ pub(crate) mod streaming_perf;
 #[path = "../packaging.rs"]
 pub(crate) mod packaging;
 
-// The v95 GA env-var reference generator (canonical `BHARATCODE_*` name +
-// purpose + default table, plus markdown/JSON renderers) lives in
-// `env_reference.rs`, wired in here (rather than via lib.rs) so the module is
-// reachable from the running binary alongside the config keys it documents. The
-// rendered reference is surfaced through `Config::env_reference` and emitted on
-// startup by `Config::global` only when the opt-in `BHARATCODE_ENV_REFERENCE`
-// gate is set (default off), so docs can be generated straight from the binary.
-#[path = "../env_reference.rs"]
-pub(crate) mod env_reference;
-
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -479,13 +469,7 @@ impl Config {
     /// This will initialize the configuration with the default path (~/.config/goose/config.yaml)
     /// if it hasn't been initialized yet.
     pub fn global() -> &'static Config {
-        let config = GLOBAL_CONFIG.get_or_init(Config::default);
-        // GA docs hook (v95): when the opt-in `BHARATCODE_ENV_REFERENCE` gate is
-        // set, emit the canonical env-var reference once at global-config init so
-        // published docs can be captured straight from the running binary. A
-        // no-op when the gate is unset, so default startup behaviour is unchanged.
-        env_reference::emit_if_enabled();
-        config
+        GLOBAL_CONFIG.get_or_init(Config::default)
     }
 
     /// Create a new configuration instance with custom paths
@@ -724,17 +708,6 @@ impl Config {
     /// `dist/`.
     pub fn packaging_summary(&self) -> Vec<String> {
         packaging::matrix_summary_lines()
-    }
-
-    /// The canonical GA `BHARATCODE_*` env-var reference rendered as a docs-ready
-    /// markdown table (one row per documented variable: name, one-line purpose,
-    /// documented default). The reference is a compile-time constant, so this is
-    /// a pure read independent of config; the method lives here to give the
-    /// doctor / release-docs tooling one source of truth alongside the typed
-    /// `get_bharatcode_*` getters that read those same keys. For structured
-    /// ingestion use `env_reference::render_json`. Never mutates config.
-    pub fn env_reference(&self) -> String {
-        env_reference::render_markdown()
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {

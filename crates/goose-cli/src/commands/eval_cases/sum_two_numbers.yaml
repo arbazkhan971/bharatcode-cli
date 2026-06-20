@@ -1,0 +1,12 @@
+id: sum-two-numbers
+title: Arithmetic answer matches a pattern
+description: >
+  The agent must compute a small sum and state the answer. Graded with a regex
+  so the exact surrounding wording is free but the numeric answer must appear as
+  a standalone token.
+prompt: >
+  What is 17 plus 25? Reply with the final number on its own. You may add a
+  short sentence, but the number must appear.
+grader:
+  kind: regex
+  value: "\\b42\\b"

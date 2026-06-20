@@ -1,0 +1,13 @@
+id: hello-world
+title: Greets with a literal token
+description: >
+  A trivial smoke case: the agent must emit a fixed greeting token. Graded with
+  a case-insensitive substring match so trailing prose does not affect the
+  result.
+prompt: >
+  Reply with exactly the single word HELLOWORLD and nothing else. Do not add any
+  punctuation, explanation, or formatting.
+grader:
+  kind: substring
+  value: helloworld
+  ignore_case: true

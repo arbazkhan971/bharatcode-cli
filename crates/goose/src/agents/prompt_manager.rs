@@ -61,9 +61,10 @@ pub mod ext_digest;
 #[path = "../automation_mode.rs"]
 mod automation_mode;
 
-// Screen-reader system-prompt advisory (opt-in via BHARATCODE_A11Y). Declared
-// inline via `#[path]` so the wiring stays confined to the prompt-assembly path
-// and its own file, keeping lib.rs untouched.
+// Screen-reader-friendly tool-output advisory (opt-in via its own dedicated
+// BHARATCODE_A11Y_PROMPT toggle, distinct from the CLI BHARATCODE_A11Y knob).
+// Declared inline via `#[path]` so the wiring stays confined to the
+// prompt-assembly path and its own file, keeping lib.rs untouched.
 #[path = "../a11y_prompt.rs"]
 mod a11y_prompt;
 
@@ -270,9 +271,10 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             system_prompt_extras.insert("bharatcode_automation".to_string(), b);
         }
 
-        // Screen-reader advisory (opt-in via BHARATCODE_A11Y). Steers replies
-        // toward plain-text, screen-reader-friendly prose. When disabled this is
-        // None and the prompt is byte-identical.
+        // Screen-reader-friendly tool-output advisory (opt-in via the dedicated
+        // BHARATCODE_A11Y_PROMPT toggle). Steers tool/command output toward
+        // linear plain text with explicit row labels and summarised dumps. When
+        // disabled this is None and the prompt is byte-identical.
         if let Some(block) = a11y_prompt::advisory_block() {
             system_prompt_extras.insert("bharatcode_a11y".to_string(), block);
         }

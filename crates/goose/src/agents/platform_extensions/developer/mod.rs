@@ -1,4 +1,5 @@
 pub mod apply_patch;
+pub mod build_info;
 pub mod compliance;
 pub mod delegate;
 pub mod edit;
@@ -370,6 +371,7 @@ impl DeveloperClient {
                 Some(false),
             )),
             compliance::compliance_tool(),
+            build_info::build_info_tool(),
         ];
 
         if run_script::is_enabled() {
@@ -539,7 +541,8 @@ impl McpClientTrait for DeveloperClient {
             "verify_compliance" => match compliance::run(arguments, working_dir) {
                 Ok(result) => Ok(result),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Error: {error}"
+                    "Error: {}",
+                    error.message
                 ))
                 .with_priority(0.0)])),
             },
@@ -550,6 +553,7 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "build_info" => Ok(build_info::run()),
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -600,7 +604,8 @@ mod tests {
                 "rename_symbol",
                 "delegate",
                 "git_advanced",
-                "verify_compliance"
+                "verify_compliance",
+                "build_info"
             ]
         );
         assert!(!names.iter().any(|n| n == "run_script"));

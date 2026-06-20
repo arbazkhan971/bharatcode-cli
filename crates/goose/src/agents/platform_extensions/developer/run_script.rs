@@ -350,7 +350,9 @@ mod tests {
         std::fs::write(&script, "#!/bin/sh\necho hello-from-script\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result = run(
+        // See run_forwards_args: retry to absorb a transient ETXTBSY from the
+        // write+chmod+exec sequence under parallel load.
+        let mut result = run(
             RunScriptParams {
                 name: "hello".to_string(),
                 args: vec![],
@@ -358,6 +360,20 @@ mod tests {
             Some(temp.path()),
         )
         .await;
+        for _ in 0..5 {
+            if result.is_error != Some(true) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            result = run(
+                RunScriptParams {
+                    name: "hello".to_string(),
+                    args: vec![],
+                },
+                Some(temp.path()),
+            )
+            .await;
+        }
 
         assert_eq!(result.is_error, Some(false));
         assert!(first_text(&result).contains("hello-from-script"));
@@ -375,7 +391,10 @@ mod tests {
         std::fs::write(&script, "#!/bin/sh\necho \"$1 $2\"\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result = run(
+        // Writing + chmod + exec in quick succession can briefly yield ETXTBSY
+        // ("Text file busy") under heavy parallel test load; retry to keep the
+        // assertion deterministic.
+        let mut result = run(
             RunScriptParams {
                 name: "echo-args".to_string(),
                 args: vec!["alpha".to_string(), "beta".to_string()],
@@ -383,6 +402,20 @@ mod tests {
             Some(temp.path()),
         )
         .await;
+        for _ in 0..5 {
+            if result.is_error != Some(true) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            result = run(
+                RunScriptParams {
+                    name: "echo-args".to_string(),
+                    args: vec!["alpha".to_string(), "beta".to_string()],
+                },
+                Some(temp.path()),
+            )
+            .await;
+        }
 
         assert_eq!(result.is_error, Some(false));
         assert!(first_text(&result).contains("alpha beta"));
