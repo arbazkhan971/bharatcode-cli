@@ -72,6 +72,97 @@ pub fn current() -> ReleaseInfo {
     }
 }
 
+/// Lower-cased release-channel name as published to release infrastructure
+/// (download URLs, update manifests). The GA cut ships on `stable`; the
+/// human-facing `GA` marker in [`ReleaseInfo::channel`] is the banner badge for
+/// the same channel.
+const CHANNEL_STABLE: &str = "stable";
+
+/// The General-Availability product version (`1.0.0`).
+///
+/// Canonical, single-source-of-truth GA version string: the *brand* version
+/// surfaced to users, intentionally distinct from the internal
+/// `CARGO_PKG_VERSION` workspace crate version (see module docs).
+pub fn ga_version() -> &'static str {
+    GA_VERSION
+}
+
+/// The published release channel (`stable`) for the GA cut.
+pub fn channel() -> &'static str {
+    CHANNEL_STABLE
+}
+
+/// Compile-time build metadata for the running binary.
+///
+/// Single source of truth for "what build is this", composed only from
+/// compile-time constants so it adds **no new build dependency**:
+///
+///   * the internal workspace crate version (`CARGO_PKG_VERSION`), and
+///   * optional VERGEN-style git/build env (`VERGEN_GIT_SHA`,
+///     `VERGEN_BUILD_TIMESTAMP`) read via [`option_env!`].
+///
+/// When the optional VERGEN env is absent at compile time (the default — no
+/// build script is required), this falls back to just the crate version, e.g.
+/// `1.38.0`. With git metadata present it reads `1.38.0 (abc1234 2026-06-20)`.
+pub fn build_metadata() -> String {
+    let crate_version = env!("CARGO_PKG_VERSION");
+    let git_sha = option_env!("VERGEN_GIT_SHA");
+    let built_at = option_env!("VERGEN_BUILD_TIMESTAMP");
+    match (git_sha, built_at) {
+        (Some(sha), Some(ts)) => format!("{crate_version} ({sha} {ts})"),
+        (Some(sha), None) => format!("{crate_version} ({sha})"),
+        (None, Some(ts)) => format!("{crate_version} ({ts})"),
+        (None, None) => crate_version.to_string(),
+    }
+}
+
+/// The authoritative long `--version` / `bharatcode info` identity line.
+///
+/// Composes, in order: the product name, the GA version, the published channel,
+/// the Apache-2.0 license, and the brand-clean upstream-attribution pointer.
+/// Routed through [`crate::tr!`] so a localized template (`version.*`) is used
+/// when present and the bundled English labels are used otherwise — the GA
+/// version, channel value, and `Apache-2.0` token are always substituted from
+/// this canonical module, never from a locale table, so the surfaced version is
+/// identical in every locale.
+///
+/// Brand-clean by construction: it states the Apache-2.0 derivative-work fact
+/// and points at `NOTICE` for the full attribution, but surfaces no upstream
+/// product/vendor trademark in the user-facing string (the upstream names live
+/// in `NOTICE`, satisfying Apache-2.0 Section 4 without a trademark leak).
+///
+/// ```text
+/// BharatCode 1.0.0 (channel: stable) — Apache-2.0; derivative work, see NOTICE for attribution.
+/// ```
+pub fn long_version_line() -> String {
+    let info = current();
+
+    let product = tr_or("version.product", "BharatCode");
+    let channel_label = tr_or("version.channel_label", "channel");
+    let license = "Apache-2.0";
+    let attribution = tr_or(
+        "version.attribution",
+        "derivative work, see NOTICE for attribution",
+    );
+
+    format!(
+        "{product} {} ({channel_label}: {}) — {license}; {attribution}.",
+        info.ga_version,
+        channel(),
+    )
+}
+
+/// Resolve an i18n key, falling back to a built-in English default when the key
+/// is absent from every locale table (i.e. `tr!` echoes the key back).
+fn tr_or(key: &str, default: &str) -> String {
+    let value = crate::tr!(key);
+    if value == key {
+        default.to_string()
+    } else {
+        value
+    }
+}
+
 /// The brand-clean, single-line startup banner.
 ///
 /// Routed through the i18n `t()` fallback: when a localized `release.banner`
@@ -156,6 +247,100 @@ mod tests {
         let lowered = a.to_lowercase();
         assert!(!lowered.contains("goose"));
         assert!(!lowered.contains("block"));
+    }
+
+    #[test]
+    fn ga_version_accessor_is_one_dot_zero() {
+        assert_eq!(ga_version(), "1.0.0");
+    }
+
+    #[test]
+    fn channel_accessor_is_stable() {
+        assert_eq!(channel(), "stable");
+    }
+
+    #[test]
+    fn build_metadata_starts_with_crate_version() {
+        let meta = build_metadata();
+        let crate_version = env!("CARGO_PKG_VERSION");
+        assert!(
+            meta.starts_with(crate_version),
+            "build metadata must lead with the crate version: {meta}"
+        );
+        assert!(
+            !meta.contains('\n'),
+            "build metadata must be one line: {meta}"
+        );
+    }
+
+    #[test]
+    fn long_version_line_is_complete_and_brand_clean() {
+        let line = long_version_line();
+        // Contains the canonical GA version, the published channel, and license.
+        assert!(
+            line.contains("1.0.0"),
+            "long version line missing GA version: {line}"
+        );
+        assert!(
+            line.contains("stable"),
+            "long version line missing channel: {line}"
+        );
+        assert!(
+            line.contains("Apache-2.0"),
+            "long version line missing license: {line}"
+        );
+        // Single line.
+        assert!(
+            !line.contains('\n'),
+            "long version line must be one line: {line}"
+        );
+        // Brand-clean: no upstream product/vendor leakage in the user-facing
+        // string. Upstream names live only in NOTICE (Apache-2.0 Section 4).
+        let lowered = line.to_lowercase();
+        assert!(
+            !lowered.contains("goose"),
+            "long version line leaks upstream product: {line}"
+        );
+        assert!(
+            !lowered.contains("block"),
+            "long version line leaks upstream vendor: {line}"
+        );
+    }
+
+    /// Guards the single-source-of-truth invariant: the GA brand version is a
+    /// clean `1.x` milestone, parsed and compared against the internal
+    /// `CARGO_PKG_VERSION` so a stray edit that lets the internal crate version
+    /// masquerade as the GA brand version is caught.
+    #[test]
+    fn ga_version_is_a_clean_one_dot_zero_milestone() {
+        let ga = ga_version();
+        let ga_parts: Vec<u64> = ga
+            .split('.')
+            .map(|p| p.parse::<u64>().expect("GA version component must be numeric"))
+            .collect();
+        assert_eq!(
+            ga_parts.len(),
+            3,
+            "GA version must be MAJOR.MINOR.PATCH: {ga}"
+        );
+        assert_eq!(ga_parts[0], 1, "GA milestone major must be 1: {ga}");
+
+        // Parse the internal crate version: the GA marker must be a reviewed
+        // constant distinct from the fast-moving internal crate version (which
+        // tracks fork plumbing and is not the brand version).
+        let crate_version = env!("CARGO_PKG_VERSION");
+        let crate_major: u64 = crate_version
+            .split('.')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .expect("crate version must have a numeric major");
+        assert_ne!(
+            ga, crate_version,
+            "GA brand version must be a reviewed constant distinct from the internal crate version"
+        );
+        // The internal crate major is a valid, comparable number; the GA
+        // milestone deliberately resets to the 1.0 line and does not inherit it.
+        assert!(crate_major >= 1, "internal crate major should be >= 1");
     }
 
     #[test]

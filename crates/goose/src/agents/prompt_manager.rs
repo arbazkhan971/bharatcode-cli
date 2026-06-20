@@ -279,6 +279,16 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             system_prompt_extras.insert("bharatcode_a11y".to_string(), block);
         }
 
+        // Security hardening self-audit advisory (opt-in via BHARATCODE_HARDENING).
+        // Aggregates the live posture of the residency/offline egress guard, exec
+        // policy, exec sandbox, secret redaction, telemetry-off, and local-only
+        // analytics; emits a single low-priority advisory only when enabled AND at
+        // least one pillar is weak. When disabled this is None and the prompt is
+        // byte-identical.
+        if let Some(block) = crate::security::hardening::advisory_block() {
+            system_prompt_extras.insert("bharatcode_hardening".to_string(), block);
+        }
+
         // Incremental-context repo digest (opt-in via BHARATCODE_REPO_DIGEST).
         // A small, cached structural snapshot (top-level layout + content
         // fingerprint) memoized per working dir so repeated turns reuse the

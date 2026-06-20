@@ -2761,6 +2761,22 @@ impl Agent {
                     plugin_summary::dispatch(s, &self.hook_manager, &session_config.id).await;
                 }
 
+                if crate::session::bundle::auto_export_enabled() {
+                    if let Some(path) = crate::session::bundle::maybe_export_on_end(
+                        &session_config.id,
+                        &working_dir,
+                    )
+                    .await
+                    {
+                        yield AgentEvent::Message(
+                            Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                format!("Exported session bundle to {}", path.display()),
+                            ),
+                        );
+                    }
+                }
+
                 if desktop_notify::is_enabled() {
                     let elapsed = turn_started_at.elapsed().as_secs();
                     if elapsed >= desktop_notify::threshold_secs() {
