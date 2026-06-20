@@ -123,5 +123,13 @@
   "tutorials.quickstart_step1": "provider आणि model निवडण्यासाठी 'bharatcode configure' चालवा.",
   "tutorials.quickstart_step2": "एक session सुरू करा आणि तुमची पहिली विनंती लिहा.",
   "tutorials.quickstart_title": "त्वरित-प्रारंभ ट्यूटोरियल",
-  "meta.locales": "en,hi,ta,mr"
+  "meta.locales": "en,hi,ta,mr",
+  "version.product": "BharatCode",
+  "version.channel_label": "चॅनेल",
+  "version.channel_stable": "स्थिर",
+  "version.attribution": "व्युत्पन्न कार्य, attribution साठी NOTICE पहा",
+  "version.ga_version_label": "GA आवृत्ती:",
+  "version.channel_label_row": "चॅनेल:",
+  "version.build_label": "बिल्ड:",
+  "version.crate_label": "अंतर्गत आवृत्ती:"
 }

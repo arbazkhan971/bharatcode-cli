@@ -7,6 +7,11 @@ compile_error!("Features `rustls-tls` and `native-tls` are mutually exclusive");
 pub mod a11y;
 pub mod cli;
 pub mod commands;
+// BharatCode v95: offline static docs-site generator (`bharatcode docgen-site`).
+// `docsite::generate_site` walks the live `Cli::command()` clap tree plus the
+// embedded built-in skills and emits a self-contained Markdown docs set, driven
+// by the canonical `goose::doc_manifest::pages()` single source of truth.
+pub mod docsite;
 pub mod help_index;
 pub mod i18n;
 pub mod keybindings;

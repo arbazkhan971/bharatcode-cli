@@ -123,5 +123,13 @@
   "i18n_status.col_coverage": "கவரேஜ்",
   "i18n_status.all_complete": "அனைத்து லோக்கேல்களும் ஆங்கிலத்துடன் முழு சமநிலையில் உள்ளன.",
   "i18n_status.missing_header": "விடுபட்ட keys",
-  "i18n_status.hint": "100% ஐ அடைய லோக்கேலின் JSON அட்டவணையில் விடுபட்ட keys ஐ சேர்க்கவும்."
+  "i18n_status.hint": "100% ஐ அடைய லோக்கேலின் JSON அட்டவணையில் விடுபட்ட keys ஐ சேர்க்கவும்.",
+  "version.product": "BharatCode",
+  "version.channel_label": "சேனல்",
+  "version.channel_stable": "நிலையான",
+  "version.attribution": "வழித்தோன்றல் பணி, attribution-க்கு NOTICE ஐப் பார்க்கவும்",
+  "version.ga_version_label": "GA பதிப்பு:",
+  "version.channel_label_row": "சேனல்:",
+  "version.build_label": "பதிப்பு உருவாக்கம்:",
+  "version.crate_label": "உள் பதிப்பு:"
 }

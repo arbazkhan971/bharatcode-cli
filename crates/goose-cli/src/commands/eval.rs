@@ -143,6 +143,14 @@ fn run_shell_grader(command: &str, reply: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+/// Grade `reply` with `grader`, returning `Ok(true)` for a pass.
+///
+/// A thin free-function wrapper over [`Grader::grade`] so callers (and the CLI
+/// dispatch) can grade without naming the method. Pure and offline.
+pub fn grade_reply(grader: &Grader, reply: &str) -> Result<bool> {
+    grader.grade(reply)
+}
+
 /// One embedded eval case: a stable id, human-readable metadata, the prompt sent
 /// to the agent, and the deterministic [`Grader`] applied to the reply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

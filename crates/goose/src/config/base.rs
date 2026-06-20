@@ -722,6 +722,20 @@ impl Config {
         packaging::matrix_summary_lines()
     }
 
+    /// Human-readable row(s) for the v92 privacy-preserving, LOCAL-ONLY
+    /// aggregated usage rollup (turns, tool invocations, bucketed token/₹
+    /// totals) read from `<state_dir>/usage_analytics.json`. The rollup holds
+    /// coarse counts and buckets only — never any prompt/output/path content —
+    /// and is never transmitted. When the feature was never enabled (or nothing
+    /// recorded yet) this is a single "off" row, so default behaviour is
+    /// unchanged. Gate-independent read: surfacing a previously-written rollup
+    /// never mutates config and never enables anything. The method lives here so
+    /// doctor / info read it on the same config-summary surface as the other
+    /// `*_summary` rows.
+    pub fn analytics_summary(&self) -> Vec<String> {
+        usage_analytics::summary_lines()
+    }
+
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
         let mut path = self.write_path().clone();
 
@@ -1349,6 +1363,15 @@ config_value!(BHARATCODE_CI, String);
 config_value!(BHARATCODE_EXT_ADVISORY, String);
 config_value!(BHARATCODE_RECIPE_LOCK, String);
 config_value!(BHARATCODE_COST_EXTENSIONS, String);
+
+// v92: opt-in gate for the privacy-preserving, LOCAL-ONLY aggregated usage
+// rollup. Default-empty (off), so default behaviour is unchanged; the gate is
+// read raw-env-first in `usage_analytics::is_enabled` (mirroring the recovery
+// sidecar / checkpoint convention to survive numeric coercion). Registered as a
+// first-class typed getter so doctor/info can read it via the standard accessor
+// path alongside the rollup `usage_analytics::summary_lines` surfaces through
+// `Config::analytics_summary`.
+config_value!(BHARATCODE_ANALYTICS, String, "");
 
 // Ecosystem config surface (this wave). Plugin summary / git context / ext
 // digest are boolean toggles; MCP-registry pin and automation default-script

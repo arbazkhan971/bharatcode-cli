@@ -354,6 +354,20 @@ async fn print_deep_checks() {
     };
     println!("  {} {}", glyph, msg);
 
+    // Release packaging readiness: a read-only, always-visible row confirming the
+    // release asset names the packaging matrix generator emits stay in lockstep
+    // with the self-updater's `asset_name()` and that the running `--version`
+    // parses as major.minor.patch. The descriptor generators (deb/rpm/brew/
+    // checksums) are invoked by release tooling, not here; this row only consumes
+    // `expected_asset_names()`. Rendered in the same shape as the rows above.
+    let (st, msg) = package_matrix::release_readiness();
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
     // Quick-start onboarding hint (BharatCode v88): a read-only line pointing at
     // the single most relevant embedded tutorial for the current state (e.g. no
     // provider configured → the quick-start). Always shown like the other deep

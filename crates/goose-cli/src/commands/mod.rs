@@ -1,10 +1,12 @@
 pub mod audit;
+pub mod bench;
 pub mod budget;
 pub mod configure;
 pub mod cost;
 pub mod cost_ledger;
 pub mod doctor;
 pub mod doctor_checks;
+pub mod eval;
 pub mod gateway;
 pub mod gen_docs;
 pub mod git_helper;
@@ -71,3 +73,30 @@ pub use mcp_registry::{handle_mcp_registry, McpRegistryAction};
 // registry to the agent. Every tutorial is embedded and side-effect free, so
 // default behavior is unchanged.
 pub use tutorials::{catalog as tutorials_list, get as tutorial, Tutorial, TUTORIALS};
+
+// Re-export the offline-capable benchmark / eval harness entry point so it is
+// reachable as crate API. `handle_eval` runs an embedded suite of deterministic
+// coding tasks through the shared `build_session` + headless single-turn path
+// (the same flow used by `review_cmd`/`gen_tests`), grades each assistant reply
+// with a pure, offline [`Grader`] (substring / regex / shell), times the turn,
+// and attributes the ₹ cost via `cost_ledger`, emitting a pass/fail + latency +
+// rupee scorecard (table or `--json`). `eval --list` and grading are fully
+// offline (no model call) and are exercised by this module's own unit tests; the
+// only env var is `BHARATCODE_EVAL_TIMEOUT_SECS`, which clamps per-case wall
+// time, so default behavior is unchanged. The CLI dispatch (`bharatcode eval`)
+// is the one-line wiring added in `cli.rs`, owned by a sibling in this wave,
+// which calls `handle_eval` with the parsed `EvalOptions`.
+pub use eval::{
+    grade_reply, handle_eval, load_cases, EvalCase, EvalOptions, EvalResult, Grader, ScoreCard,
+};
+
+// Re-export the offline benchmark / eval harness entry point so it is reachable
+// as crate API. `handle_bench` runs each embedded `BenchCase` through one headless
+// turn via the shared session builder, grades the assistant reply with a pure
+// objective `Grader`, and reports an aggregate `BenchReport` (pass rate, p50/p95
+// latency) as a table or `--json`. Grading is pure and the only env var is the
+// per-case timeout clamp, so default behavior is unchanged.
+pub use bench::{
+    grade, handle_bench, BenchCase, BenchOptions, BenchReport, CaseResult, Grader,
+    BENCH_RECIPE_YAML, CASES,
+};
