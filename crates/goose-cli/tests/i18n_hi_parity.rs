@@ -35,7 +35,7 @@ const HI_JSON: &str = include_str!("../src/i18n/hi.json");
 /// identical across locales and carry no Devanagari, so they are exempt from the
 /// "must differ" and "must contain Devanagari" checks. Coverage (property (a))
 /// is still enforced for these keys.
-const SYMBOLIC_KEY_ALLOWLIST: &[&str] = &["meta.locales"];
+const SYMBOLIC_KEY_ALLOWLIST: &[&str] = &["meta.locales", "version.product"];
 
 fn parse(raw: &str, name: &str) -> BTreeMap<String, String> {
     serde_json::from_str(raw).unwrap_or_else(|e| panic!("{name} is not valid JSON: {e}"))
