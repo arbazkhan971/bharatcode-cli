@@ -131,5 +131,18 @@
   "version.ga_version_label": "GA आवृत्ती:",
   "version.channel_label_row": "चॅनेल:",
   "version.build_label": "बिल्ड:",
-  "version.crate_label": "अंतर्गत आवृत्ती:"
+  "version.crate_label": "अंतर्गत आवृत्ती:",
+  "compliance.title": "BharatCode अनुपालन गेट",
+  "compliance.files_header": "परवाना आणि श्रेय फायली",
+  "compliance.detail_missing": "अनुपस्थित",
+  "compliance.detail_empty": "रिकामे",
+  "compliance.detail_unshaped": "Apache-2.0 स्वरूपात नाही",
+  "compliance.detail_ok": "उपस्थित",
+  "compliance.scan_header": "एम्बेडेड ट्रेडमार्क स्कॅन",
+  "compliance.scan_clean": "एम्बेडेड वापरकर्ता-केंद्रित strings मध्ये कोणतेही उर्वरित अपस्ट्रीम चिन्ह नाही",
+  "compliance.scan_leak": "उर्वरित अपस्ट्रीम चिन्हे",
+  "compliance.surfaces_word": "पृष्ठभाग",
+  "compliance.more": "अधिक",
+  "compliance.verdict_pass": "अनुपालन गेट उत्तीर्ण झाले",
+  "compliance.verdict_fail": "अनुपालन गेट अयशस्वी झाले"
 }

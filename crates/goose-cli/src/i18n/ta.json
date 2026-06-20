@@ -131,5 +131,18 @@
   "version.ga_version_label": "GA பதிப்பு:",
   "version.channel_label_row": "சேனல்:",
   "version.build_label": "பதிப்பு உருவாக்கம்:",
-  "version.crate_label": "உள் பதிப்பு:"
+  "version.crate_label": "உள் பதிப்பு:",
+  "compliance.title": "BharatCode இணக்க நுழைவாயில்",
+  "compliance.files_header": "உரிமம் மற்றும் பண்புக்கூறு கோப்புகள்",
+  "compliance.detail_missing": "காணவில்லை",
+  "compliance.detail_empty": "காலி",
+  "compliance.detail_unshaped": "Apache-2.0 வடிவில் இல்லை",
+  "compliance.detail_ok": "உள்ளது",
+  "compliance.scan_header": "உட்பொதிக்கப்பட்ட வர்த்தக முத்திரை ஸ்கேன்",
+  "compliance.scan_clean": "உட்பொதிக்கப்பட்ட பயனர்-நோக்கு strings இல் எஞ்சிய மேல்நிலை முத்திரைகள் இல்லை",
+  "compliance.scan_leak": "எஞ்சிய மேல்நிலை முத்திரைகள்",
+  "compliance.surfaces_word": "மேற்பரப்புகள்",
+  "compliance.more": "மேலும்",
+  "compliance.verdict_pass": "இணக்க நுழைவாயில் நிறைவேறியது",
+  "compliance.verdict_fail": "இணக்க நுழைவாயில் தோல்வியடைந்தது"
 }

@@ -131,5 +131,18 @@
   "version.ga_version_label": "GA version:",
   "version.channel_label_row": "Channel:",
   "version.build_label": "Build:",
-  "version.crate_label": "Internal version:"
+  "version.crate_label": "Internal version:",
+  "compliance.title": "BharatCode compliance gate",
+  "compliance.files_header": "License and attribution files",
+  "compliance.detail_missing": "missing",
+  "compliance.detail_empty": "empty",
+  "compliance.detail_unshaped": "not Apache-2.0 shaped",
+  "compliance.detail_ok": "present",
+  "compliance.scan_header": "Embedded trademark scan",
+  "compliance.scan_clean": "No residual upstream marks in embedded user-facing strings",
+  "compliance.scan_leak": "Residual upstream marks",
+  "compliance.surfaces_word": "surfaces",
+  "compliance.more": "more",
+  "compliance.verdict_pass": "Compliance gate passed",
+  "compliance.verdict_fail": "Compliance gate failed"
 }
