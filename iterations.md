@@ -502,3 +502,13 @@ engineering (THIRD_PARTY_LICENSES, installers, Dockerfile); LICENSES/LICENSE-cod
 - v35 ✅ `bharatcode privacy` — new commands/privacy.rs (PrivacyPosture::resolve reads real residency/offline/redact/audit/telemetry/provider keys via the same accessors the features use, 7-pillar ✓/✗ report + lockdown hint), commands/mod.rs pub mod, cli.rs Privacy variant + dispatch (line 2186) + help-name (line 1385), en/hi i18n +16 keys each. 5 tests. Evidence: `./target/debug/bharatcode privacy` renders all 7 pillars w/ source keys (live run confirmed); i18n parity 49/49 en=hi, no missing/extra. Compiled & integrated; done.
 - v36 ✅ Doctor deep checks — new commands/doctor_checks.rs (best-effort local-provider TCP/HTTP probe, config-dir writable, git available, offline/residency coherence via pure offline_implies_strict, session-DB storage; run_all aggregator, Status::glyph), doctor.rs wires print_deep_checks().await on the real run path (line 12; spawn_blocking for reqwest::blocking), commands/mod.rs pub mod. 5 tests. Evidence: `./target/debug/bharatcode doctor` prints "Deep checks" w/ 5 ✓ rows (git 2.43.0, config dir, sessions DB 76.0 KB — live run confirmed). Compiled & integrated; done.
 - Build OK (goose-cli --no-default-features --features portable-default). goose `--lib --features rustls-tls` = 1619/0. goose-cli `--lib --no-default-features --features portable-default` = 279/0. No INTEGRATE fixes needed — batch compiled clean on first cargo check. leak-free (--help + privacy --help + new-file string grep all CLEAN of user-facing goose/Block).
+
+### 2026-06-20 — Ultracode skill (dynamic-workflow procedure) ✅
+- Implemented the "Ultracode for Codex" skill (dev.to/pablonax) as a portable SKILL.md:
+  Direct/Workflow/Delegated modes; plan→split→run→check→integrate→verify; disjoint parallel
+  packets; evidence-backed (source, not vote) integration; `.workflow/ultracode/<slug>/`
+  artifacts; "Verification still needed" instead of guessing.
+- Shipped 3 ways: (1) BharatCode BUILTIN skill crates/goose/src/skills/builtins/ultracode.md
+  (embedded via include_dir!, surfaces in `bharatcode skills list` as builtin://skills/ultracode);
+  (2) ~/.codex/skills/ultracode/SKILL.md; (3) ~/.claude/skills/ultracode -> ~/.agents/skills/ultracode.
+- Verified: rebuilt goose-cli (portable-default) clean; `bharatcode skills list` shows ultracode.
