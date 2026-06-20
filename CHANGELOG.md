@@ -6,7 +6,54 @@ All notable changes to BharatCode are documented here. This project adheres to
 [OpenAI Codex](https://github.com/openai/codex). Both upstreams are attributed in
 [NOTICE](NOTICE) and [MODIFICATIONS.md](MODIFICATIONS.md).
 
-## BharatCode 0.1.0 — fork of Goose 1.38 (2026-06-20)
+## BharatCode 0.7.0 (2026-06-20)
+
+The first feature release on top of the 0.1.0 fork. `bharatcode --version` now reports
+**0.7.0**. Everything below is additive; defaults are unchanged unless an opt-in
+`BHARATCODE_*` switch is set. The full test suite stays green (**goose 1619 + goose-cli
+279 = 1898 passing, 0 failing** as of the v36 milestone) and there is zero user-facing
+Goose/Block leakage.
+
+### Ultracode — structured dynamic workflows
+
+- New built-in **`ultracode`** skill (`bharatcode skills list` → `builtin://skills/ultracode`):
+  a portable procedure that scales the agent from one-pass answers to
+  **plan → split → run independent work → check → integrate → verify**, with three modes
+  (Direct / Workflow / Delegated), disjoint parallel work packets, evidence-backed
+  (source-over-vote) integration, and `.workflow/ultracode/<run-slug>/` artifacts.
+
+### Agent tools & capabilities
+
+- **Web search tool** — a real `web_search` agent tool (egress-guarded HTTP, structured
+  results) wired into the developer toolset.
+- **Persistent memory** (`BHARATCODE_MEMORY`) — cross-session facts stored under the
+  config dir and recalled into the system prompt.
+- **Context/token optimizer** (`BHARATCODE_CONTEXT_OPTIMIZE`) — relevance+recency message
+  selection wired into the compaction path.
+- **`bharatcode review-diff`** — a single-pass code review over the working git diff.
+
+### Providers, models & cost
+
+- **Model fallback chain** (`BHARATCODE_FALLBACK_MODELS`) — on a rate-limit/overload error,
+  transparently retries the next model in the chain, wired into the central streaming path.
+- **Model registry + ₹ cost metadata** — a static registry (India-built, open-weight, and
+  common cloud models) with context-window and per-1K ₹ input/output costs surfaced in
+  `bharatcode cost`.
+- **Embeddings client** and **offline model-pack** support, plus **vision/multimodal
+  preflight** and **per-model capability advisories** in the prompt.
+
+### Privacy, compliance & diagnostics
+
+- **DPDP audit log** (`BHARATCODE_AUDIT`) — append-only JSONL of model/tool turns
+  (provider, model, IST timestamp, tokens, ₹) with a built-in viewer.
+- **Secret redaction** (`BHARATCODE_REDACT`) — high-confidence secrets in developer shell
+  output are masked before reaching the model.
+- **`bharatcode privacy`** — a one-screen posture report (residency, offline, redaction,
+  audit, telemetry, local-first provider) read from the real config/env keys.
+- **`bharatcode doctor` deep checks** — local-provider reachability probe, config-dir
+  writability, git availability, residency/offline coherence, and session-DB storage.
+
+
 
 First public pre-1.0 release. BharatCode is an Indian, local-first, Apache-2.0 Rust
 terminal AI coding agent. This release covers the fork itself: a clean rebrand, full
