@@ -58,6 +58,12 @@ mod gen_tests;
 #[path = "commands/refactor.rs"]
 mod refactor;
 
+// Same rationale as the modules above: the session-DB maintenance subcommand
+// (`bharatcode db`) is declared here, from cli.rs, via an explicit `#[path]`
+// rather than editing the contended `commands/mod.rs`.
+#[path = "commands/db.rs"]
+mod db_cmd;
+
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -889,6 +895,23 @@ enum Command {
     #[command(about = "Show the resolved data-governance and privacy posture")]
     Privacy {},
 
+    /// Inspect and (optionally) compact the session database
+    #[command(
+        about = "Show session-database stats; --vacuum reclaims free space (VACUUM + WAL truncate)"
+    )]
+    Db {
+        /// Run the destructive VACUUM + WAL-truncate reclaim pass
+        #[arg(
+            long,
+            help = "Reclaim free space by running VACUUM and truncating the WAL"
+        )]
+        vacuum: bool,
+
+        /// Show the read-only statistics block (shown by default)
+        #[arg(long, help = "Show read-only size and integrity statistics")]
+        stats: bool,
+    },
+
     /// Manage system prompts and behaviors
     #[command(about = "Run one of the mcp servers bundled with bharatcode")]
     Mcp {
@@ -1476,6 +1499,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::RecipesLibrary { .. }) => "recipes-library",
         Some(Command::Cost { .. }) => "cost",
         Some(Command::Privacy { .. }) => "privacy",
+        Some(Command::Db { .. }) => "db",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
@@ -2283,6 +2307,9 @@ pub async fn cli() -> anyhow::Result<()> {
                 .await
         }
         Some(Command::Privacy {}) => crate::commands::privacy::handle_privacy().await,
+        Some(Command::Db { vacuum, stats }) => {
+            db_cmd::handle_db(db_cmd::DbOptions { vacuum, stats }).await
+        }
         Some(Command::Info { verbose, check }) => handle_info(verbose, check).await,
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins }) => goose::acp::server::run(builtins).await,

@@ -23,6 +23,13 @@ use thiserror::Error;
 #[path = "../agent_caps.rs"]
 pub(crate) mod agent_caps;
 
+// Per-turn / per-session resource ceilings (v66) are read through the typed
+// `get_bharatcode_max_*` getters registered below. The reader/summary helpers
+// live in `resource_limits.rs`, wired in here (rather than via lib.rs) so the
+// module is reachable from the running binary alongside its config keys.
+#[path = "../resource_limits.rs"]
+pub mod resource_limits;
+
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -551,6 +558,16 @@ impl Config {
     /// capabilities are active.
     pub fn agent_caps_summary(&self) -> Vec<String> {
         agent_caps::summary_lines_for_config(self)
+    }
+
+    /// Human-readable rows for the v66 per-turn / per-session resource ceilings
+    /// (max tool calls per turn, max turn wall-clock seconds, max session
+    /// tokens), resolved from this config. Each ceiling defaults to unlimited
+    /// (`None`), so the summary reads "unlimited" until one is set. Gives
+    /// `bharatcode configure`/doctor one validated source of truth for the
+    /// turn-budget guard.
+    pub fn resource_limits_summary(&self) -> Vec<String> {
+        resource_limits::from_config(self).summary_lines()
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
@@ -1167,6 +1184,17 @@ config_value!(BHARATCODE_CODEBASE_INDEX, String);
 config_value!(BHARATCODE_DIFF_COMPACT, String);
 config_value!(BHARATCODE_PLANNER_MODEL, String);
 config_value!(BHARATCODE_MIGRATE, String);
+
+// Per-turn / per-session resource ceilings (v66). Registered as first-class
+// typed getters so `bharatcode configure`/doctor can read them via the standard
+// accessor path (which layers env over the config file). All default to `None`
+// (unlimited), so default behaviour is unchanged. The resolver/summary helpers
+// live in `resource_limits` (wired via the `#[path]` mod decl above), and the
+// validated, env-first, clamped reads are surfaced through
+// `Config::resource_limits_summary`.
+config_value!(BHARATCODE_MAX_TOOL_CALLS_PER_TURN, Option<u32>);
+config_value!(BHARATCODE_MAX_TURN_SECS, Option<u64>);
+config_value!(BHARATCODE_MAX_SESSION_TOKENS, Option<u64>);
 
 impl Config {
     pub fn get_bharatcode_context_limit(&self) -> Result<Option<usize>, ConfigError> {

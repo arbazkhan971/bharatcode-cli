@@ -5,6 +5,7 @@ mod elicitation;
 mod export;
 mod input;
 mod output;
+mod recovery;
 pub mod streaming_buffer;
 mod task_execution_display;
 mod thinking;
@@ -502,6 +503,26 @@ impl CliSession {
             .emit_hook(goose::hooks::HookEvent::SessionStart, &self.session_id)
             .await;
 
+        // BharatCode v63: crash/resume recovery hint. Optional, default OFF —
+        // when BHARATCODE_RESUME is on and a sidecar from a previously
+        // interrupted session is present, surface a one-line hint so the user
+        // can re-enter it. No-op (and no sidecar read) when the flag is unset.
+        if let Some(point) = recovery::load() {
+            if point.session_id != self.session_id {
+                let hint = crate::tr!("session.resume.hint");
+                let label = if hint == "session.resume.hint" {
+                    "resume available"
+                } else {
+                    hint.as_str()
+                };
+                println!(
+                    "  {} {}",
+                    console::style(format!("⤺ {label}:")).yellow(),
+                    console::style(point.summary_line()).dim()
+                );
+            }
+        }
+
         let result = self.run_interactive(prompt).await;
 
         self.agent
@@ -517,6 +538,10 @@ impl CliSession {
             // BharatCode v29: point the user at the DPDP audit log when auditing
             // is on (no-op otherwise). Keeps the viewer reachable in the binary.
             crate::commands::audit::print_session_summary(&self.session_id);
+            // BharatCode v63: a clean exit means there is nothing to recover, so
+            // remove the resume sidecar. No-op when recovery is disabled or no
+            // sidecar exists.
+            recovery::clear();
         }
 
         result
@@ -1562,6 +1587,39 @@ impl CliSession {
                 total_tokens,
                 session_cost_usd,
             );
+        }
+
+        // BharatCode v63: crash/resume recovery pointer. Optional, default OFF —
+        // when BHARATCODE_RESUME is on, rewrite a tiny last-good-turn sidecar
+        // (session id, cwd, last user prompt, turn count, IST timestamp) so an
+        // interrupted session can be re-entered after a crash/Ctrl-C kill. The
+        // clean-exit path clears it. Best-effort: never breaks the turn, and the
+        // conversation itself stays in the sessions DB (never touched here).
+        if recovery::is_enabled() {
+            let working_dir = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let last_prompt = self
+                .messages
+                .messages()
+                .iter()
+                .rev()
+                .find(|m| m.role == rmcp::model::Role::User)
+                .map(|m| m.as_concat_text())
+                .unwrap_or_default();
+            let turns = self
+                .messages
+                .messages()
+                .iter()
+                .filter(|m| m.role == rmcp::model::Role::User)
+                .count() as u64;
+            let point = recovery::RecoveryPoint::now(
+                self.session_id.clone(),
+                working_dir,
+                last_prompt,
+                turns,
+            );
+            recovery::record(&point);
         }
 
         Ok(())

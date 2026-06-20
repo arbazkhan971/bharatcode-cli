@@ -9,6 +9,11 @@ use crate::session::SessionBuilderConfig;
 #[path = "index_check.rs"]
 mod index_check;
 
+// Large-repo readiness deep check (BharatCode v67). Declared inline alongside
+// the other doctor checks, same posture as `index_check` above.
+#[path = "repo_profile.rs"]
+mod repo_profile;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -163,6 +168,19 @@ async fn print_deep_checks() {
     // deep checks; falls back to "." when the cwd cannot be resolved.
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let (st, msg) = index_check::index_readiness(&cwd);
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
+    // Large-repo readiness: a read-only, bounded, gitignore-aware profile of the
+    // current tree (file count, total bytes, deepest depth, largest file).
+    // Always shown like the other deep checks; warns when the repo crosses the
+    // tunable thresholds. Reuses the cwd resolved above.
+    let profile = repo_profile::profile(&cwd);
+    let (st, msg) = repo_profile::readiness_line(&profile);
     let glyph = match st {
         Status::Ok => crate::theme::success(st.glyph()),
         Status::Warn => crate::theme::warning(st.glyph()),
