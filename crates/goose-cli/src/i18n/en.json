@@ -123,5 +123,13 @@
   "i18n_status.col_coverage": "Coverage",
   "i18n_status.all_complete": "All locales are at full parity with English.",
   "i18n_status.missing_header": "Missing keys",
-  "i18n_status.hint": "Add the missing keys to the locale's JSON table to reach 100%."
+  "i18n_status.hint": "Add the missing keys to the locale's JSON table to reach 100%.",
+  "version.product": "BharatCode",
+  "version.channel_label": "channel",
+  "version.channel_stable": "stable",
+  "version.attribution": "derivative work, see NOTICE for attribution",
+  "version.ga_version_label": "GA version:",
+  "version.channel_label_row": "Channel:",
+  "version.build_label": "Build:",
+  "version.crate_label": "Internal version:"
 }

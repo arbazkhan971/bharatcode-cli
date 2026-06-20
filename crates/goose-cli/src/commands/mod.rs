@@ -1,5 +1,4 @@
 pub mod audit;
-pub mod bench;
 pub mod budget;
 pub mod configure;
 pub mod cost;
@@ -61,25 +60,14 @@ pub use recipe_share::{run as run_recipe_share, RecipeBundle};
 // effects, so default behavior is unchanged.
 pub use mcp_registry::{handle_mcp_registry, McpRegistryAction};
 
-// Re-export the `tutorial` entry point so the offline, embedded, locale-aware
-// walkthroughs are reachable as crate API. The module is already live in the
-// running binary: `session/builder.rs` path-includes `tutorials.rs` and calls
-// `first_run_nudge()` on the session-build path to point new users at
-// `bharatcode tutorial`. `handle_tutorial` wires `bharatcode tutorial`
-// (no arg => list ids+titles; `--show <id>` => print one walkthrough) once
-// `cli.rs`, owned by a sibling in this wave, dispatches to it. Every tutorial is
-// embedded and side-effect free, so default behavior is unchanged.
-pub use tutorials::{handle_tutorial, Tutorial, TUTORIALS};
-
-// Re-export the offline benchmark / eval harness entry point so it is reachable
-// as crate API. `handle_bench` runs each embedded `BenchCase` through one
-// headless turn via the shared session builder, grades the assistant reply with
-// a pure objective `Grader`, and reports an aggregate `BenchReport` (pass rate,
-// p50/p95 latency) as a table or `--json`. The embedded `recipes/bench.yaml`
-// data artifact (`BENCH_RECIPE_YAML`) documents the harness contract. Grading is
-// pure and the only env var is the per-case timeout clamp, so default behavior is
-// unchanged.
-pub use bench::{
-    grade, handle_bench, BenchCase, BenchOptions, BenchReport, CaseResult, Grader,
-    BENCH_RECIPE_YAML, CASES,
-};
+// Re-export the interactive tutorials registry so the offline, embedded,
+// locale-aware walkthroughs (getting-started, going-offline, controlling-cost,
+// hindi-tamil-ui) are first-class crate API. `tutorials_list` enumerates the
+// catalog and `tutorial` looks one up by id; the onboarding wizard consumes
+// these at integration to list and open walkthroughs. The module is already live
+// in the running binary: `session/builder.rs` path-includes `tutorials.rs` and
+// calls `list()`/`show()` (for `BHARATCODE_TUTORIAL`) and `first_run_nudge()` on
+// the session-build path, and the builtin `tutorials.md` skill surfaces the
+// registry to the agent. Every tutorial is embedded and side-effect free, so
+// default behavior is unchanged.
+pub use tutorials::{catalog as tutorials_list, get as tutorial, Tutorial, TUTORIALS};

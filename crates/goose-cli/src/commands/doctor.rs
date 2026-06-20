@@ -40,21 +40,33 @@ mod catalog;
 #[path = "ci_check.rs"]
 mod ci_check;
 
-// Locale / accessibility readiness deep check (BharatCode v90). A read-only probe
-// that reports the resolved active locale (en/hi/ta), the three-way en/hi/ta
-// translation parity, and the opt-in UX toggles (BHARATCODE_A11Y / _NOTIFY /
-// _COST_DASHBOARD). Declared inline alongside the other doctor checks, same
-// posture as `index_check` above.
+// Doctor i18n + accessibility readiness deep check (BharatCode v86). A read-only
+// probe that reports the resolved active locale (en/hi/ta), the three-way
+// en/hi/ta translation key parity, whether plain/no-color accessibility mode is
+// active (BHARATCODE_A11Y / NO_COLOR), and a NO_COLOR / terminal-color hint.
+// Declared inline alongside the other doctor checks, same posture as
+// `index_check` above.
 #[path = "i18n_check.rs"]
 mod i18n_check;
 
-// Security hardening deep check (BharatCode v96). A read-only, always-on audit of
-// the six security pillars (exec sandbox, egress residency/offline, secret
-// redaction, exec policy, telemetry-off, config-dir permissions) plus a trailing
-// aggregate row. Declared inline alongside the other doctor checks, same posture
-// as `index_check`/`ecosystem_check` above; never mutates config or files.
+// Security posture deep check (BharatCode v96). A read-only, always-visible
+// audit of the effective runtime security settings — exec sandbox, egress /
+// residency + offline guard, secret redaction, exec policy, telemetry-off, and
+// config-directory permissions — printing one status row per pillar plus an
+// aggregate. Declared inline alongside the other doctor checks, same posture as
+// `index_check` above; never mutates config or files.
 #[path = "security_check.rs"]
 mod security_check;
+
+// Embedded quick-start tutorials (BharatCode v88). Read-only: the doctor surfaces
+// the single most relevant next walkthrough for the current state (no provider
+// configured, configured-but-audit-off, etc.) as one localized line, so
+// onboarding guidance is discoverable without leaving the terminal. The same
+// file backs the `tutorials` re-exports and the session-builder nudge; declared
+// inline here, same posture as `index_check` above, so the doctor row reuses the
+// embedded catalog without a separate `pub mod`.
+#[path = "tutorials.rs"]
+mod tutorials;
 
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
@@ -282,6 +294,26 @@ async fn print_deep_checks() {
         println!("  {} {}: {}", glyph, row.label, row.detail);
     }
 
+    // Security posture: a read-only, always-visible audit of the effective
+    // runtime security settings — exec sandbox, egress / residency + offline
+    // guard, secret redaction, exec policy, telemetry-off, and config-directory
+    // permissions — with one status glyph per pillar plus a trailing aggregate.
+    // The posture is gathered through the same accessors / env vars the features
+    // themselves read; nothing here mutates config or files, and it never gates
+    // the doctor run.
+    println!(
+        "{}",
+        crate::theme::heading(label("security.title", "Security"))
+    );
+    for row in security_check::security_rows(&security_check::gather()) {
+        let glyph = match row.status {
+            Status::Ok => crate::theme::success(row.status.glyph()),
+            Status::Warn => crate::theme::warning(row.status.glyph()),
+            Status::Fail => crate::theme::error(row.status.glyph()),
+        };
+        println!("  {} {}: {}", glyph, row.label, row.detail);
+    }
+
     // Extension catalog readiness: a read-only, always-visible row reporting how
     // many curated catalog entries are present and how many are currently
     // active. Best-effort — if the enabled-extension list cannot be read it
@@ -295,13 +327,13 @@ async fn print_deep_checks() {
     };
     println!("  {} {}", glyph, msg);
 
-    // Locale / accessibility readiness: a read-only, always-visible row reporting
-    // the resolved active locale (en/hi/ta), the three-way en/hi/ta translation
-    // parity, and the opt-in UX toggles (BHARATCODE_A11Y / BHARATCODE_NOTIFY /
-    // BHARATCODE_COST_DASHBOARD) so the operator can verify their UX configuration
-    // at a glance. Rendered in the same shape as the index/repo readiness rows
-    // above; warns on a parity gap or when an accessibility/notification toggle is
-    // active.
+    // Doctor i18n + accessibility readiness: a read-only, always-visible row
+    // reporting the resolved active locale (en/hi/ta), the three-way en/hi/ta
+    // translation key parity, whether plain/no-color accessibility mode is active
+    // (BHARATCODE_A11Y / NO_COLOR), and a NO_COLOR / terminal-color hint so the
+    // operator can verify their UX configuration at a glance. Rendered in the same
+    // shape as the index/repo readiness rows above; warns on a parity gap or when
+    // plain/no-color accessibility mode is active.
     let (st, msg) = i18n_check::i18n_readiness();
     let glyph = match st {
         Status::Ok => crate::theme::success(st.glyph()),
@@ -310,23 +342,23 @@ async fn print_deep_checks() {
     };
     println!("  {} {}", glyph, msg);
 
-
-    // Security posture: a read-only, always-visible audit of the six security
-    // pillars (exec sandbox, egress residency/offline, secret redaction, exec
-    // policy, telemetry-off, config-dir permissions) with a trailing aggregate
-    // row = worst per-pillar status. Each pillar merely reflects its own feature
-    // env var; the audit itself is ungated and never gates the doctor run.
-    println!(
-        "{}",
-        crate::theme::heading(label("security.title", "Security"))
-    );
-    for row in security_check::security_rows(&security_check::gather()) {
-        let glyph = match row.status {
-            Status::Ok => crate::theme::success(row.status.glyph()),
-            Status::Warn => crate::theme::warning(row.status.glyph()),
-            Status::Fail => crate::theme::error(row.status.glyph()),
-        };
-        println!("  {} {}: {}", glyph, row.label, row.detail);
+    // Quick-start onboarding hint (BharatCode v88): a read-only line pointing at
+    // the single most relevant embedded tutorial for the current state (e.g. no
+    // provider configured → the quick-start). Always shown like the other deep
+    // checks; localized via the same `label` fallback as the rest of this file
+    // (honours BHARATCODE_LANG, degrades to readable English when the key is
+    // absent). Never mutates state — it only suggests where to look next.
+    if let Some(tutorial) = tutorials::suggest_next() {
+        let hint = label(
+            "tutorials.next_hint",
+            "Suggested next tutorial — read it with BHARATCODE_TUTORIAL=",
+        );
+        println!(
+            "  {} {}{}",
+            crate::theme::muted("→"),
+            crate::theme::muted(&hint),
+            crate::theme::muted(tutorial.id),
+        );
     }
 
     println!();

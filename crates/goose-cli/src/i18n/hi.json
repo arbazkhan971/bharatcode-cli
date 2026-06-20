@@ -123,5 +123,13 @@
   "i18n_status.col_coverage": "कवरेज",
   "i18n_status.all_complete": "सभी लोकेल अंग्रेज़ी के साथ पूर्ण समानता पर हैं।",
   "i18n_status.missing_header": "अनुपस्थित keys",
-  "i18n_status.hint": "100% तक पहुँचने के लिए लोकेल की JSON तालिका में अनुपस्थित keys जोड़ें।"
+  "i18n_status.hint": "100% तक पहुँचने के लिए लोकेल की JSON तालिका में अनुपस्थित keys जोड़ें।",
+  "version.product": "BharatCode",
+  "version.channel_label": "चैनल",
+  "version.channel_stable": "स्थिर",
+  "version.attribution": "व्युत्पन्न कार्य, attribution के लिए NOTICE देखें",
+  "version.ga_version_label": "GA संस्करण:",
+  "version.channel_label_row": "चैनल:",
+  "version.build_label": "बिल्ड:",
+  "version.crate_label": "आंतरिक संस्करण:"
 }

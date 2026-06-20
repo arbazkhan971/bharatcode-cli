@@ -1,6 +1,7 @@
 pub mod adversary_inspector;
 pub mod classification_client;
 pub mod egress_inspector;
+pub mod hardening;
 pub mod patterns;
 pub mod scanner;
 pub mod security_inspector;

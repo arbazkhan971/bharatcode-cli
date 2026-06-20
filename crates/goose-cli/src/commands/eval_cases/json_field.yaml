@@ -1,0 +1,14 @@
+id: json-field
+title: Emits parseable JSON with a known field
+description: >
+  The agent must emit a small JSON object. Graded by a deterministic shell
+  command that extracts the assistant reply from the REPLY_FILE environment
+  variable and checks the field value; the grader passes only when the command
+  exits 0. The check uses plain POSIX tools so it runs anywhere a shell does.
+prompt: >
+  Reply with a single JSON object on one line and nothing else. It must have a
+  field named status whose value is the string ok, like {"status":"ok"}.
+grader:
+  kind: shell
+  value: >
+    grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' "$REPLY_FILE"

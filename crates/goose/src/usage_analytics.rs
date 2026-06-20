@@ -232,6 +232,234 @@ fn write_tally(tally: &UsageTally) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
+// ---------------------------------------------------------------------------
+// v92: state-dir aggregated rollup (`AnalyticsStore`)
+//
+// A second, fully-aggregated view of local usage that lives under the *state*
+// dir (`Paths::state_dir()/usage_analytics.json`) rather than the config dir.
+// Where the v91 tally above buckets turns/tool-calls by IST day, this rollup is
+// a single flat set of coarse lifetime counters plus *bucketed* token and ₹
+// totals — by construction it can never hold a prompt, a model output, a file
+// path, a tool name, or any other content. Privacy is a structural property of
+// the schema, not a runtime filter: there is simply nowhere to put content.
+//
+// Same gate as everything in this module (`BHARATCODE_ANALYTICS`, default OFF),
+// same local-only guarantee (no network code anywhere in this file), and the
+// instance id reuses `crate::instance_id` — already a locally-generated UUID
+// that is never transmitted.
+// ---------------------------------------------------------------------------
+
+/// File name of the state-dir rollup (distinct dir from the v91 day tally).
+const ROLLUP_FILE: &str = "usage_analytics.json";
+
+/// Coarse bucket boundaries (inclusive upper bound, in tokens) for the
+/// `token_buckets` histogram. A turn's token count is filed into the first
+/// bucket whose bound it does not exceed; anything larger lands in the overflow
+/// bucket. Only the *bucket counts* are stored, never the exact token figure,
+/// so the rollup stays coarse and non-identifying.
+const TOKEN_BUCKET_BOUNDS: [u64; 5] = [1_000, 4_000, 16_000, 64_000, 256_000];
+
+/// Coarse bucket boundaries (inclusive upper bound, in whole ₹) for the
+/// `cost_inr_buckets` histogram. As with tokens, only bucket counts are kept.
+const COST_INR_BUCKET_BOUNDS: [u64; 5] = [1, 5, 25, 100, 500];
+
+/// Index of the bucket `value` falls into for the given ascending `bounds`:
+/// the first bucket whose inclusive upper bound it does not exceed, or the
+/// overflow bucket (`bounds.len()`) when it exceeds every bound.
+fn bucket_index(value: u64, bounds: &[u64]) -> usize {
+    bounds
+        .iter()
+        .position(|&b| value <= b)
+        .unwrap_or(bounds.len())
+}
+
+/// One unit of usage to fold into the rollup. Counts and magnitudes only — the
+/// type deliberately has no field that could carry prompt/output/path content.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageEvent {
+    /// Tool invocations attributed to this turn.
+    pub tool_invocations: u64,
+    /// Total tokens (prompt + completion) for this turn; bucketed, never stored
+    /// verbatim.
+    pub tokens: u64,
+    /// Whole-rupee cost for this turn; bucketed, never stored verbatim.
+    pub cost_inr: u64,
+}
+
+impl UsageEvent {
+    pub fn new(tool_invocations: u64, tokens: u64, cost_inr: u64) -> Self {
+        Self {
+            tool_invocations,
+            tokens,
+            cost_inr,
+        }
+    }
+}
+
+/// The on-disk, fully-aggregated rollup. Every field is a count or a histogram
+/// of counts — there is no content field anywhere, by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalyticsRollup {
+    /// On-disk schema version of this rollup.
+    #[serde(default = "default_schema")]
+    pub schema: u32,
+    /// Local, never-transmitted install id (a UUID from `crate::instance_id`).
+    /// Stored so a *local* reader can tell two state dirs apart; it is the same
+    /// id already persisted on disk and is never sent anywhere.
+    #[serde(default)]
+    pub instance_id: String,
+    /// Completed agent turns recorded into this rollup.
+    #[serde(default)]
+    pub turns: u64,
+    /// Tool invocations summed across those turns.
+    #[serde(default)]
+    pub tool_invocations: u64,
+    /// Histogram of per-turn token magnitudes (counts per bucket; see
+    /// [`TOKEN_BUCKET_BOUNDS`]). Length is `bounds + 1` (overflow bucket).
+    #[serde(default)]
+    pub token_buckets: Vec<u64>,
+    /// Histogram of per-turn ₹ cost magnitudes (counts per bucket; see
+    /// [`COST_INR_BUCKET_BOUNDS`]).
+    #[serde(default)]
+    pub cost_inr_buckets: Vec<u64>,
+}
+
+impl Default for AnalyticsRollup {
+    fn default() -> Self {
+        Self {
+            schema: default_schema(),
+            instance_id: String::new(),
+            turns: 0,
+            tool_invocations: 0,
+            token_buckets: vec![0; TOKEN_BUCKET_BOUNDS.len() + 1],
+            cost_inr_buckets: vec![0; COST_INR_BUCKET_BOUNDS.len() + 1],
+        }
+    }
+}
+
+impl AnalyticsRollup {
+    fn ensure_bucket_widths(&mut self) {
+        if self.token_buckets.len() != TOKEN_BUCKET_BOUNDS.len() + 1 {
+            self.token_buckets
+                .resize(TOKEN_BUCKET_BOUNDS.len() + 1, 0);
+        }
+        if self.cost_inr_buckets.len() != COST_INR_BUCKET_BOUNDS.len() + 1 {
+            self.cost_inr_buckets
+                .resize(COST_INR_BUCKET_BOUNDS.len() + 1, 0);
+        }
+    }
+
+    /// Fold one [`UsageEvent`] in. Counts saturate rather than wrap so a
+    /// pathological run can never silently roll a counter back to zero.
+    pub fn apply(&mut self, event: &UsageEvent) {
+        self.ensure_bucket_widths();
+        self.turns = self.turns.saturating_add(1);
+        self.tool_invocations = self.tool_invocations.saturating_add(event.tool_invocations);
+        let ti = bucket_index(event.tokens, &TOKEN_BUCKET_BOUNDS);
+        self.token_buckets[ti] = self.token_buckets[ti].saturating_add(1);
+        let ci = bucket_index(event.cost_inr, &COST_INR_BUCKET_BOUNDS);
+        self.cost_inr_buckets[ci] = self.cost_inr_buckets[ci].saturating_add(1);
+    }
+}
+
+/// Local-only, opt-in aggregated usage rollup persisted under the *state* dir.
+///
+/// Default OFF: [`AnalyticsStore::record`] is a no-op (zero I/O, no file
+/// created) unless `BHARATCODE_ANALYTICS` is truthy. The store only ever holds
+/// coarse counts and bucketed magnitudes — no content, no network.
+#[derive(Debug, Clone, Default)]
+pub struct AnalyticsStore;
+
+impl AnalyticsStore {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Absolute path of the state-dir rollup
+    /// (`<state_dir>/usage_analytics.json`).
+    pub fn path() -> PathBuf {
+        Paths::state_dir().join(ROLLUP_FILE)
+    }
+
+    /// Read the current rollup back, or `None` when absent / unreadable /
+    /// unparsable. Gate-independent so a summary can surface a rollup left by a
+    /// previous (enabled) run.
+    pub fn load() -> Option<AnalyticsRollup> {
+        let bytes = std::fs::read(Self::path()).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Fold one completed turn's aggregated [`UsageEvent`] into the rollup.
+    ///
+    /// No-op (zero I/O, no file created) while analytics is disabled. When
+    /// enabled it loads → applies → writes atomically; any I/O / parse failure
+    /// is swallowed (logged at `debug`) so analytics never breaks a turn.
+    pub fn record(&self, event: &UsageEvent) {
+        if !is_enabled() {
+            return;
+        }
+        if let Err(e) = Self::record_inner(event) {
+            tracing::debug!(target: "usage_analytics", error = %e, "failed to record aggregated usage rollup");
+        }
+    }
+
+    fn record_inner(event: &UsageEvent) -> std::io::Result<()> {
+        let mut rollup = Self::load().unwrap_or_default();
+        if rollup.instance_id.is_empty() {
+            rollup.instance_id = crate::instance_id::get_instance_id().to_string();
+        }
+        rollup.apply(event);
+        Self::write(&rollup)
+    }
+
+    fn write(rollup: &AnalyticsRollup) -> std::io::Result<()> {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_vec_pretty(rollup)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp = path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&tmp, &content)?;
+        std::fs::rename(&tmp, &path)
+    }
+}
+
+/// Convenience: fold one aggregated event into the state-dir rollup. No-op when
+/// disabled. Equivalent to `AnalyticsStore::new().record(&event)`.
+pub fn record(event: &UsageEvent) {
+    AnalyticsStore::new().record(event);
+}
+
+/// Plain-text summary rows for the aggregated state-dir rollup, suitable for the
+/// shared config-summary surface (doctor / info).
+///
+/// Returns a single muted "default-off" row when no rollup exists yet (analytics
+/// never enabled, or enabled but nothing recorded), so the config summary always
+/// has exactly one coherent line for this feature. Carries no Goose/Block
+/// identifiers and, by construction, no content — counts and buckets only.
+/// Gate-independent read (mirrors [`load`]).
+pub fn summary_lines() -> Vec<String> {
+    match AnalyticsStore::load() {
+        None => vec!["Usage analytics: off (local-only, opt-in via BHARATCODE_ANALYTICS)".to_string()],
+        Some(r) => {
+            let busy_token_buckets = r.token_buckets.iter().filter(|&&c| c > 0).count();
+            let busy_cost_buckets = r.cost_inr_buckets.iter().filter(|&&c| c > 0).count();
+            vec![format!(
+                "Usage analytics (local): {} turns · {} tool invocations · {} token bucket(s) · {} ₹ bucket(s)",
+                r.turns, r.tool_invocations, busy_token_buckets, busy_cost_buckets
+            )]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +561,102 @@ mod tests {
         );
         assert!(load().is_none(), "disabled run leaves no tally to load");
         assert!(summary().is_none(), "disabled run yields no summary");
+    }
+
+    // ---- v92: state-dir aggregated rollup (`AnalyticsStore`) ----
+
+    #[test]
+    fn bucket_index_files_into_first_bound_and_overflow() {
+        assert_eq!(bucket_index(0, &TOKEN_BUCKET_BOUNDS), 0);
+        assert_eq!(bucket_index(1_000, &TOKEN_BUCKET_BOUNDS), 0);
+        assert_eq!(bucket_index(1_001, &TOKEN_BUCKET_BOUNDS), 1);
+        assert_eq!(
+            bucket_index(u64::MAX, &TOKEN_BUCKET_BOUNDS),
+            TOKEN_BUCKET_BOUNDS.len()
+        );
+    }
+
+    #[test]
+    fn rollup_record_writes_only_aggregated_counters() {
+        let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, Some("1"))]);
+
+        assert!(AnalyticsStore::load().is_none(), "no rollup before recording");
+
+        let store = AnalyticsStore::new();
+        store.record(&UsageEvent::new(3, 1_200, 7));
+
+        let path = AnalyticsStore::path();
+        assert!(path.exists(), "enabled record must create the rollup file");
+
+        let raw = std::fs::read_to_string(&path).expect("read rollup");
+        // Privacy by construction: aggregated fields present, content absent.
+        assert!(raw.contains("turns"));
+        assert!(raw.contains("tool_invocations"));
+        assert!(raw.contains("token_buckets"));
+        assert!(raw.contains("cost_inr_buckets"));
+        for forbidden in [
+            "prompt",
+            "message",
+            "content",
+            "output",
+            "path",
+            "tool_name",
+            "text",
+            "arg",
+        ] {
+            assert!(
+                !raw.to_ascii_lowercase().contains(forbidden),
+                "rollup must not carry a {forbidden:?} field: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollup_two_records_accumulate_and_summary_reflects_totals() {
+        let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, Some("1"))]);
+
+        let store = AnalyticsStore::new();
+        store.record(&UsageEvent::new(2, 500, 1));
+        store.record(&UsageEvent::new(4, 90_000, 250));
+
+        let rollup = AnalyticsStore::load().expect("rollup exists after recording");
+        assert_eq!(rollup.turns, 2);
+        assert_eq!(rollup.tool_invocations, 6);
+        // Token 500 -> bucket 0; 90_000 -> bucket 4; two distinct busy buckets.
+        assert_eq!(rollup.token_buckets[0], 1);
+        assert_eq!(rollup.token_buckets[4], 1);
+        // Cost 1 -> bucket 0; 250 -> bucket 4.
+        assert_eq!(rollup.cost_inr_buckets[0], 1);
+        assert_eq!(rollup.cost_inr_buckets[4], 1);
+        // The local instance id is recorded but is the never-sent crate UUID.
+        assert_eq!(rollup.instance_id, crate::instance_id::get_instance_id());
+
+        let lines = summary_lines();
+        assert_eq!(lines.len(), 1, "summary is a single rollup row");
+        let line = &lines[0];
+        assert!(line.contains("2 turns"), "summary line: {line}");
+        assert!(line.contains("6 tool invocations"), "summary line: {line}");
+    }
+
+    #[test]
+    fn rollup_disabled_is_no_op_and_summary_reports_off() {
+        let (_guard, _dir) = with_temp_root([(ANALYTICS_ENABLED_KEY, None::<&str>)]);
+        std::env::remove_var(ANALYTICS_ENABLED_KEY);
+
+        record(&UsageEvent::new(9, 9_999, 99));
+
+        assert!(
+            !AnalyticsStore::path().exists(),
+            "disabled rollup must not create a file"
+        );
+        assert!(AnalyticsStore::load().is_none(), "disabled run leaves no rollup");
+
+        let lines = summary_lines();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("off"),
+            "summary must report off when no rollup: {}",
+            lines[0]
+        );
     }
 }

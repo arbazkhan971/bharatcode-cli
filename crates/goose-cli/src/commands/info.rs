@@ -16,6 +16,15 @@ use goose::config::base::CONFIG_YAML_NAME;
 use std::fs;
 use std::path::Path;
 
+// Canonical GA release-info source (single source of truth for the GA version,
+// channel, build metadata, and the brand-clean Apache-2.0 attribution line).
+// The module lives at the crate root; `lib.rs` is owned by a sibling in this
+// wave, so it is brought in here — the version-surface call site — via an
+// explicit `#[path]`, exactly as `session/builder.rs` does for the startup
+// banner. Both include the same file, so they share one canonical definition.
+#[path = "../release_info.rs"]
+mod release_info;
+
 fn check_path_status(path: &Path) -> String {
     if path.exists() {
         "".to_string()
@@ -128,7 +137,31 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
         + 4;
 
     println!("{}", style("bharatcode Version:").cyan().bold());
-    print_aligned("Version:", env!("CARGO_PKG_VERSION"), label_padding);
+    // Authoritative GA identity line (product + GA version + channel + license +
+    // brand-clean attribution), sourced from the canonical `release_info`
+    // module so the 1.0 GA bump surfaces consistently here and at the startup
+    // banner. The localized "GA version" row label routes through `tr!`.
+    println!("  {}", release_info::long_version_line());
+    print_aligned(
+        &crate::tr!("version.ga_version_label"),
+        release_info::ga_version(),
+        label_padding,
+    );
+    print_aligned(
+        &crate::tr!("version.channel_label_row"),
+        release_info::channel(),
+        label_padding,
+    );
+    print_aligned(
+        &crate::tr!("version.build_label"),
+        &release_info::build_metadata(),
+        label_padding,
+    );
+    print_aligned(
+        &crate::tr!("version.crate_label"),
+        env!("CARGO_PKG_VERSION"),
+        label_padding,
+    );
     println!();
 
     println!("{}", style("Paths:").cyan().bold());

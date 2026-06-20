@@ -127,6 +127,32 @@ pub fn get_show_full_tool_output() -> bool {
     SHOW_FULL_TOOL_OUTPUT.with(|s| *s.borrow())
 }
 
+/// Process-global accessibility profile, resolved once at session build (see
+/// `session::builder::build_session`) and consulted by render paths so they do
+/// not re-read the environment on every line. Defaults to the all-`false`
+/// (opt-out) profile, which keeps output byte-identical until a session
+/// explicitly installs a resolved profile.
+static A11Y_PROFILE: std::sync::RwLock<crate::a11y::A11yProfile> =
+    std::sync::RwLock::new(crate::a11y::A11yProfile {
+        screen_reader: false,
+        no_spinner: false,
+    });
+
+/// Install the resolved accessibility profile for this process. Called from the
+/// session builder once `BHARATCODE_A11Y` has been resolved; render paths then
+/// consult [`a11y`].
+pub fn set_a11y(profile: crate::a11y::A11yProfile) {
+    if let Ok(mut slot) = A11Y_PROFILE.write() {
+        *slot = profile;
+    }
+}
+
+/// The accessibility profile installed for this process (default-OFF until a
+/// session installs one via [`set_a11y`]).
+pub fn a11y() -> crate::a11y::A11yProfile {
+    A11Y_PROFILE.read().map(|slot| *slot).unwrap_or_default()
+}
+
 // Simple wrapper around spinner to manage its state
 #[derive(Default)]
 pub struct ThinkingIndicator {

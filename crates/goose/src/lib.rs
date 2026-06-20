@@ -69,10 +69,4 @@ pub mod tool_inspection;
 pub mod tool_monitor;
 pub mod tracing;
 pub mod turn_checkpoint;
-// BharatCode v91: opt-in, LOCAL-ONLY aggregated usage counters (turns / tool
-// calls, bucketed by IST day) under the config dir. Default OFF behind
-// `BHARATCODE_ANALYTICS`; records counts only (never prompt/content) and is
-// wired into the CLI session turn loop (`goose-cli` session/mod.rs) as its live
-// call site.
-pub mod usage_analytics;
 pub mod utils;

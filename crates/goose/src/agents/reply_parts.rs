@@ -54,6 +54,15 @@ mod ide_bridge;
 #[path = "../stream_announcer.rs"]
 mod stream_announcer;
 
+// Opt-in per-turn streaming perf probe (BHARATCODE_PERF). Registered here via
+// `#[path]` so the feature stays confined to the shared provider-streaming path
+// (where the request starts, the first chunk arrives, and the stream completes)
+// and its own file. The probe records time-to-first-token and tokens/second for
+// the turn, but every mark is a single bool check when the switch is off, so the
+// default path is unchanged and allocation-free.
+#[path = "../perf.rs"]
+mod perf;
+
 /// Wrap a provider stream so that, on successful completion, the fully-assembled
 /// assistant message and final usage are written to the prompt cache under `key`.
 ///
@@ -550,6 +559,14 @@ impl Agent {
         // when BHARATCODE_STREAM_STATS is enabled (no-op otherwise).
         let mut meter = stream_meter::StreamMeter::start();
 
+        // Opt-in per-turn streaming perf probe (BHARATCODE_PERF). Bracket the
+        // stream: mark the request start here, the first yielded chunk below,
+        // and completion once the stream drains. Disabled (default) makes each
+        // call a single relaxed bool load with no allocation or behaviour change.
+        let perf = perf::PerfProbe::global();
+        perf.mark_request_start();
+        let mut perf_tokens: u64 = 0;
+
         // Opt-in accessible streaming progress announcer (BHARATCODE_A11Y). When
         // enabled, periodically emit a localized, screen-reader-friendly status
         // line (e.g. "Working… 12s elapsed") as a plain assistant text frame so
@@ -572,7 +589,12 @@ impl Agent {
                     let (msg_opt, usage_opt) = result?;
 
                     if let Some(msg) = &msg_opt {
-                        meter.tick(&msg.as_concat_text());
+                        let text = msg.as_concat_text();
+                        meter.tick(&text);
+                        if !text.is_empty() {
+                            perf.mark_first_token();
+                            perf_tokens += perf::approx_tokens_for(&text);
+                        }
                     }
 
                     if let Some(line) = announcer
@@ -624,7 +646,12 @@ impl Agent {
                     let (message, usage) = result?;
 
                     if let Some(msg) = &message {
-                        meter.tick(&msg.as_concat_text());
+                        let text = msg.as_concat_text();
+                        meter.tick(&text);
+                        if !text.is_empty() {
+                            perf.mark_first_token();
+                            perf_tokens += perf::approx_tokens_for(&text);
+                        }
                     }
 
                     if let Some(line) = announcer
@@ -641,6 +668,20 @@ impl Agent {
             // Stream finished cleanly: emit the throughput summary when opted in.
             if stream_meter::is_enabled() {
                 debug!("{}", meter.finish().summary_line());
+            }
+
+            // Record the completed turn into the perf probe (no-op when the
+            // BHARATCODE_PERF switch is off). When enabled, surface the
+            // per-turn ttft / tokens-per-second summary, flagging a breach of
+            // the optional ttft budget.
+            perf.mark_complete(perf_tokens);
+            if perf.is_enabled() {
+                let snap = perf.snapshot();
+                if snap.ttft_over_budget() {
+                    debug!("{} (ttft over budget)", snap.summary_line());
+                } else {
+                    debug!("{}", snap.summary_line());
+                }
             }
         });
 

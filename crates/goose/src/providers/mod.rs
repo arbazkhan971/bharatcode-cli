@@ -67,7 +67,13 @@ pub mod openrouter;
 // modules consumed by the streaming/embeddings layer.
 pub mod perf_profile;
 pub mod pi_acp;
+// Security hardening self-audit (v94): a reachable, inert, read-only inspector
+// that snapshots the effective security posture through each feature's own
+// canonical accessor and renders a per-pillar report plus a 0..=100 hardening
+// score. Mutates nothing, so default behaviour is unchanged. Reachable public
+// API, same posture as the sibling `perf_profile` module.
 pub mod planner_presets;
+pub mod security_audit;
 // Localized provider/model picker labels (v88): turns a raw provider id into a
 // friendly, India-context display name + residency hint in the active regional
 // locale. The module file lives at `src/provider_labels.rs`; it is wired in

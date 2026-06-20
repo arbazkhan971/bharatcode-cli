@@ -51,12 +51,7 @@ pub const SCAN_SURFACES: &[&str] = &["README.md", "NOTICE", "MODIFICATIONS.md"];
 /// the iterations.md leak-gate rules. Matching is case-insensitive against whole
 /// word-tokens; `goose_*` snake_case identifiers and the bare English word
 /// "block" are handled by dedicated rules in [`is_allowed_token`].
-pub const DEFAULT_ALLOW: &[&str] = &[
-    "GooseMode",
-    "GooseClient",
-    "ContentBlock",
-    "block",
-];
+pub const DEFAULT_ALLOW: &[&str] = &["GooseMode", "GooseClient", "ContentBlock", "block"];
 
 /// The company marks scanned for. Lowercased; matching is case-insensitive.
 const MARKS: &[&str] = &["goose", "block", "codex", "openai"];
@@ -372,7 +367,11 @@ fn render_summary(report: &ComplianceReport, repo_root: &Path) -> String {
     out.push_str("\nUser-facing surfaces:\n");
     for s in &report.surfaces {
         if !s.scanned {
-            out.push_str(&format!("  [{}] {} (not found)\n", s.status.glyph(), s.name));
+            out.push_str(&format!(
+                "  [{}] {} (not found)\n",
+                s.status.glyph(),
+                s.name
+            ));
             continue;
         }
         out.push_str(&format!(
@@ -583,10 +582,7 @@ let goose_mode = resolve();\n\
 match content { ContentBlock::Text(_) => {} }\n\
 The build was blocked but we unblock a block here.\n";
         let hits = scan_for_marks(text, DEFAULT_ALLOW);
-        assert!(
-            hits.is_empty(),
-            "expected no leaks, got: {hits:?}"
-        );
+        assert!(hits.is_empty(), "expected no leaks, got: {hits:?}");
     }
 
     #[test]
@@ -705,11 +701,7 @@ The build was blocked but we unblock a block here.\n";
         let report = verify_compliance(tmp.path());
         // Files are all present + non-empty; the NOTICE attribution names
         // upstream => Warn, never Fail.
-        let notice = report
-            .surfaces
-            .iter()
-            .find(|s| s.name == "NOTICE")
-            .unwrap();
+        let notice = report.surfaces.iter().find(|s| s.name == "NOTICE").unwrap();
         assert_eq!(notice.status, Status::Warn);
         assert!(!notice.hits.is_empty());
         assert_eq!(report.overall, Status::Warn);
@@ -794,7 +786,9 @@ The build was blocked but we unblock a block here.\n";
         let mut out = Vec::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
-            let Ok(read) = fs::read_dir(&dir) else { continue };
+            let Ok(read) = fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in read.flatten() {
                 let path = entry.path();
                 if path.is_dir() {

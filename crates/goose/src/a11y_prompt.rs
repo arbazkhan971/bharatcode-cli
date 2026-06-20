@@ -1,23 +1,28 @@
-//! Screen-reader system-prompt advisory.
+//! Screen-reader-friendly tool-output advisory for the system prompt.
 //!
 //! When accessibility mode is active, prompt assembly injects a small,
-//! low-priority advisory asking the model to favour plain text and avoid
-//! visually-dense output (ASCII art, box-drawing, wide tables) that screen
-//! readers narrate poorly. The guidance steers the assistant's prose to be
-//! screen-reader friendly end-to-end.
+//! low-priority advisory asking the model to render tool and command output in
+//! a way that screen readers narrate well: linear plain text, no ASCII-art or
+//! box-drawing tables, explicit per-row labels instead of aligned columns, and
+//! a short summary in front of any large output dump.
 //!
-//! The feature is opt-in: [`advisory_block`] returns `None` unless the
-//! `BHARATCODE_A11Y` environment variable is truthy, so the default system
-//! prompt is byte-identical. The env gate mirrors the env-first toggles in
-//! `agent_caps` / `memory_store`.
+//! The feature is opt-in behind its own dedicated toggle so it stays
+//! independent of the CLI-side accessibility knobs: [`advisory_block`] returns
+//! `None` unless the `BHARATCODE_A11Y_PROMPT` environment variable is truthy,
+//! so the default system prompt is byte-identical. The env gate is read raw and
+//! env-first, mirroring the truthiness tables in the sibling `repo_digest` /
+//! `plan_mode` prompt modules. This module is original work; nothing here is
+//! ported from third-party sources.
 
-/// Opt-in toggle name, read from the environment.
-const ENABLE_KEY: &str = "BHARATCODE_A11Y";
+/// Opt-in toggle name, read raw from the process environment. Deliberately
+/// distinct from the broader `BHARATCODE_A11Y` CLI toggle so enabling the
+/// terminal accessibility affordances does not silently grow the system prompt.
+const ENABLE_KEY: &str = "BHARATCODE_A11Y_PROMPT";
 
-/// Whether the screen-reader advisory is enabled. Opt-in via the
-/// `BHARATCODE_A11Y` environment variable; any truthy-ish value (`1`, `true`,
-/// `yes`, `on`) enables it. Mirrors the raw-env truthiness table in
-/// `memory_store::is_truthy`.
+/// Whether the screen-reader tool-output advisory is enabled. Opt-in via the
+/// `BHARATCODE_A11Y_PROMPT` environment variable; any truthy-ish value (`1`,
+/// `true`, `yes`, `on`) enables it. Defaults to `false` when unset. The lookup
+/// is raw-env-first to match the sibling prompt modules.
 pub fn is_enabled() -> bool {
     std::env::var(ENABLE_KEY)
         .map(|raw| is_truthy(&raw))
@@ -31,8 +36,8 @@ fn is_truthy(raw: &str) -> bool {
     )
 }
 
-/// The screen-reader guidance injected into the system prompt when enabled,
-/// or `None` when disabled (leaving the prompt unchanged). The text is
+/// The screen-reader guidance injected into the system prompt when enabled, or
+/// `None` when disabled (leaving the prompt byte-identical). The text is
 /// product-neutral plain text and kept compact (under 500 chars).
 pub fn advisory_block() -> Option<String> {
     if !is_enabled() {
@@ -40,12 +45,13 @@ pub fn advisory_block() -> Option<String> {
     }
     Some(
         "# Accessibility\n\n\
-         A screen reader is in use. Write replies that read well aloud:\n\
-         - Prefer plain text and short sentences; explain things in prose.\n\
-         - Avoid ASCII art, box-drawing characters, and dense or wide tables; \
-         use simple bullet or numbered lists instead.\n\
-         - Describe diagrams, charts, and layouts in words rather than drawing them.\n\
-         - Announce code blocks before showing them and summarise what they do.\n"
+         A screen reader is in use. Format tool and command output so it reads \
+         aloud cleanly:\n\
+         - Present results as linear plain text; do not use ASCII-art, \
+         box-drawing, or aligned-column tables.\n\
+         - Label each row or field explicitly (e.g. \"name: value\") instead of \
+         relying on column position.\n\
+         - For large output, give a short summary first, then the key lines.\n"
             .to_string(),
     )
 }
@@ -53,34 +59,33 @@ pub fn advisory_block() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
 
-    // Serialise env mutation across tests in this module so toggling
-    // BHARATCODE_A11Y in one test never races another.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_env() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    /// Serialise tests that mutate the shared process env so the
+    /// `BHARATCODE_A11Y_PROMPT` toggle does not race across threads.
+    fn env_guard(value: Option<&str>) -> env_lock::EnvGuard<'_> {
+        env_lock::lock_env([(ENABLE_KEY, value)])
     }
 
     #[test]
     fn advisory_is_none_when_unset() {
-        let _guard = lock_env();
-        std::env::remove_var(ENABLE_KEY);
-        assert!(advisory_block().is_none());
+        let _guard = env_guard(None);
         assert!(!is_enabled());
+        assert!(advisory_block().is_none());
     }
 
     #[test]
     fn advisory_is_some_when_enabled() {
-        let _guard = lock_env();
-        std::env::set_var(ENABLE_KEY, "1");
-        let block = advisory_block().expect("advisory present when enabled");
-        std::env::remove_var(ENABLE_KEY);
+        let _guard = env_guard(Some("1"));
+        assert!(is_enabled());
 
+        let block = advisory_block().expect("advisory present when enabled");
         let lower = block.to_lowercase();
-        assert!(lower.contains("plain text"));
+        // Carries the screen-reader tool-output guidance the spec calls for.
         assert!(lower.contains("screen reader"));
+        assert!(lower.contains("linear plain text"));
+        assert!(lower.contains("label each row"));
+        assert!(lower.contains("summary"));
+        // Stays compact so it remains a low-priority hint.
         assert!(
             block.len() < 500,
             "advisory must stay compact: {}",
@@ -93,17 +98,34 @@ mod tests {
     }
 
     #[test]
+    fn falsey_value_stays_disabled() {
+        let _guard = env_guard(Some("0"));
+        assert!(!is_enabled());
+        assert!(advisory_block().is_none());
+    }
+
+    #[test]
     fn is_enabled_reflects_env_truthiness() {
-        let _guard = lock_env();
         for truthy in ["1", "true", "TRUE", " yes ", "on"] {
-            std::env::set_var(ENABLE_KEY, truthy);
+            let _guard = env_guard(Some(truthy));
             assert!(is_enabled(), "expected {truthy:?} to enable");
         }
         for falsy in ["0", "false", "no", "off", ""] {
-            std::env::set_var(ENABLE_KEY, falsy);
+            let _guard = env_guard(Some(falsy));
             assert!(!is_enabled(), "expected {falsy:?} to stay disabled");
         }
-        std::env::remove_var(ENABLE_KEY);
+        let _guard = env_guard(None);
         assert!(!is_enabled());
+    }
+
+    #[test]
+    fn is_truthy_recognizes_common_values() {
+        assert!(is_truthy("1"));
+        assert!(is_truthy("TRUE"));
+        assert!(is_truthy(" yes "));
+        assert!(is_truthy("on"));
+        assert!(!is_truthy("0"));
+        assert!(!is_truthy("false"));
+        assert!(!is_truthy(""));
     }
 }
