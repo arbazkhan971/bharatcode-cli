@@ -127,7 +127,10 @@ mod tests {
 
     #[test]
     fn masks_slack_token() {
-        let secret = format!("xoxb-{}", "2401234567-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx");
+        let secret = format!(
+            "xoxb-{}",
+            "2401234567-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"
+        );
         let out = redact(&secret);
         assert!(out.contains(REDACTED));
         assert!(!out.contains(&secret));
