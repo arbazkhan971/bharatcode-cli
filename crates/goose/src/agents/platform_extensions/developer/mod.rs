@@ -1,4 +1,5 @@
 pub mod apply_patch;
+pub mod delegate;
 pub mod edit;
 pub mod image;
 pub mod redact;
@@ -14,6 +15,7 @@ use crate::agents::ToolCallContext;
 use anyhow::Result;
 use apply_patch::ApplyPatchParams;
 use async_trait::async_trait;
+use delegate::{DelegateParams, DelegateTool};
 use edit::{EditTools, FileEditParams, FileWriteParams};
 use image::{ImageReadParams, ImageTool};
 use indoc::indoc;
@@ -40,6 +42,7 @@ pub struct DeveloperClient {
     image_tool: Arc<ImageTool>,
     web_search_tool: Arc<WebSearchTool>,
     refactor_tool: Arc<RefactorTool>,
+    delegate_tool: Arc<DelegateTool>,
 }
 
 fn developer_instructions() -> &'static str {
@@ -82,6 +85,8 @@ impl DeveloperClient {
             .with_server_info(Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Developer"))
             .with_instructions(developer_instructions());
 
+        let delegate_tool = Arc::new(DelegateTool::new(context.clone()));
+
         Ok(Self {
             info,
             shell_tool: Arc::new(ShellTool::new(context.use_login_shell_path)?),
@@ -90,6 +95,7 @@ impl DeveloperClient {
             image_tool: Arc::new(ImageTool::new()),
             web_search_tool: Arc::new(WebSearchTool::new()),
             refactor_tool: Arc::new(RefactorTool::new()),
+            delegate_tool,
         })
     }
 
@@ -281,6 +287,23 @@ impl DeveloperClient {
                 Some(false),
                 Some(false),
             )),
+            Tool::new(
+                "delegate".to_string(),
+                "Hand off a bounded, self-contained sub-task to a fresh subagent and get back a \
+                 single text result. The subagent starts with no access to this conversation, so \
+                 put every detail it needs into `instructions`. Each run is hard-capped by the \
+                 subagent turn budget; pass `max_turns` to lower it further. Use this to isolate \
+                 a focused chunk of work without spending turns in the main conversation."
+                    .to_string(),
+                Self::schema::<DelegateParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Delegate".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
+            )),
         ]
     }
 }
@@ -371,6 +394,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "delegate" => match Self::parse_args::<DelegateParams>(arguments) {
+                Ok(params) => Ok(self.delegate_tool.delegate(params, &ctx.session_id).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -408,7 +438,8 @@ mod tests {
                 "tree",
                 "read_image",
                 "web_search",
-                "rename_symbol"
+                "rename_symbol",
+                "delegate"
             ]
         );
     }

@@ -23,6 +23,13 @@ use goose_providers::conversation::token_usage::{ProviderUsage, Usage};
 use rmcp::model::Tool;
 use tracing::warn;
 
+// Opt-in lexical codebase retriever (RAG-lite, BHARATCODE_RAG). Registered here
+// via `#[path]` rather than in lib.rs to keep this feature's footprint confined
+// to the provider-streaming path (where the system prompt is owned) and its own
+// file. Defaults OFF: no walk and no injection unless the switch is enabled.
+#[path = "../semantic_index.rs"]
+mod semantic_index;
+
 /// Wrap a provider stream so that, on successful completion, the fully-assembled
 /// assistant message and final usage are written to the prompt cache under `key`.
 ///
@@ -437,7 +444,26 @@ impl Agent {
         }
 
         // Clone owned data to move into the async stream
-        let system_prompt = system_prompt.to_owned();
+        let mut system_prompt = system_prompt.to_owned();
+
+        // Opt-in lexical codebase retrieval (BHARATCODE_RAG). Derive a query
+        // from the latest user-visible message and, when the feature is enabled
+        // and finds relevant files, prepend a compact `# Relevant files` block
+        // to this turn's system prompt. No-op (no walk, no injection) when the
+        // switch is off, so default behaviour is unchanged.
+        if let Some(query) = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == rmcp::model::Role::User && m.is_user_visible())
+            .map(|m| m.as_concat_text())
+        {
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Some(block) = semantic_index::retrieval_block(&query, &cwd) {
+                    system_prompt = format!("{block}\n{system_prompt}");
+                }
+            }
+        }
+
         let tools = tools.to_owned();
         let toolshim_tools = toolshim_tools.to_owned();
         let provider = provider.clone();

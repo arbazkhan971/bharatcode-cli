@@ -4926,6 +4926,7 @@ dependencies = [
  "goose",
  "goose-mcp",
  "goose-providers",
+ "ignore",
  "indicatif 0.18.4",
  "open",
  "rand 0.8.6",

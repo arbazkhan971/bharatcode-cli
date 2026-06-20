@@ -3,6 +3,12 @@ use anyhow::Result;
 use crate::session::build_session;
 use crate::session::SessionBuilderConfig;
 
+// RAG / index readiness deep check (BharatCode v49). Declared inline so the
+// module lives alongside the other doctor checks without a separate `pub mod`
+// in commands/mod.rs.
+#[path = "index_check.rs"]
+mod index_check;
+
 /// Default Ollama endpoint used when `OLLAMA_HOST` is not configured.
 const OLLAMA_DEFAULT_HOST: &str = "localhost";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -151,6 +157,19 @@ async fn print_deep_checks() {
             println!("      {}", crate::theme::muted(&result.hint));
         }
     }
+
+    // RAG / index readiness: a read-only pre-flight reporting how many files a
+    // bounded, gitignore-aware scan would index. Always shown like the other
+    // deep checks; falls back to "." when the cwd cannot be resolved.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let (st, msg) = index_check::index_readiness(&cwd);
+    let glyph = match st {
+        Status::Ok => crate::theme::success(st.glyph()),
+        Status::Warn => crate::theme::warning(st.glyph()),
+        Status::Fail => crate::theme::error(st.glyph()),
+    };
+    println!("  {} {}", glyph, msg);
+
     println!();
 }
 

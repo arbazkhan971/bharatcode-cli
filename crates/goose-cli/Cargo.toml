@@ -41,6 +41,7 @@ tempfile = { workspace = true }
 etcetera = { workspace = true }
 rand = { workspace = true }
 rustyline = { version = "18", default-features = false, features = ["custom-bindings", "with-dirs", "with-file-history"] }
+ignore = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "time"] }
