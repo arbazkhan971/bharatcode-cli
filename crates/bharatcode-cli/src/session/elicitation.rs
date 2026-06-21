@@ -11,7 +11,7 @@ pub struct ElicitationInput {
 
 pub fn collect_elicitation_input(message: &str, schema: &Value) -> io::Result<ElicitationInput> {
     if !message.is_empty() {
-        println!("\n{}", style(message).cyan());
+        println!("\n{}", style(message).color256(208));
     }
 
     let properties = schema.get("properties").and_then(|p| p.as_object());

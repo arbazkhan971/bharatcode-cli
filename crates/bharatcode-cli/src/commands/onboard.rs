@@ -284,7 +284,7 @@ pub fn render_plan(choices: &OnboardChoices) -> String {
     out.push_str(&label("onboard.section_next", "4. Next steps"));
     out.push('\n');
     for line in next_step_lines(choices) {
-        out.push_str(&format!("   {} {}\n", style("›").cyan(), line));
+        out.push_str(&format!("   {} {}\n", style("›").color256(208), line));
     }
 
     out

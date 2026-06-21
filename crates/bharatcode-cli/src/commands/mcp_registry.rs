@@ -360,7 +360,7 @@ fn print_listing(entries: &[&McpServerEntry]) {
         println!(
             "  {:<id_width$}  {:<cat_width$}  {}",
             style(entry.id).bold(),
-            style(entry.category).cyan(),
+            style(entry.category).color256(208),
             style(entry.name).green(),
             id_width = id_width,
             cat_width = cat_width,

@@ -136,7 +136,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
         .unwrap_or(0)
         + 4;
 
-    println!("{}", style("bharatcode Version:").cyan().bold());
+    println!("{}", style("bharatcode Version:").color256(208).bold());
     // Authoritative GA identity line (product + GA version + channel + license +
     // brand-clean attribution), sourced from the canonical `release_info`
     // module so the 1.0 GA bump surfaces consistently here and at the startup
@@ -164,7 +164,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
     );
     println!();
 
-    println!("{}", style("Paths:").cyan().bold());
+    println!("{}", style("Paths:").color256(208).bold());
     for (label, path) in &paths {
         println!(
             "{:<label_padding$}{:<path_padding$}{}",
@@ -175,13 +175,13 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
     }
 
     if verbose {
-        println!("\n{}", style("bharatcode Configuration:").cyan().bold());
+        println!("\n{}", style("bharatcode Configuration:").color256(208).bold());
         let values = config.all_values()?;
         if values.is_empty() {
             println!("  No configuration values set");
             println!(
                 "  Run '{}' to configure bharatcode",
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         } else {
             let sorted_values: std::collections::BTreeMap<_, _> =
@@ -196,7 +196,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
     }
 
     if check {
-        println!("\n{}", style("Provider Check:").cyan().bold());
+        println!("\n{}", style("Provider Check:").color256(208).bold());
 
         let result = check_provider(config).await;
         match &result {
@@ -222,7 +222,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
                 );
                 print_aligned(
                     "Hint:",
-                    &format!("Run '{}'", style("bharatcode configure").cyan()),
+                    &format!("Run '{}'", style("bharatcode configure").color256(208)),
                     label_padding,
                 );
             }
@@ -251,7 +251,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
                         "Hint:",
                         &format!(
                             "Set the API key in your environment or run '{}'",
-                            style("bharatcode configure").cyan()
+                            style("bharatcode configure").color256(208)
                         ),
                         label_padding,
                     );
@@ -265,7 +265,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
                         "Hint:",
                         &format!(
                             "Check the provider name and config, or run '{}'",
-                            style("bharatcode configure").cyan()
+                            style("bharatcode configure").color256(208)
                         ),
                         label_padding,
                     );
@@ -282,7 +282,7 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
                         "Hint:",
                         &format!(
                             "Check your API key or run '{}'",
-                            style("bharatcode configure").cyan()
+                            style("bharatcode configure").color256(208)
                         ),
                         label_padding,
                     );

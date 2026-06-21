@@ -321,7 +321,7 @@ fn print_summary(choices: &OnboardChoices) {
         crate::theme::heading(label("onboard.summary_title", "You're all set"))
     );
     for line in summary_lines(choices) {
-        println!("  {} {}", style("›").cyan(), line);
+        println!("  {} {}", style("›").color256(208), line);
     }
     println!();
 }

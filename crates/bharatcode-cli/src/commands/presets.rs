@@ -93,7 +93,7 @@ pub fn india_presets() -> Vec<Preset> {
 
 /// Print the curated presets as a simple, human-readable listing.
 pub fn print_presets() {
-    println!("{}", style(crate::tr!("presets.header")).cyan().bold());
+    println!("{}", style(crate::tr!("presets.header")).color256(208).bold());
     println!();
 
     let presets = india_presets();
