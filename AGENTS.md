@@ -1,6 +1,6 @@
 # AGENTS Instructions
 
-goose is an AI agent framework in Rust with CLI and Electron desktop interfaces.
+bharatcode is an AI agent framework in Rust with CLI and Electron desktop interfaces.
 
 ## Setup
 ```bash
@@ -19,9 +19,9 @@ just release-binary           # release + openapi
 
 ### Test
 ```bash
-cargo test                   # all tests
-cargo test -p goose          # specific crate
-cargo test --package goose --test mcp_integration_test
+cargo test                            # all tests
+cargo test -p bharatcode-core         # specific crate
+cargo test --package bharatcode-core --test mcp_integration_test
 just record-mcp-tests        # record MCP
 ```
 
@@ -41,13 +41,13 @@ cd ui/desktop && pnpm test   # test UI
 ## Structure
 ```
 crates/
-├── goose              # core logic
-├── goose-acp-macros   # ACP proc macros
-├── goose-cli          # CLI entry
-├── goose-server       # backend (binary: goosed)
-├── goose-mcp          # MCP extensions
-├── goose-test         # test utilities
-└── goose-test-support # test helpers
+├── bharatcode-core         # core logic
+├── bharatcode-acp-macros   # ACP proc macros
+├── bharatcode-cli          # CLI entry (binary: bharatcode)
+├── bharatcode-server       # backend (binary: bharatcoded)
+├── bharatcode-mcp          # MCP extensions
+├── bharatcode-test         # test utilities
+└── bharatcode-test-support # test helpers
 
 evals/open-model-gym/  # benchmarking / evals
 ui/desktop/            # Electron app
@@ -70,11 +70,11 @@ ui/desktop/            # Electron app
 
 ## Rules
 
-- Test: Prefer tests/ folder, e.g. crates/goose/tests/
-- Test: When adding features, update goose-self-test.yaml, rebuild, then run `goose run --recipe goose-self-test.yaml` to validate
+- Test: Prefer tests/ folder, e.g. crates/bharatcode-core/tests/
+- Test: When adding features, update bharatcode-self-test.yaml, rebuild, then run `bharatcode run --recipe bharatcode-self-test.yaml` to validate
 - Error: Use anyhow::Result
 - Provider: Implement Provider trait see providers/base.rs
-- MCP: Extensions in crates/goose-mcp/
+- MCP: Extensions in crates/bharatcode-mcp/
 - Server: Changes need just generate-openapi
 
 ## Code Quality
@@ -115,7 +115,7 @@ remaining space for dynamic text.
 - Never: Comment self-evident operations (`// Initialize`, `// Return result`), getters/setters, constructors, or standard Rust idioms
 
 ## Entry Points
-- CLI: crates/goose-cli/src/main.rs
-- Server: crates/goose-server/src/main.rs
+- CLI: crates/bharatcode-cli/src/main.rs
+- Server: crates/bharatcode-server/src/main.rs
 - UI: ui/desktop/src/main.ts
-- Agent: crates/goose/src/agents/agent.rs
+- Agent: crates/bharatcode-core/src/agents/agent.rs
