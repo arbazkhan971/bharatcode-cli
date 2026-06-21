@@ -431,7 +431,7 @@ async fn resolve_session_id(
                 Err(_) => {
                     output::render_error(&format!(
                         "Cannot resume session {} - no such session exists",
-                        style(session_id).cyan()
+                        style(session_id).color256(208)
                     ));
                     process::exit(1);
                 }
@@ -475,8 +475,8 @@ async fn handle_resumed_session_workdir(agent: &Agent, session_id: &str, interac
              Your current directory is {}. \
              Do you want to switch back to the original working directory?",
             style("WARNING:").yellow(),
-            style(session.working_dir.display()).cyan(),
-            style(current_workdir.display()).cyan(),
+            style(session.working_dir.display()).color256(208),
+            style(current_workdir.display()).color256(208),
         ))
         .initial_value(true)
         .interact()
@@ -489,7 +489,7 @@ async fn handle_resumed_session_workdir(agent: &Agent, session_id: &str, interac
             if !session.working_dir.exists() {
                 output::render_error(&format!(
                     "Cannot switch to original working directory - {} no longer exists",
-                    style(session.working_dir.display()).cyan()
+                    style(session.working_dir.display()).color256(208)
                 ));
             } else if let Err(e) = std::env::set_current_dir(&session.working_dir) {
                 output::render_error(&format!(

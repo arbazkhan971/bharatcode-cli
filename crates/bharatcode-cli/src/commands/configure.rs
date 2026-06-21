@@ -168,7 +168,7 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
     configure_telemetry_consent_dialog()?;
 
     println!();
-    cliclack::intro(style(" bharatcode-configure ").on_cyan().black())?;
+    cliclack::intro(style(" bharatcode-configure ").on_color256(208).black())?;
 
     let setup_method = cliclack::select("How would you like to set up your provider?")
         .item(
@@ -233,7 +233,7 @@ async fn handle_manual_provider_setup(config: &Config) {
             println!(
                 "\n  {}: Run '{}' again to adjust your config or add extensions",
                 style("Tip").green().italic(),
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
             set_extension(ExtensionEntry {
                 enabled: true,
@@ -245,7 +245,7 @@ async fn handle_manual_provider_setup(config: &Config) {
             println!(
                 "\n  {}: We did not save your config, inspect your credentials\n   and run '{}' again to ensure bharatcode can connect",
                 style("Warning").yellow().italic(),
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
         Err(e) => {
@@ -267,7 +267,7 @@ async fn handle_india_presets_setup(config: &Config) {
             println!(
                 "\n  {}: Run '{}' again to adjust your config or add extensions",
                 style("Tip").green().italic(),
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
             set_extension(ExtensionEntry {
                 enabled: true,
@@ -279,7 +279,7 @@ async fn handle_india_presets_setup(config: &Config) {
             println!(
                 "\n  {}: We did not save your config, inspect your credentials\n   and run '{}' again to ensure bharatcode can connect",
                 style("Warning").yellow().italic(),
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
         Err(e) => {
@@ -369,7 +369,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Required configuration key '{}' not found \n  Please provide this value and run '{}' again",
                 style("Error").red().italic(),
                 key,
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
         Some(ConfigError::KeyringError(msg)) => {
@@ -380,7 +380,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Invalid configuration value: {} \n  Please check your input and run '{}' again",
                 style("Error").red().italic(),
                 msg,
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
         Some(ConfigError::FileError(err)) => {
@@ -388,7 +388,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Failed to access config file: {} \n  Please check file permissions and run '{}' again",
                 style("Error").red().italic(),
                 err,
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
         Some(ConfigError::DirectoryError(msg)) => {
@@ -396,7 +396,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} Failed to access config directory: {} \n  Please check directory permissions and run '{}' again",
                 style("Error").red().italic(),
                 msg,
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
         _ => {
@@ -404,7 +404,7 @@ fn print_manual_config_error(e: &anyhow::Error) {
                 "\n  {} {} \n  We did not save your config, inspect your credentials\n   and run '{}' again to ensure bharatcode can connect",
                 style("Error").red().italic(),
                 e,
-                style("bharatcode configure").cyan()
+                style("bharatcode configure").color256(208)
             );
         }
     }
@@ -416,7 +416,7 @@ fn print_keyring_error(msg: &str) {
         "\n  {} Failed to access secure storage (keyring): {} \n  Please check your system keychain and run '{}' again. \n  If your system is unable to use the keyring, please try setting secret key(s) via environment variables.",
         style("Error").red().italic(),
         msg,
-        style("bharatcode configure").cyan()
+        style("bharatcode configure").color256(208)
     );
 }
 
@@ -426,7 +426,7 @@ fn print_keyring_error(msg: &str) {
         "\n  {} Failed to access Windows Credential Manager: {} \n  Please check Windows Credential Manager and run '{}' again. \n  If your system is unable to use the Credential Manager, please try setting secret key(s) via environment variables.",
         style("Error").red().italic(),
         msg,
-        style("bharatcode configure").cyan()
+        style("bharatcode configure").color256(208)
     );
 }
 
@@ -436,7 +436,7 @@ fn print_keyring_error(msg: &str) {
         "\n  {} Failed to access secure storage: {} \n  Please check your system's secure storage and run '{}' again. \n  If your system is unable to use secure storage, please try setting secret key(s) via environment variables.",
         style("Error").red().italic(),
         msg,
-        style("bharatcode configure").cyan()
+        style("bharatcode configure").color256(208)
     );
 }
 
@@ -455,7 +455,7 @@ async fn handle_existing_config() -> anyhow::Result<()> {
     );
     println!();
 
-    cliclack::intro(style(" bharatcode-configure ").on_cyan().black())?;
+    cliclack::intro(style(" bharatcode-configure ").on_color256(208).black())?;
     let action = cliclack::select("What would you like to configure?")
         .item(
             "providers",

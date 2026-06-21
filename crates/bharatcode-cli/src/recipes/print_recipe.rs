@@ -23,7 +23,7 @@ pub fn print_recipe_explanation(recipe: &Recipe) {
 
                 println!(
                     "   - {} ({}, {}){}: {}",
-                    style(&param.key).cyan(),
+                    style(&param.key).color256(208),
                     param.input_type,
                     param.requirement,
                     default_display,

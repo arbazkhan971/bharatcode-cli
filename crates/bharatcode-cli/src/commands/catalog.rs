@@ -395,7 +395,7 @@ fn print_listing(entries: &[&CatalogEntry]) {
         println!(
             "  {:<id_width$}  {:<kind_width$}  {}",
             style(entry.id).bold(),
-            style(entry.kind).cyan(),
+            style(entry.kind).color256(208),
             style(entry.title).green(),
             id_width = id_width,
             kind_width = kind_width,
@@ -448,7 +448,7 @@ fn show_entry(id: &str) -> Result<()> {
     print_row(&label("catalog.row_source", "Source"), entry.source);
     println!();
     println!("{}", style(label("catalog.row_install", "Install:")).bold());
-    println!("  {}", style(entry.install_hint).cyan());
+    println!("  {}", style(entry.install_hint).color256(208));
     println!();
     Ok(())
 }

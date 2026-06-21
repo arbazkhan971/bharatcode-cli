@@ -12,12 +12,13 @@
 //!        - `none` / `off` / `mono` / `plain` / `nocolor` / `no-color` -> plain
 //!        - `tiranga` / `bharat` / `india` -> the Tiranga (saffron/white/green) palette
 //!        - `default` / `stock` -> the stable default palette
-//!        - anything else -> the stable default palette
-//!   3. Unset -> the stable default palette (current look is unchanged).
+//!        - anything else -> the Tiranga (saffron/white/green) brand palette
+//!   3. Unset -> the Tiranga (saffron/white/green) brand palette (the default look).
 //!
-//! This module is additive: existing output stays byte-for-byte identical until
-//! a call site opts in by routing through one of the helpers below, and even
-//! then the look is stable unless `BHARATCODE_THEME` is set.
+//! The default brand palette is Tiranga (saffron/white/green): once a call
+//! site routes through one of the helpers below, the saffron brand accent shows
+//! by default. Setting `BHARATCODE_THEME=default` (or `stock`) restores the
+//! stable cyan palette, and `none` / `NO_COLOR` force plain, unstyled output.
 
 use console::{Style, StyledObject};
 use std::sync::OnceLock;
@@ -51,8 +52,8 @@ pub struct Theme {
 /// A fully un-styled style that forces ANSI codes off, for the no-color theme.
 const PLAIN: Style = Style::new().force_styling(false);
 
-/// The stable default palette. Mirrors the colors the CLI already uses so that
-/// adopting a role helper does not change the default look.
+/// The stable (legacy) palette, selectable via `BHARATCODE_THEME=default`.
+/// Mirrors the original cyan-accent look; the brand default is now [`TIRANGA`].
 pub static DEFAULT: Theme = Theme {
     name: "default",
     heading: Style::new().cyan().bold(),
@@ -121,7 +122,7 @@ fn pick(requested: Option<&str>, no_color: bool) -> &'static Theme {
         _ if no_color => &NONE,
         Some("tiranga") | Some("bharat") | Some("india") => &TIRANGA,
         Some("default") | Some("stock") => &DEFAULT,
-        Some(_) | None => &DEFAULT,
+        Some(_) | None => &TIRANGA,
     }
 }
 
@@ -165,8 +166,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unset_resolves_to_default() {
-        assert_eq!(pick(None, false).name, "default");
+    fn unset_resolves_to_tiranga() {
+        assert_eq!(pick(None, false).name, "tiranga");
+    }
+
+    #[test]
+    fn explicit_default_is_still_selectable() {
+        assert_eq!(pick(Some("default"), false).name, "default");
+        assert_eq!(pick(Some("stock"), false).name, "default");
     }
 
     #[test]
@@ -191,8 +198,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_theme_falls_back_to_default() {
-        assert_eq!(pick(Some("rainbow"), false).name, "default");
+    fn unknown_theme_falls_back_to_tiranga() {
+        assert_eq!(pick(Some("rainbow"), false).name, "tiranga");
     }
 
     #[test]

@@ -220,7 +220,7 @@ pub async fn handle_db(opts: DbOptions) -> Result<()> {
     if opts.vacuum {
         println!(
             "\n{}",
-            style(label("db.vacuum.running", "Vacuuming…")).cyan()
+            style(label("db.vacuum.running", "Vacuuming…")).color256(208)
         );
         reclaim(&pool).await?;
         let after = collect_stats(&pool).await?;

@@ -641,7 +641,7 @@ pub fn render_prompts(prompts: &HashMap<String, Vec<String>>) {
     for (extension, prompts) in prompts {
         println!(" {}", style(extension).green());
         for prompt in prompts {
-            println!("  - {}", style(prompt).cyan());
+            println!("  - {}", style(prompt).color256(208));
         }
     }
     println!();
@@ -652,7 +652,7 @@ pub fn render_prompt_info(info: &PromptInfo) {
     if let Some(ext) = &info.extension {
         println!(" {}: {}", style("Extension").green(), ext);
     }
-    println!(" Prompt: {}", style(&info.name).cyan().bold());
+    println!(" Prompt: {}", style(&info.name).color256(208).bold());
     if let Some(desc) = &info.description {
         println!("\n {}", desc);
     }
@@ -686,7 +686,7 @@ pub fn render_extension_success(name: &str) {
     println!(
         "  {} extension `{}`",
         style("added").green(),
-        style(name).cyan(),
+        style(name).color256(208),
     );
     println!();
 }
@@ -709,7 +709,7 @@ pub fn render_builtin_success(names: &str) {
         "  {} builtin{}: {}",
         style("added").green(),
         if names.contains(',') { "s" } else { "" },
-        style(names).cyan()
+        style(names).color256(208)
     );
     println!();
 }
@@ -998,7 +998,7 @@ fn print_tool_header(call: &CallToolRequestParams) {
             "  {} {} {}",
             style(&marker).dim(),
             style(&tool).dim(),
-            style(extension).magenta().dim(),
+            style(extension).color256(208).dim(),
         )
     };
     println!();
@@ -1377,7 +1377,7 @@ pub fn display_session_info(
         style(status).dim(),
         style("·").dim(),
         style(provider).dim(),
-        style(&model_display).cyan(),
+        style(&model_display).color256(208),
     );
 
     if let Some(id) = session_id {
@@ -1502,7 +1502,7 @@ pub fn display_cost_usage(provider: &str, model: &str, usage: &Usage) {
         let inr = cost_ledger::usd_to_inr(cost);
         eprintln!(
             "Cost: {} USD · {} ({} tokens: in {}{}, out {})",
-            style(format!("${:.4}", cost)).cyan(),
+            style(format!("${:.4}", cost)).color256(208),
             style(cost_ledger::format_inr_compact(inr)).green(),
             input_tokens + output_tokens,
             input_tokens,

@@ -1966,7 +1966,7 @@ impl CliSession {
 
         println!(
             "\n  {} {}",
-            console::style("↻").cyan(),
+            console::style("↻").color256(208),
             console::style(format!("{} messages restored", self.messages.len())).dim()
         );
 
