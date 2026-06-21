@@ -121,6 +121,8 @@ fn generate_serve_secret_key() -> String {
 #[derive(Parser)]
 #[command(name = "bharatcode", author, version, display_name = "", about, long_about = None)]
 pub struct Cli {
+    #[arg(long, global = true, help = "Auto-approve all tool calls for this run (no confirmation prompts)")]
+    pub yolo: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -1924,6 +1926,7 @@ async fn handle_interactive_session(
     history: bool,
     session_opts: SessionOptions,
     extension_opts: ExtensionOptions,
+    yolo: bool,
 ) -> Result<()> {
     #[cfg(feature = "telemetry")]
     if get_telemetry_choice().is_none() {
@@ -1957,7 +1960,7 @@ async fn handle_interactive_session(
         }
     }
 
-    let goose_mode = Config::global().get_bharatcode_mode().unwrap_or_default();
+    let goose_mode = if yolo { GooseMode::Auto } else { Config::global().get_bharatcode_mode().unwrap_or_default() };
     let mut session_id = get_or_create_session_id(identifier, resume, false, goose_mode).await?;
 
     if fork {
@@ -2150,6 +2153,7 @@ async fn handle_run_command(
     extension_opts: ExtensionOptions,
     output_opts: OutputOptions,
     model_opts: ModelOptions,
+    yolo: bool,
 ) -> Result<()> {
     #[cfg(feature = "telemetry")]
     if run_behavior.interactive && get_telemetry_choice().is_none() {
@@ -2173,7 +2177,7 @@ async fn handle_run_command(
         }
     }
 
-    let goose_mode = Config::global().get_bharatcode_mode().unwrap_or_default();
+    let goose_mode = if yolo { GooseMode::Auto } else { Config::global().get_bharatcode_mode().unwrap_or_default() };
     let session_id = get_or_create_session_id(
         identifier,
         run_behavior.resume,
@@ -2465,7 +2469,7 @@ async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> 
     Ok(())
 }
 
-async fn handle_default_session() -> Result<()> {
+async fn handle_default_session(yolo: bool) -> Result<()> {
     if !Config::global().exists() {
         return handle_configure().await;
     }
@@ -2475,7 +2479,7 @@ async fn handle_default_session() -> Result<()> {
         configure_telemetry_consent_dialog()?;
     }
 
-    let goose_mode = Config::global().get_bharatcode_mode().unwrap_or_default();
+    let goose_mode = if yolo { GooseMode::Auto } else { Config::global().get_bharatcode_mode().unwrap_or_default() };
     let session_id = get_or_create_session_id(None, false, false, goose_mode).await?;
 
     let mut session = build_session(SessionBuilderConfig {
@@ -2606,6 +2610,7 @@ pub async fn cli() -> anyhow::Result<()> {
                 history,
                 session_opts,
                 extension_opts,
+                cli.yolo,
             )
             .await
         }
@@ -2634,6 +2639,7 @@ pub async fn cli() -> anyhow::Result<()> {
                 extension_opts,
                 output_opts,
                 model_opts,
+                cli.yolo,
             )
             .await
         }
@@ -2750,7 +2756,7 @@ pub async fn cli() -> anyhow::Result<()> {
                 }
             }
         }
-        None => handle_default_session().await,
+        None => handle_default_session(cli.yolo).await,
     }
 }
 
