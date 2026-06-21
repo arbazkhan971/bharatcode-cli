@@ -349,9 +349,15 @@ fn audit_is_enabled() -> bool {
 /// somehow absent, so the function always returns `Some` for a non-empty
 /// catalog.
 pub fn suggest_next() -> Option<&'static Tutorial> {
-    let preferred = if !provider_is_configured() {
+    suggest_next_for(provider_is_configured(), audit_is_enabled())
+}
+
+/// Pure suggestion logic over explicit state, so it can be tested
+/// deterministically without depending on the ambient machine config.
+fn suggest_next_for(provider_configured: bool, audit_enabled: bool) -> Option<&'static Tutorial> {
+    let preferred = if !provider_configured {
         "getting-started"
-    } else if !audit_is_enabled() {
+    } else if !audit_enabled {
         "going-offline"
     } else {
         "controlling-cost"
@@ -566,18 +572,22 @@ mod tests {
 
     #[test]
     fn suggest_next_with_no_provider_is_quick_start() {
-        // The test process has no provider/model configured, so the suggestion
-        // engine must fall to the quick-start (`getting-started`) branch. This
-        // exercises the no-provider state directly without touching global
-        // config.
-        assert!(
-            !provider_is_configured(),
-            "test environment unexpectedly has a provider configured"
-        );
+        // Deterministic pure-logic test over explicit state, independent of the
+        // ambient machine config (a real dev box may have a provider set).
         assert_eq!(
-            suggest_next().map(|t| t.id),
+            suggest_next_for(false, false).map(|t| t.id),
             Some("getting-started"),
             "no-provider state must surface the quick-start tutorial"
+        );
+        assert_eq!(
+            suggest_next_for(true, false).map(|t| t.id),
+            Some("going-offline"),
+            "configured + audit-off must suggest going-offline"
+        );
+        assert_eq!(
+            suggest_next_for(true, true).map(|t| t.id),
+            Some("controlling-cost"),
+            "configured + audit-on must suggest controlling-cost"
         );
     }
 

@@ -656,3 +656,19 @@ Integration note: this wave was authored against the pre-v41-v50 base, so applyi
 - v88 integrate: desktop notify on long turn — GREEN. Fires via session/mod.rs process_agent_response -> crate::notify::is_enabled()/threshold()/notify("BharatCode", tr!("notify.turn_done")); pub mod notify in lib.rs. Default OFF.
 - v89 integrate: a11y system-prompt advisory — GREEN. Fires via agents/prompt_manager.rs SystemPromptBuilder::build -> a11y_prompt::advisory_block() inserted as bharatcode_a11y extra (BHARATCODE_A11Y_PROMPT). Default None => prompt byte-identical (5 prompt_manager snapshots pass).
 - v90 integrate: interactive tutorials registry + builtin skill — GREEN. Fires via builder.rs tutorials::list()/show()/first_run_nudge() AND the tutorials.md builtin self-firing through the include_dir! skills loader; all_platform_extensions snapshot regenerated to add the `• tutorials` bullet (test passes).
+
+### 2026-06-21 — v91–v100 ✅ FINAL WAVE (Scale & release / GA): v100 REACHED
+- v91-v100 Scale & release features landed (hand-pinned, no theme drift): opt-in local usage
+  analytics (BHARATCODE_ANALYTICS, counts-only), `bharatcode bench` offline micro-benchmark
+  harness, SBOM/dependency-license doctor row, security self-audit, env-reference generator,
+  `build_info` developer tool, GA cost footer, GA prompt banner, serve-sessions registry,
+  packaging/release gate + compliance tool.
+- FIX (real bug): tutorials `suggest_next` read the AMBIENT machine config (a real dev box has
+  a provider set), so `suggest_next_with_no_provider_is_quick_start` failed. Refactored to a
+  pure `suggest_next_for(provider_configured, audit_enabled)` and test all three branches
+  deterministically. Fixes the test in all 3 module-inclusion paths.
+- TESTS: goose `--lib --features rustls-tls` = 2144/0 (parallel). goose-cli
+  `--no-default-features --features portable-default --lib` = 885/0 run SERIALLY
+  (`-- --test-threads=1`). NOTE: the goose-cli suite has ~160 process-env-mutating tests
+  across modules; run it single-threaded (env-var tests race under parallel execution — the
+  code is correct, only the harness parallelism flakes). Build green.
