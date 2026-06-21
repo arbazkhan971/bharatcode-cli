@@ -1,0 +1,26 @@
+# BharatCode release-notes generator agent.
+#
+# Neutralized: this workflow is disabled (manual dispatch only) and intentionally
+# carries no automated trigger. Re-enable and wire to the BharatCode agent recipe
+# before use. It is NOT part of the CLI release / distribution path.
+name: BharatCode Release Notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to generate notes for"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  noop:
+    name: Disabled
+    runs-on: ubuntu-latest
+    if: ${{ false }}
+    steps:
+      - name: Disabled
+        run: echo "This workflow is disabled."

@@ -1,0 +1,21 @@
+# BharatCode automated PR-reviewer agent.
+#
+# Neutralized: this workflow is disabled (manual dispatch only) and intentionally
+# carries no automated trigger. Re-enable and wire to the BharatCode agent recipe
+# before use. It is NOT part of the CLI release / distribution path.
+name: BharatCode PR Reviewer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noop:
+    name: Disabled
+    runs-on: ubuntu-latest
+    if: ${{ false }}
+    steps:
+      - name: Disabled
+        run: echo "This workflow is disabled."

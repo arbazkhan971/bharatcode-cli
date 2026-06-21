@@ -77,7 +77,7 @@ jobs:
         run: |
           source ./bin/activate-hermit
           rustup target add x86_64-apple-darwin
-          cargo build --release -p goose-server --target x86_64-apple-darwin
+          cargo build --release -p bharatcode-server --target x86_64-apple-darwin
 
 
 

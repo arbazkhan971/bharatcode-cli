@@ -119,7 +119,7 @@ jobs:
 
       # Build the project
       - name: Build goosed
-        run: source ./bin/activate-hermit && cargo build --release -p goose-server
+        run: source ./bin/activate-hermit && cargo build --release -p bharatcode-server
 
       # Post-build cleanup to free space
       - name: Post-build cleanup

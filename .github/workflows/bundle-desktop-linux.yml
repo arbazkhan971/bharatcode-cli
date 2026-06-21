@@ -137,7 +137,7 @@ jobs:
             FEATURE_ARGS=(--features vulkan)
           fi
 
-          cargo build --release --target ${TARGET} -p goose-server "${FEATURE_ARGS[@]}"
+          cargo build --release --target ${TARGET} -p bharatcode-server "${FEATURE_ARGS[@]}"
 
       - name: Copy binaries into Electron folder
         run: |
