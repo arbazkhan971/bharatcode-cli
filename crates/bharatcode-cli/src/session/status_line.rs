@@ -20,7 +20,9 @@
 //! table (honoring `BHARATCODE_LANG`) and falls back to the supplied English
 //! default when no translation exists.
 
-use console::{measure_text_width, style};
+use console::style;
+
+use super::terminal_width;
 
 /// Inputs needed to render a single status line.
 ///
@@ -120,29 +122,7 @@ pub fn format_status(ctx: StatusCtx) -> String {
 /// when truncation occurs. The returned string's display width never exceeds
 /// `max_width`.
 fn truncate_to_width(text: &str, max_width: usize) -> String {
-    if measure_text_width(text) <= max_width {
-        return text.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    let ellipsis = "\u{2026}";
-    let ellipsis_width = measure_text_width(ellipsis);
-    if max_width <= ellipsis_width {
-        // Not enough room even for the ellipsis: emit a budget's worth of dots.
-        return ".".repeat(max_width);
-    }
-
-    let mut out = String::new();
-    for ch in text.chars() {
-        out.push(ch);
-        if measure_text_width(&out) + ellipsis_width > max_width {
-            out.pop();
-            break;
-        }
-    }
-    out.push_str(ellipsis);
-    out
+    terminal_width::truncate_to_width(text, max_width, "\u{2026}")
 }
 
 #[cfg(test)]
@@ -222,9 +202,9 @@ mod tests {
         let budget = 20;
         let out = with_no_color(true, || format_status(sample(budget)));
         assert!(
-            measure_text_width(&out) <= budget,
+            terminal_width::display_width(&out) <= budget,
             "truncated line exceeded budget ({} > {budget}): {out:?}",
-            measure_text_width(&out)
+            terminal_width::display_width(&out)
         );
         assert!(out.contains('\u{2026}'), "expected an ellipsis: {out:?}");
         assert_no_brand_leak(&out);
@@ -260,7 +240,7 @@ mod tests {
         for budget in 0..6usize {
             let out = truncate_to_width("a very long status line indeed", budget);
             assert!(
-                measure_text_width(&out) <= budget,
+                terminal_width::display_width(&out) <= budget,
                 "budget {budget} exceeded by {out:?}"
             );
         }

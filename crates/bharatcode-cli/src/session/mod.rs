@@ -12,8 +12,10 @@ mod export;
 mod input;
 mod output;
 mod recovery;
+mod render_event;
 pub mod streaming_buffer;
 mod task_execution_display;
+mod terminal_width;
 mod thinking;
 
 // Plan-mode plan-file persistence lives under crates/goose-cli/src/commands/.
@@ -2068,15 +2070,19 @@ impl CliSession {
             .unwrap_or(80)
             .max(8);
 
-        let ctx = status_line::StatusCtx {
-            model,
-            provider,
+        let event = render_event::SessionRenderEvent::StatusFooter {
+            model: model.to_string(),
+            provider: provider.to_string(),
             context_pct,
             rupees_spent: None,
-            width_budget,
         };
 
-        output::render_text(&status_line::format_status(ctx), None, true);
+        for line in render_event::render_event(
+            &event,
+            render_event::RenderOptions::new(width_budget),
+        ) {
+            output::render_text(&line, None, true);
+        }
     }
 
     /// Handle prompt command execution
@@ -2554,8 +2560,19 @@ fn display_log_notification(
                 let _ = progress_bars.hide();
             }
             if !is_json_mode {
-                for line in formatted_message.lines() {
-                    println!("    {}", console::style(line).dim());
+                let width_budget = console::Term::stdout()
+                    .size_checked()
+                    .map(|(_, cols)| cols as usize)
+                    .unwrap_or(80)
+                    .max(8);
+                let event = render_event::SessionRenderEvent::TaskNotification {
+                    body: formatted_message.to_string(),
+                };
+                for line in render_event::render_event(
+                    &event,
+                    render_event::RenderOptions::new(width_budget),
+                ) {
+                    println!("{}", console::style(line).dim());
                 }
                 std::io::stdout().flush().unwrap();
             }
