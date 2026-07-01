@@ -18,6 +18,15 @@ check-everything:
     @echo ""
     @echo "✅ All style checks passed!"
 
+# Build the local terminal UI artifact used by `bharatcode tui`.
+build-tui:
+    cd ui/text && node build.js
+
+# Run local TUI artifact tests.
+test-tui:
+    cd ui/text && node test.js
+
+
 # Default release command
 release-binary:
     @echo "Building release version..."

@@ -4,6 +4,17 @@ use bharatcode_core::agents::subagent_execution_tool::notification_events::{
 };
 use serde_json::json;
 
+fn rich_options() -> TaskDisplayOptions {
+    TaskDisplayOptions {
+        plain: false,
+        width: 120,
+    }
+}
+
+fn plain_options(width: usize) -> TaskDisplayOptions {
+    TaskDisplayOptions { plain: true, width }
+}
+
 #[test]
 fn test_process_output_for_display() {
     assert_eq!(process_output_for_display("hello world"), "hello world");
@@ -128,7 +139,7 @@ fn test_format_tasks_update_from_event() {
     ];
 
     let event = TaskExecutionNotificationEvent::TasksUpdate { stats, tasks };
-    let result = format_tasks_update_from_event(&event);
+    let result = format_tasks_update_from_event_with_options(&event, rich_options());
 
     assert!(result.contains("🎯 Task Execution Dashboard"));
     assert!(result.contains("═══════════════════════════"));
@@ -143,7 +154,7 @@ fn test_format_tasks_update_from_event() {
     assert!(result.contains("⏱️  1.5s"));
     assert!(result.contains("💬 Processing..."));
 
-    let result2 = format_tasks_update_from_event(&event);
+    let result2 = format_tasks_update_from_event_with_options(&event, rich_options());
     assert!(!result2.contains("🎯 Task Execution Dashboard"));
     assert!(result2.contains("📊 Progress:"));
 }
@@ -161,7 +172,7 @@ fn test_format_tasks_complete_from_event() {
         stats,
         failed_tasks,
     };
-    let result = format_tasks_complete_from_event(&event);
+    let result = format_tasks_complete_from_event_with_options(&event, rich_options());
 
     assert!(result.contains("Execution Complete!"));
     assert!(result.contains("═══════════════════════"));
@@ -184,7 +195,7 @@ fn test_format_tasks_complete_from_event_no_failures() {
         stats,
         failed_tasks,
     };
-    let result = format_tasks_complete_from_event(&event);
+    let result = format_tasks_complete_from_event_with_options(&event, rich_options());
 
     assert!(!result.contains("❌ Failed Tasks:"));
     assert!(result.contains("📈 Success Rate: 100.0%"));
@@ -205,7 +216,7 @@ fn test_format_task_display_running() {
         result_data: None,
     };
 
-    let result = format_task_display(&task);
+    let result = format_task_display_with_options(&task, rich_options());
 
     assert!(result.contains("🏃 data-processor (sub_recipe)"));
     assert!(result.contains("📋 Parameters: input=file.txt,output=result.json"));
@@ -227,7 +238,7 @@ fn test_format_task_display_completed() {
         result_data: Some(json!({"status": "success", "count": 42})),
     };
 
-    let result = format_task_display(&task);
+    let result = format_task_display_with_options(&task, rich_options());
 
     assert!(result.contains("✅ analyzer (text_instruction)"));
     assert!(result.contains("⏱️  3.2s"));
@@ -252,7 +263,7 @@ fn test_format_task_display_failed() {
         result_data: None,
     };
 
-    let result = format_task_display(&task);
+    let result = format_task_display_with_options(&task, rich_options());
 
     assert!(result.contains("❌ failing-task (sub_recipe)"));
     assert!(!result.contains("⏱️"));
@@ -274,7 +285,7 @@ fn test_format_task_display_pending() {
         result_data: None,
     };
 
-    let result = format_task_display(&task);
+    let result = format_task_display_with_options(&task, rich_options());
 
     assert!(result.contains("⏳ waiting-task (sub_recipe)"));
     assert!(result.contains("📋 Parameters: priority=high"));
@@ -298,7 +309,65 @@ fn test_format_task_display_empty_current_output() {
         result_data: None,
     };
 
-    let result = format_task_display(&task);
+    let result = format_task_display_with_options(&task, rich_options());
 
     assert!(!result.contains("💬"));
+}
+
+#[test]
+fn test_plain_task_display_uses_ascii_status_and_labels() {
+    let task = TaskInfo {
+        id: "task-6".to_string(),
+        status: TaskStatus::Running,
+        duration_secs: Some(1.5),
+        current_output: "line1\nline2".to_string(),
+        task_type: "sub_recipe".to_string(),
+        task_name: "plain-task".to_string(),
+        task_metadata: "priority=high".to_string(),
+        error: None,
+        result_data: None,
+    };
+
+    let result = format_task_display_with_options(&task, plain_options(80));
+
+    assert!(result.contains("[running] plain-task (sub_recipe)"));
+    assert!(result.contains("Parameters: priority=high"));
+    assert!(result.contains("time: 1.5s"));
+    assert!(result.contains("output: line1 ... line2"));
+    for glyph in ["🏃", "📋", "⏱️", "💬"] {
+        assert!(
+            !result.contains(glyph),
+            "plain display leaked {glyph}: {result}"
+        );
+    }
+}
+
+#[test]
+fn test_plain_task_update_lines_stay_within_width() {
+    INITIAL_SHOWN.store(false, Ordering::SeqCst);
+
+    let stats = TaskExecutionStats::new(100, 25, 25, 25, 25);
+    let tasks = vec![TaskInfo {
+        id: "task-7".to_string(),
+        status: TaskStatus::Running,
+        duration_secs: Some(999.9),
+        current_output: "this output is intentionally long enough to need truncation".to_string(),
+        task_type: "very_long_task_type_that_needs_truncation".to_string(),
+        task_name: "very-long-task-name-that-needs-truncation".to_string(),
+        task_metadata: "parameter=with-a-very-long-value-that-needs-truncation".to_string(),
+        error: None,
+        result_data: None,
+    }];
+
+    let event = TaskExecutionNotificationEvent::TasksUpdate { stats, tasks };
+    let result = format_tasks_update_from_event_with_options(&event, plain_options(48));
+
+    assert!(result.contains("Task Execution Dashboard"));
+    assert!(result.contains("..."));
+    for line in result.lines().filter(|line| !line.is_empty()) {
+        assert!(
+            console::measure_text_width(line) <= 48,
+            "line exceeded width budget: {line:?}"
+        );
+    }
 }

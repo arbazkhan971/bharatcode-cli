@@ -1,0 +1,12 @@
+{
+  "name": "bharatcode-tui",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local BharatCode terminal UI artifact and launcher shell.",
+  "main": "dist/tui.js",
+  "scripts": {
+    "build": "node ./build.js",
+    "start": "node ./dist/tui.js",
+    "test": "node ./test.js"
+  }
+}
