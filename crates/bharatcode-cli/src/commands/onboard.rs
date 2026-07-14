@@ -113,7 +113,7 @@ impl WizardLocale {
         let primary = raw
             .trim()
             .to_ascii_lowercase()
-            .split(|c| c == '_' || c == '-' || c == '.')
+            .split(['_', '-', '.'])
             .next()
             .unwrap_or("")
             .to_string();
@@ -333,7 +333,8 @@ fn current_locale() -> WizardLocale {
             return WizardLocale::from_code(&raw);
         }
     }
-    if let Ok(raw) = bharatcode_core::config::Config::global().get_param::<String>(LANG_CONFIG_KEY) {
+    if let Ok(raw) = bharatcode_core::config::Config::global().get_param::<String>(LANG_CONFIG_KEY)
+    {
         if !raw.trim().is_empty() {
             return WizardLocale::from_code(&raw);
         }

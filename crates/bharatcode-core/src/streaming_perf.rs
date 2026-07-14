@@ -61,7 +61,8 @@ const STREAM_COALESCE_LINES_MAX: usize = 10_000;
 
 /// Every tunable key in registration order. Keeps the summary and the unit test
 /// in lock-step with the resolved struct.
-pub const TUNABLE_KEYS: &[&str] = &[
+#[cfg(test)]
+const TUNABLE_KEYS: &[&str] = &[
     STREAM_FLUSH_MS_KEY,
     MAX_CODE_BLOCK_LINES_KEY,
     STREAM_COALESCE_LINES_KEY,
@@ -142,24 +143,26 @@ impl StreamingPerf {
     /// Effective flush cadence: the clamped override if set, else the documented
     /// default. This is the value the CLI streaming buffer should actually use.
     pub fn effective_flush_ms(&self) -> u64 {
-        self.flush_ms.unwrap_or(DEFAULT_STREAM_FLUSH_MS)
+        self.flush_ms().unwrap_or(DEFAULT_STREAM_FLUSH_MS)
     }
 
     /// Effective code-block render cap: the clamped override if set, else the
     /// documented default.
     pub fn effective_max_code_block_lines(&self) -> usize {
-        self.max_code_block_lines
+        self.max_code_block_lines()
             .unwrap_or(DEFAULT_MAX_CODE_BLOCK_LINES)
     }
 
     /// Effective coalesce batch size: the clamped override if set, else the
     /// documented default.
     pub fn effective_coalesce_lines(&self) -> usize {
-        self.coalesce_lines.unwrap_or(DEFAULT_STREAM_COALESCE_LINES)
+        self.coalesce_lines()
+            .unwrap_or(DEFAULT_STREAM_COALESCE_LINES)
     }
 
     /// Whether every tunable is unset (all defaults apply).
-    pub fn is_all_default(&self) -> bool {
+    #[cfg(test)]
+    fn is_all_default(&self) -> bool {
         self.flush_ms.is_none()
             && self.max_code_block_lines.is_none()
             && self.coalesce_lines.is_none()
@@ -173,17 +176,17 @@ impl StreamingPerf {
             summary_row(
                 STREAM_FLUSH_MS_KEY,
                 format!("{}ms", self.effective_flush_ms()),
-                self.flush_ms.is_none(),
+                self.flush_ms().is_none(),
             ),
             summary_row(
                 MAX_CODE_BLOCK_LINES_KEY,
                 format!("{} lines", self.effective_max_code_block_lines()),
-                self.max_code_block_lines.is_none(),
+                self.max_code_block_lines().is_none(),
             ),
             summary_row(
                 STREAM_COALESCE_LINES_KEY,
                 format!("{} lines", self.effective_coalesce_lines()),
-                self.coalesce_lines.is_none(),
+                self.coalesce_lines().is_none(),
             ),
         ]
     }
@@ -224,11 +227,6 @@ pub fn from_config(config: &Config) -> StreamingPerf {
             STREAM_COALESCE_LINES_MAX,
         ),
     }
-}
-
-/// Resolve the tunables from the global config.
-pub fn resolve() -> StreamingPerf {
-    from_config(Config::global())
 }
 
 /// Like [`StreamingPerf::summary_lines`] but resolved from a specific `Config`.

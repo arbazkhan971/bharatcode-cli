@@ -18,6 +18,7 @@ use tokio::sync::OnceCell;
 #[cfg(not(windows))]
 use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::SplitStream, StreamExt};
+use tokio_util::sync::CancellationToken;
 
 #[cfg(not(windows))]
 use crate::subprocess::SandboxExt;
@@ -210,6 +211,10 @@ pub struct ShellOutput {
     #[serde(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub timed_out: bool,
+    /// True if the command was killed because the tool call was cancelled.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cancelled: bool,
     /// True if output collection was cut short after the shell exited.
     #[serde(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -366,14 +371,20 @@ impl ShellTool {
         })
     }
 
+    /// Run a shell command that cannot be cancelled. Prefer
+    /// [`ShellTool::shell_with_cwd`], which ties the child's lifetime to the
+    /// caller's cancellation token.
     pub async fn shell(&self, params: ShellParams) -> CallToolResult {
-        self.shell_with_cwd(params, None).await
+        self.shell_with_cwd(params, None, &CancellationToken::new())
+            .await
     }
 
+    /// Run a shell command, killing the child if `cancel` fires before it exits.
     pub async fn shell_with_cwd(
         &self,
         params: ShellParams,
         working_dir: Option<&std::path::Path>,
+        cancel: &CancellationToken,
     ) -> CallToolResult {
         if params.command.trim().is_empty() {
             return Self::error_result("Command cannot be empty.", None);
@@ -399,6 +410,7 @@ impl ShellTool {
             params.timeout_secs,
             working_dir,
             login_path_ref,
+            cancel,
         )
         .await
         {
@@ -439,6 +451,7 @@ impl ShellTool {
             stderr: stderr_result.text,
             exit_code: execution.exit_code,
             timed_out: execution.timed_out,
+            cancelled: execution.cancelled,
             output_truncated: execution.output_truncated,
             output_collection_error: execution.output_collection_error.clone(),
         };
@@ -462,7 +475,10 @@ impl ShellTool {
         .filter_map(|t| t.as_ref().map(truncation_notice))
         .collect();
 
-        let is_error = if execution.timed_out {
+        let is_error = if execution.cancelled {
+            rendered.push_str("\n\nCommand cancelled");
+            true
+        } else if execution.timed_out {
             if let Some(timeout_secs) = params.timeout_secs {
                 rendered.push_str(&format!(
                     "\n\nCommand timed out after {} seconds",
@@ -517,6 +533,7 @@ impl ShellTool {
             stderr: message.to_string(),
             exit_code,
             timed_out: false,
+            cancelled: false,
             output_truncated: false,
             output_collection_error: None,
         };
@@ -531,8 +548,22 @@ struct ExecutionOutput {
     lines: Vec<(bool, String)>,
     exit_code: Option<i32>,
     timed_out: bool,
+    cancelled: bool,
     output_truncated: bool,
     output_collection_error: Option<String>,
+}
+
+/// Why the shell stopped being waited on.
+enum WaitOutcome {
+    Exited(Option<i32>),
+    TimedOut,
+    Cancelled,
+}
+
+/// Kill the shell and reap it, so it never outlives the tool call.
+async fn terminate(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 async fn run_command(
@@ -540,6 +571,7 @@ async fn run_command(
     timeout_secs: Option<u64>,
     working_dir: Option<&std::path::Path>,
     login_path: Option<&str>,
+    cancel: &CancellationToken,
 ) -> Result<ExecutionOutput, String> {
     let mut command = build_shell_command(command_line, working_dir, login_path);
 
@@ -564,25 +596,43 @@ async fn run_command(
     let output_task = tokio::spawn(collect_tagged_lines(child_stdout, child_stderr, tx));
     let abort_handle = output_task.abort_handle();
 
-    let mut timed_out = false;
-    let exit_code = if let Some(timeout_secs) = timeout_secs.filter(|value| *value > 0) {
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await {
-            Ok(wait_result) => wait_result
-                .map_err(|error| format!("Failed waiting on shell command: {}", error))?
-                .code(),
-            Err(_) => {
-                timed_out = true;
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                None
+    let outcome = if let Some(timeout_secs) = timeout_secs.filter(|value| *value > 0) {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => WaitOutcome::Cancelled,
+            wait_result = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()) => {
+                match wait_result {
+                    Ok(status) => WaitOutcome::Exited(
+                        status
+                            .map_err(|error| format!("Failed waiting on shell command: {}", error))?
+                            .code(),
+                    ),
+                    Err(_) => WaitOutcome::TimedOut,
+                }
             }
         }
     } else {
-        child
-            .wait()
-            .await
-            .map_err(|error| format!("Failed waiting on shell command: {}", error))?
-            .code()
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => WaitOutcome::Cancelled,
+            status = child.wait() => WaitOutcome::Exited(
+                status
+                    .map_err(|error| format!("Failed waiting on shell command: {}", error))?
+                    .code(),
+            ),
+        }
+    };
+
+    let (exit_code, timed_out, cancelled) = match outcome {
+        WaitOutcome::Exited(code) => (code, false, false),
+        WaitOutcome::TimedOut => {
+            terminate(&mut child).await;
+            (None, true, false)
+        }
+        WaitOutcome::Cancelled => {
+            terminate(&mut child).await;
+            (None, false, true)
+        }
     };
 
     const OUTPUT_DRAIN_TIMEOUT_MILLIS: u64 = 500;
@@ -621,6 +671,7 @@ async fn run_command(
         lines,
         exit_code,
         timed_out,
+        cancelled,
         output_truncated,
         output_collection_error,
     })
@@ -699,6 +750,10 @@ fn build_shell_command(
     };
 
     command.set_no_window();
+    // Backstop for cancellation paths that abort the task instead of signalling
+    // the token: dropping the Child then still kills the shell rather than
+    // detaching it.
+    command.kill_on_drop(true);
     command
 }
 
@@ -882,6 +937,7 @@ mod tests {
     async fn shell_uses_working_dir_for_relative_execution() {
         let dir = tempfile::tempdir().unwrap();
         let tool = ShellTool::new_for_test().unwrap();
+        let cancel = CancellationToken::new();
         let result = tool
             .shell_with_cwd(
                 ShellParams {
@@ -889,6 +945,7 @@ mod tests {
                     timeout_secs: None,
                 },
                 Some(dir.path()),
+                &cancel,
             )
             .await;
 
@@ -1040,6 +1097,154 @@ mod tests {
         slots.sort();
         let expected: Vec<usize> = (0..OUTPUT_SLOTS).collect();
         assert_eq!(slots, expected);
+    }
+
+    /// True until the pid is reaped and gone.
+    #[cfg(not(windows))]
+    fn pid_is_alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .expect("kill -0 should run")
+            .success()
+    }
+
+    #[cfg(not(windows))]
+    async fn wait_for_exit(pid: &str) -> bool {
+        for _ in 0..50 {
+            if !pid_is_alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_cancellation_kills_the_running_command() {
+        let tool = ShellTool::new_for_test().unwrap();
+        let cancel = CancellationToken::new();
+
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            trigger.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        let result = tool
+            .shell_with_cwd(
+                ShellParams {
+                    command: "echo shellpid:$$ && sleep 30".to_string(),
+                    timeout_secs: None,
+                },
+                None,
+                &cancel,
+            )
+            .await;
+
+        assert!(
+            start.elapsed().as_secs() < 30,
+            "cancellation should not wait for the 300s sleep"
+        );
+        assert_eq!(result.is_error, Some(true));
+
+        let shell_output = extract_shell_output(&result);
+        assert!(shell_output.cancelled, "should report cancellation");
+        assert!(!shell_output.timed_out, "cancel is not a timeout");
+        assert!(shell_output.exit_code.is_none(), "killed shell has no code");
+        assert!(extract_text(&result).contains("Command cancelled"));
+
+        let pid = extract_text(&result)
+            .lines()
+            .find_map(|line| line.strip_prefix("shellpid:"))
+            .map(str::trim)
+            .expect("expected shellpid in output")
+            .to_string();
+        assert!(
+            wait_for_exit(&pid).await,
+            "cancelled shell {pid} should be killed, not orphaned"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_reports_cancellation_when_token_is_already_cancelled() {
+        let tool = ShellTool::new_for_test().unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = tool
+            .shell_with_cwd(
+                ShellParams {
+                    command: "sleep 300".to_string(),
+                    timeout_secs: None,
+                },
+                None,
+                &cancel,
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(extract_shell_output(&result).cancelled);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_times_out_and_kills_the_command() {
+        let tool = ShellTool::new_for_test().unwrap();
+        let result = tool
+            .shell_with_cwd(
+                ShellParams {
+                    command: "echo shellpid:$$ && sleep 30".to_string(),
+                    timeout_secs: Some(1),
+                },
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(true));
+        let shell_output = extract_shell_output(&result);
+        assert!(shell_output.timed_out);
+        assert!(!shell_output.cancelled, "timeout is not a cancellation");
+        assert!(shell_output.exit_code.is_none());
+        assert!(extract_text(&result).contains("Command timed out after 1 seconds"));
+
+        let pid = extract_text(&result)
+            .lines()
+            .find_map(|line| line.strip_prefix("shellpid:"))
+            .map(str::trim)
+            .expect("expected shellpid in output")
+            .to_string();
+        assert!(
+            wait_for_exit(&pid).await,
+            "timed-out shell {pid} should be killed, not orphaned"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_completes_normally_with_a_live_cancellation_token() {
+        let tool = ShellTool::new_for_test().unwrap();
+        let result = tool
+            .shell_with_cwd(
+                ShellParams {
+                    command: "echo hello".to_string(),
+                    timeout_secs: Some(30),
+                },
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        let shell_output = extract_shell_output(&result);
+        assert!(!shell_output.cancelled);
+        assert!(!shell_output.timed_out);
+        assert_eq!(shell_output.exit_code, Some(0));
+        assert!(extract_text(&result).contains("hello"));
     }
 
     #[cfg(not(windows))]

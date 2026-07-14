@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::StreamExt;
 use bharatcode_core::agents::{Agent, AgentEvent, SessionConfig};
 use bharatcode_core::config::GooseMode;
 use bharatcode_core::conversation::message::{Message, MessageContent};
@@ -13,6 +12,7 @@ use bharatcode_core::session::Session;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
+use futures::StreamExt;
 use rmcp::model::Tool;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

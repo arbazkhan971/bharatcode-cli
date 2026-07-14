@@ -14,7 +14,7 @@
 //!     [`get`] looks one up by id. These back the re-exports
 //!     `commands::tutorials_list` / `commands::tutorial`, which the onboarding
 //!     wizard consumes at integration to enumerate the available walkthroughs.
-//!   * **Builtin skill** — `crates/goose/src/skills/builtins/tutorials.md` is
+//!   * **Builtin skill** — `crates/bharatcode-core/src/skills/builtins/tutorials.md` is
 //!     auto-discovered by the skills loader and surfaced in `skills list` and the
 //!     platform-extensions system prompt, so the agent can offer to walk a user
 //!     through any of these workflows.

@@ -19,8 +19,9 @@ use crate::agents::subagent_handler::{run_subagent_task, SubagentRunParams};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::{AgentConfig, GoosePlatform};
 use crate::config::permission::PermissionManager;
-use crate::config::{Config, GooseMode};
+use crate::config::Config;
 use crate::model_config::model_config_from_user_config;
+use crate::permission::approval_mode::subagent_mode;
 use crate::recipe::Recipe;
 use crate::session::SessionType;
 use rmcp::model::{CallToolResult, Content};
@@ -97,21 +98,22 @@ impl DelegateTool {
             .build()
             .map_err(|e| format!("failed to build recipe: {e}"))?;
 
+        let subagent_mode = subagent_mode(session.goose_mode);
+
         let extensions = Vec::new();
         let task_config = TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
             .with_max_turns(params.max_turns);
 
-        // Subagents run in Auto mode: approval-gated modes would block on a
-        // confirmation channel the parent never reads.
         let agent_config = AgentConfig::new(
             self.context.session_manager.clone(),
             PermissionManager::instance(),
             None,
-            GooseMode::Auto,
+            subagent_mode,
             true,
             GoosePlatform::GooseCli,
         )
-        .with_use_login_shell_path(self.context.use_login_shell_path);
+        .with_use_login_shell_path(self.context.use_login_shell_path)
+        .with_unattended(true);
 
         let subagent_session = self
             .context
@@ -120,7 +122,7 @@ impl DelegateTool {
                 task_config.parent_working_dir.clone(),
                 "Delegated task".to_string(),
                 SessionType::SubAgent,
-                GooseMode::Auto,
+                subagent_mode,
             )
             .await
             .map_err(|e| format!("failed to create subagent session: {e}"))?;

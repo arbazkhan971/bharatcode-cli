@@ -9,8 +9,8 @@
 #   bash scripts/test_subagents.sh
 #
 # Knobs:
-#   GOOSE_PROVIDER (default: anthropic)
-#   GOOSE_MODEL    (default: claude-haiku-4-5)
+#   BHARATCODE_PROVIDER (default: anthropic)
+#   BHARATCODE_MODEL    (default: claude-haiku-4-5)
 #   SKIP_BUILD     skip cargo build (assumes target/debug/goose already exists)
 #   KEEP_TESTDIR   don't rm the temp workdir on exit (for debugging)
 #
@@ -40,11 +40,11 @@ SCRIPT_DIR=$(pwd)
 GOOSE_BIN="$SCRIPT_DIR/target/debug/goose"
 export PATH="$SCRIPT_DIR/target/debug:$PATH"
 
-export GOOSE_PROVIDER="${GOOSE_PROVIDER:-anthropic}"
-export GOOSE_MODEL="${GOOSE_MODEL:-claude-haiku-4-5}"
+export BHARATCODE_PROVIDER="${BHARATCODE_PROVIDER:-anthropic}"
+export BHARATCODE_MODEL="${BHARATCODE_MODEL:-claude-haiku-4-5}"
 
-echo "Using provider: $GOOSE_PROVIDER"
-echo "Using model:    $GOOSE_MODEL"
+echo "Using provider: $BHARATCODE_PROVIDER"
+echo "Using model:    $BHARATCODE_MODEL"
 echo ""
 
 TESTDIR=$(mktemp -d)

@@ -1,7 +1,9 @@
 import fs from "fs";
 import path from "path";
 
-const GITHUB_BASE_URL = "https://github.com/aaif-goose/goose/blob/main";
+const GITHUB_BASE_URL =
+  "https://github.com/arbazkhan971/bharatcode-cli/blob/main";
+const MAX_FILE_BYTES = 512 * 1024;
 
 function getCodebaseDir(): string {
   return process.env.CODEBASE_PATH || path.join(process.cwd(), "../..");
@@ -15,6 +17,38 @@ function generateGitHubUrl(filePath: string, startLine?: number): string {
   return url;
 }
 
+function isWithin(root: string, target: string): boolean {
+  return target === root || target.startsWith(root + path.sep);
+}
+
+function resolveAllowedFile(filePath: string): string {
+  const baseDir = fs.realpathSync(path.resolve(getCodebaseDir()));
+  const lexicalPath = path.resolve(baseDir, filePath);
+  if (!isWithin(baseDir, lexicalPath)) {
+    throw new Error("Invalid file path - directory traversal not allowed");
+  }
+
+  const allowedRoots = ["ui", "crates"]
+    .map((name) => path.join(baseDir, name))
+    .filter(
+      (candidate) =>
+        fs.existsSync(candidate) && !fs.lstatSync(candidate).isSymbolicLink(),
+    )
+    .map((candidate) => fs.realpathSync(candidate));
+  const stat = fs.lstatSync(lexicalPath);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`Path is not a regular source file: ${filePath}`);
+  }
+  const realPath = fs.realpathSync(lexicalPath);
+  if (!allowedRoots.some((root) => isWithin(root, realPath))) {
+    throw new Error("Invalid file path - only ui/ and crates/ source files are readable");
+  }
+  if (stat.size > MAX_FILE_BYTES) {
+    throw new Error(`File is too large to view safely: ${filePath}`);
+  }
+  return realPath;
+}
+
 function getCodeChunk(
   filePath: string,
   startLine: number = 0,
@@ -25,23 +59,7 @@ function getCodeChunk(
   totalLines: number;
   githubUrl: string;
 } {
-  const baseDir = path.resolve(getCodebaseDir());
-  const fullPath = path.resolve(path.join(baseDir, filePath));
-
-  if (!fullPath.startsWith(baseDir + "/")) {
-    throw new Error("Invalid file path - directory traversal not allowed");
-  }
-
-  if (!fs.existsSync(fullPath)) {
-    throw new Error(`File not found: ${filePath}`);
-  }
-
-  const stat = fs.statSync(fullPath);
-  if (stat.isDirectory()) {
-    throw new Error(
-      `Path is a directory, not a file: ${filePath}. Use search_codebase with scope to explore directories, or list_codebase_files to list directory contents.`,
-    );
-  }
+  const fullPath = resolveAllowedFile(filePath);
 
   const content = fs.readFileSync(fullPath, "utf-8");
   const lines = content.split("\n");

@@ -49,15 +49,21 @@
          * Store guest HTML on the server and get a nonce for retrieval.
          * This allows the guest iframe to load from a real HTTPS URL
          * instead of srcdoc (which has about: protocol).
+         *
+         * The outer CSP is sent along so the server can apply the very same policy to
+         * the guest document. A CSP is not inherited across a real URL navigation, so
+         * without this the guest - the only untrusted code here - would run unrestricted.
          */
         async function storeGuestHtml(html) {
           var proxyParams = getProxyParams();
+          var cspMeta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
           var response = await fetch(proxyParams.baseUrl + '/mcp-app-guest', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               secret: proxyParams.secret,
-              html: html
+              html: html,
+              csp: cspMeta ? cspMeta.content : ''
             })
           });
 
@@ -66,7 +72,24 @@
           }
 
           var data = await response.json();
+          if (typeof data.nonce !== 'string' || !data.nonce) {
+            throw new Error('Nonce missing from store response');
+          }
           return data.nonce;
+        }
+
+        function renderSandboxError(message) {
+          if (guestIframe) {
+            guestIframe.remove();
+            guestIframe = null;
+          }
+
+          document.body.textContent = '';
+          var errorElement = document.createElement('div');
+          errorElement.setAttribute('role', 'alert');
+          errorElement.style.cssText = 'box-sizing:border-box; width:100%; height:100%; padding:16px; font:13px system-ui, sans-serif;';
+          errorElement.textContent = message;
+          document.body.appendChild(errorElement);
         }
 
         async function createGuestIframe(html, permissions) {
@@ -76,11 +99,19 @@
 
           guestIframe = document.createElement('iframe');
 
-          // Sandbox permissions for the Guest UI
+          // Sandbox permissions for the Guest UI.
           // allow-scripts: needed for the app to run
-          // allow-same-origin: needed for localStorage, cookies, and real URL context
           // allow-forms: needed if the app has forms
-          guestIframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+          //
+          // allow-same-origin is deliberately absent. The guest is served from this same
+          // origin, so granting it would place untrusted app code in the proxy's origin:
+          // it could read the secret out of the proxy's own URL, call the authenticated
+          // REST API with it, and strip this very sandbox attribute off itself. Without
+          // it the guest gets an opaque origin and can only reach the host by postMessage.
+          guestIframe.setAttribute('sandbox', 'allow-scripts allow-forms');
+
+          // Keep the proxy URL (which carries the secret) out of the guest's document.referrer
+          guestIframe.referrerPolicy = 'no-referrer';
 
           // Build Permission Policy allow attribute from requested permissions
           // These control access to sensitive browser APIs like camera, microphone, etc.
@@ -99,14 +130,19 @@
           // This gives the guest iframe a real https:// URL instead of about:srcdoc,
           // which is required by SDKs (like Square Web Payments) that check
           // window.location.protocol for secure context verification.
+          //
+          // The nonce is a single-use capability: it is all the guest URL carries, so a
+          // guest script reading its own location learns nothing it can replay.
           try {
             var nonce = await storeGuestHtml(html);
             var proxyParams = getProxyParams();
-            guestIframe.src = proxyParams.baseUrl + '/mcp-app-guest?secret=' + encodeURIComponent(proxyParams.secret) + '&nonce=' + encodeURIComponent(nonce);
+            guestIframe.src = proxyParams.baseUrl + '/mcp-app-guest?nonce=' + encodeURIComponent(nonce);
           } catch (e) {
-            // Fallback to srcdoc if the store endpoint is not available
-            console.warn('Failed to use /mcp-app-guest endpoint, falling back to srcdoc:', e);
-            guestIframe.srcdoc = html;
+            // Fail closed: an about:srcdoc guest would inherit this document's URL as its
+            // referrer, handing the secret to the app we are trying to contain.
+            console.error('Failed to store MCP app guest HTML:', e);
+            renderSandboxError('Unable to load MCP app sandbox.');
+            return;
           }
 
           document

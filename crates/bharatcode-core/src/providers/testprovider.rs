@@ -12,10 +12,10 @@ use super::base::stream_from_single_message;
 use super::base::{MessageStream, Provider, ProviderDef, ProviderMetadata};
 use crate::conversation::message::{Message, ToolResponse};
 use crate::utils::bytes_to_hex;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::ProviderUsage;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
+use futures::future::BoxFuture;
 use rmcp::model::{CallToolResult, Tool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,8 +227,8 @@ impl Provider for TestProvider {
 mod tests {
     use super::*;
     use crate::conversation::message::{Message, MessageContent};
-    use chrono::Utc;
     use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
+    use chrono::Utc;
     use rmcp::model::{RawTextContent, Role, TextContent};
     use std::env;
 

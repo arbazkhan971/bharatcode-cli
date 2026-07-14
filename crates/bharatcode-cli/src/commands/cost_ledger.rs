@@ -16,9 +16,9 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, FixedOffset, Utc};
 use bharatcode_core::config::Config;
 use bharatcode_core::session::SessionManager;
+use chrono::{DateTime, FixedOffset, Utc};
 
 /// India Standard Time (UTC+05:30). BharatCode targets India, so "today" and
 /// "this month" spend buckets are computed against IST calendar boundaries
@@ -92,9 +92,7 @@ fn group_indian(n: u64) -> String {
     let head_len = len - 3;
     let mut out = String::new();
     for (idx, ch) in digits.iter().enumerate() {
-        if idx == head_len {
-            out.push(',');
-        } else if idx > 0 && idx < head_len && (head_len - idx) % 2 == 0 {
+        if idx == head_len || (idx > 0 && idx < head_len && (head_len - idx).is_multiple_of(2)) {
             out.push(',');
         }
         out.push(*ch);

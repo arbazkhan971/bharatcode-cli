@@ -1,5 +1,5 @@
 ---
-source: crates/goose/src/agents/prompt_manager.rs
+source: crates/bharatcode-core/src/agents/prompt_manager.rs
 assertion_line: 650
 expression: system_prompt
 ---

@@ -20,7 +20,7 @@
 fn primary_subtag(raw: &str) -> String {
     raw.trim()
         .to_ascii_lowercase()
-        .split(|c| c == '_' || c == '-' || c == '.')
+        .split(['_', '-', '.'])
         .next()
         .unwrap_or("")
         .to_string()
@@ -50,7 +50,7 @@ pub fn badge(locale_tag: &str) -> String {
 /// (e.g. `parse_lang_command("/lang ta") == Some("ta")`). Returns `None` for any
 /// non-matching line, including a bare `/lang` with no argument.
 pub fn parse_lang_command(line: &str) -> Option<String> {
-    let mut parts = line.trim().split_whitespace();
+    let mut parts = line.split_whitespace();
     if parts.next()? != "/lang" {
         return None;
     }

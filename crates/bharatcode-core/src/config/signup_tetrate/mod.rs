@@ -87,7 +87,7 @@ impl PkceAuthFlow {
         let response = client
             .post(TETRATE_TOKEN_URL)
             .header("X-Title", "bharatcode")
-            .header("Referer", "https://github.com/aaif-bharatcode/bharatcode")
+            .header("Referer", "https://github.com/arbazkhan971/bharatcode-cli")
             .json(&request_body)
             .send()
             .await?;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a release risk assessment report for a Goose release PR.
+Generate a release risk assessment report for a BharatCode release PR.
 
 Usage:
     .release_risk_report.py --version 1.27.0
@@ -15,21 +15,19 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-REPO = "aaif-goose/goose"
+REPO = "arbazkhan971/bharatcode-cli"
 
 # Paths considered documentation-only
-DOC_PATTERNS = [
-    r"^documentation/",
-]
+DOC_PATTERNS = [r"^[^/]+\.md$"]
 
 # Paths considered high-risk core code
 CORE_PATHS = [
-    "crates/goose/src/agents/",
-    "crates/goose/src/providers/",
-    "crates/goose-server/",
-    "crates/goose-cli/",
-    "crates/goose/src/session",
-    "crates/goose/src/permission",
+    "crates/bharatcode-core/src/agents/",
+    "crates/bharatcode-core/src/providers/",
+    "crates/bharatcode-server/",
+    "crates/bharatcode-cli/",
+    "crates/bharatcode-core/src/session",
+    "crates/bharatcode-core/src/permission",
 ]
 
 # Dependency lock files (safe to skip — lock files only, not manifests)

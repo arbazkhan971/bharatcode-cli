@@ -287,9 +287,9 @@ async fn run_now_handler(
     match scheduler.run_now(&id).await {
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
         Err(e) => match e {
-            bharatcode_core::scheduler::SchedulerError::JobNotFound(msg) => Err(ErrorResponse::not_found(
-                format!("Schedule not found: {}", msg),
-            )),
+            bharatcode_core::scheduler::SchedulerError::JobNotFound(msg) => Err(
+                ErrorResponse::not_found(format!("Schedule not found: {}", msg)),
+            ),
             bharatcode_core::scheduler::SchedulerError::AnyhowError(ref err) => {
                 // Check if this is a cancellation error
                 if err.to_string().contains("was successfully cancelled") {

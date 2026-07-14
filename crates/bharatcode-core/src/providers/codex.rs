@@ -1,9 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::thinking::ThinkingEffort;
+use futures::future::BoxFuture;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Write;
@@ -151,6 +151,9 @@ impl CodexProvider {
 
         let mut cmd = Command::new(&self.command);
         configure_subprocess(&mut cmd);
+        // The turn owns this child. Without this, cancelling the turn drops the
+        // stream future and tokio detaches the Codex CLI, leaving it running.
+        cmd.kill_on_drop(true);
 
         // Propagate extended PATH so the codex subprocess can find Node.js
         // and other dependencies (especially when launched from the desktop app
@@ -763,6 +766,90 @@ mod tests {
     use bharatcode_test_support::TEST_IMAGE_B64;
     use std::collections::HashMap;
     use test_case::test_case;
+
+    /// A stand-in `codex` binary that records its pid and then never exits, so a
+    /// turn awaiting it can be cancelled mid-flight.
+    #[cfg(not(windows))]
+    fn hanging_cli(dir: &Path, pid_file: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = dir.join("fake-codex");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(not(windows))]
+    fn read_pid(pid_file: &Path) -> String {
+        for _ in 0..100 {
+            if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                if !pid.trim().is_empty() {
+                    return pid.trim().to_string();
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("stand-in CLI never recorded its pid");
+    }
+
+    /// Gone or reaped. A zombie counts as exited: the kernel keeps the pid
+    /// around until tokio's orphan reaper collects it.
+    #[cfg(not(windows))]
+    fn wait_for_exit(pid: &str) -> bool {
+        for _ in 0..100 {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .expect("ps should run");
+            let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if stat.is_empty() || stat.starts_with('Z') {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn cancelled_turn_kills_the_codex_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let provider = CodexProvider {
+            command: hanging_cli(dir.path(), &pid_file),
+            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            name: "codex".to_string(),
+            reasoning_effort: None,
+            skip_git_check: true,
+            mcp_config_overrides: Vec::new(),
+            mode_by_session: tokio::sync::RwLock::new(HashMap::new()),
+        };
+
+        let messages = vec![Message::user().with_text("hello")];
+        let turn = provider.execute_command("system", &messages, &[], GooseMode::Auto);
+
+        // The CLI never exits, so the turn is parked reading its stdout when the
+        // timeout drops the future — the same drop that turn cancellation causes.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), turn)
+                .await
+                .is_err(),
+            "stand-in CLI should still be running"
+        );
+
+        let pid = read_pid(&pid_file);
+        assert!(
+            wait_for_exit(&pid),
+            "codex child {pid} must not outlive the cancelled turn"
+        );
+    }
 
     #[test]
     fn test_codex_metadata() {

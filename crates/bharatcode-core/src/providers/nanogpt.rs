@@ -5,12 +5,12 @@ use super::retry::ProviderRetry;
 use crate::conversation::message::Message;
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::formats::openai::create_request;
 use bharatcode_providers::images::ImageFormat;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use rmcp::model::Tool;
 
 pub const NANOGPT_PROVIDER_NAME: &str = "nano-gpt";

@@ -78,7 +78,11 @@ fn signature_of(line: &str) -> String {
         .find('{')
         .or_else(|| line.find(" =>"))
         .unwrap_or(line.len());
-    line[..cut].trim_end().trim_end_matches(':').to_string()
+    line.get(..cut)
+        .unwrap_or(line)
+        .trim_end()
+        .trim_end_matches(':')
+        .to_string()
 }
 
 /// Build the retained "public API to document" digest from the conversation,

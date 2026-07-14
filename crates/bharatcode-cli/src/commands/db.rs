@@ -25,9 +25,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use console::style;
 use bharatcode_core::config::paths::Paths;
 use bharatcode_core::session::session_manager::{DB_NAME, SESSIONS_FOLDER};
+use console::style;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite};
 
@@ -193,10 +193,11 @@ pub async fn handle_db(opts: DbOptions) -> Result<()> {
         path.display()
     );
     println!(
-        "  {:<14} {} ({})",
+        "  {:<14} {} ({} pages x {} B)",
         label("db.size", "Size:"),
         human_bytes(before.size_bytes()),
-        format!("{} pages x {} B", before.page_count, before.page_size),
+        before.page_count,
+        before.page_size,
     );
     println!(
         "  {:<14} {} ({} pages)",

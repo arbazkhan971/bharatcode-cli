@@ -1,9 +1,9 @@
 use anyhow::Result;
-use futures::StreamExt;
 use bharatcode_core::conversation::message::{Message, MessageContent};
 use bharatcode_core::providers::base::Provider;
 use bharatcode_core::providers::tetrate::TetrateProvider;
 use bharatcode_providers::model::ModelConfig;
+use futures::StreamExt;
 use rmcp::model::Tool;
 use rmcp::object;
 use serial_test::serial;

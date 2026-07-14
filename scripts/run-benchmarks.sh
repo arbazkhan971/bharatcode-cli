@@ -155,8 +155,8 @@ for ((i=0; i<$COUNT; i++)); do
   echo "## Provider: $provider, Model: $model" >> "$SUMMARY_FILE"
   
   # Set environment variables for this provider/model instead of using configure
-  export GOOSE_PROVIDER="$provider"
-  export GOOSE_MODEL="$model"
+  export BHARATCODE_PROVIDER="$provider"
+  export BHARATCODE_MODEL="$model"
   
   # Set toolshim environment variables if enabled
   if [ "$TOOLSHIM" = true ]; then

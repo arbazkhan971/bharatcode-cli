@@ -2,7 +2,7 @@ data: {"id":"chatcmpl-D64jowotwkWXsd3RqhveZzRGUuOVu","object":"chat.completion.c
 
 data: {"id":"chatcmpl-D64jowotwkWXsd3RqhveZzRGUuOVu","object":"chat.completion.chunk","created":1770340552,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}],"usage":null,"obfuscation":"yI"}
 
-data: {"id":"chatcmpl-D64jowotwkWXsd3RqhveZzRGUuOVu","object":"chat.completion.chunk","created":1770340552,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" Goose"},"finish_reason":null}],"usage":null,"obfuscation":"6"}
+data: {"id":"chatcmpl-D64jowotwkWXsd3RqhveZzRGUuOVu","object":"chat.completion.chunk","created":1770340552,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" BharatCode"},"finish_reason":null}],"usage":null,"obfuscation":"6"}
 
 data: {"id":"chatcmpl-D64jowotwkWXsd3RqhveZzRGUuOVu","object":"chat.completion.chunk","created":1770340552,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"!\n"},"finish_reason":null}],"usage":null,"obfuscation":"ocAA"}
 

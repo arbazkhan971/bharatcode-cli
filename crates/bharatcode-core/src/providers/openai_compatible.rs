@@ -1,8 +1,8 @@
 use anyhow::Error;
 use async_stream::try_stream;
-use futures::TryStreamExt;
 use bharatcode_providers::conversation::token_usage::ProviderUsage;
 use bharatcode_providers::images::ImageFormat;
+use futures::TryStreamExt;
 use reqwest::Response;
 #[cfg(test)]
 use reqwest::StatusCode;

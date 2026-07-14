@@ -2,9 +2,9 @@
 //!
 //! This is the published API surface exposed to Python and Kotlin. Right now it
 //! is a minimal `ping` -> `pong` round-trip that proves the uniffi
-//! infrastructure end to end without depending on the `goose` core crate.
+//! infrastructure end to end without depending on the BharatCode core crate.
 //!
-//! To build the real SDK, add `goose` (and whatever else you need) as
+//! To build the real SDK, add `bharatcode-core` (and whatever else you need) as
 //! dependencies and replace the [`Client`] methods below with the actual
 //! agent surface.
 

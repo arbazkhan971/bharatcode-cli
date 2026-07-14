@@ -23,9 +23,9 @@
 //! Original BharatCode work; not ported from any third party.
 
 use anyhow::Result;
-use clap::{ArgAction, Command};
 use bharatcode_core::custom_requests::SourceType;
 use bharatcode_core::doc_manifest;
+use clap::{ArgAction, Command};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -110,9 +110,7 @@ fn slugify(name: &str) -> String {
     for ch in name.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
-        } else if ch == '-' || ch == '_' {
-            out.push('-');
-        } else if ch.is_whitespace() {
+        } else if ch == '-' || ch == '_' || ch.is_whitespace() {
             out.push('-');
         }
         // Drop anything else.

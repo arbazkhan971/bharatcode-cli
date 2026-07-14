@@ -284,7 +284,7 @@ fn main() {
 }
 
 fn is_unstable_method(method: &str) -> bool {
-    method.contains("_bharatcode/unstable")
+    method.contains("_goose/unstable")
 }
 
 fn generated_type_name(name: &str, unstable_type_names: &BTreeSet<String>) -> String {

@@ -402,7 +402,7 @@ impl McpClientTrait for DeveloperClient {
         ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
-        _cancel_token: CancellationToken,
+        cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let working_dir = ctx.working_dir.as_deref();
         match name {
@@ -443,12 +443,22 @@ impl McpClientTrait for DeveloperClient {
                                 crate::security::shell_harden::Risk::Safe => {}
                             }
                         }
-                        let result = self.shell_tool.shell_with_cwd(params, working_dir).await;
+                        let result = self
+                            .shell_tool
+                            .shell_with_cwd(params, working_dir, &cancel_token)
+                            .await;
                         let mut result = Self::redact_shell_result(result);
                         if let Some(note) = advisory {
                             result
                                 .content
                                 .insert(0, Content::text(note).with_priority(0.0));
+                        }
+                        // A cancelled command may have mutated the tree partway
+                        // through, so its result is neither cacheable nor a
+                        // reliable signal about what the cache still holds.
+                        if cancel_token.is_cancelled() {
+                            result_cache::invalidate_all();
+                            return Ok(result);
                         }
                         if result_cache::arguments_are_read_only(&cache_args) {
                             result_cache::store_if_read_only(name, &cache_args, &result);

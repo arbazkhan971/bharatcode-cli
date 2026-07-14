@@ -1,10 +1,10 @@
-# goose-sdk
+# bharatcode-sdk
 
-The bindings layer for Goose. It houses the shared types used for both ACP and
-SDK access, and exposes a cross-language version of the Goose API.
+The bindings layer for BharatCode. It houses shared ACP and SDK types and exposes
+a cross-language version of the BharatCode API.
 
 With `--features uniffi` the crate compiles to native bindings for Python and
-Kotlin (namespace `aaif_goose` / `aaif.goose`). The published surface is
+Kotlin (namespace `bharatcode_sdk` / `dev.bharatcode.sdk`). The published surface is
 currently a `ping` -> `pong` stub in `src/bindings.rs` — the scaffold for the
 real implementation.
 

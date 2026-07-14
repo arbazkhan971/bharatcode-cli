@@ -255,7 +255,11 @@ fn replace_whole_word(haystack: &str, old: &str, new: &str) -> (String, usize) {
         // preserved correctly.
         let ch_len = utf8_char_len(bytes[i]);
         let end = (i + ch_len).min(bytes.len());
-        out.push_str(&haystack[i..end]);
+        out.push_str(
+            haystack
+                .get(i..end)
+                .expect("indices span one complete UTF-8 character"),
+        );
         i = end;
     }
 

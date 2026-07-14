@@ -24,8 +24,8 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use chrono::{DateTime, FixedOffset, Utc};
 use bharatcode_core::config::paths::Paths;
+use chrono::{DateTime, FixedOffset, Utc};
 
 /// Environment key that turns plan-file persistence on. Absent / falsey => fully
 /// disabled (default OFF — the plan flow is unchanged).

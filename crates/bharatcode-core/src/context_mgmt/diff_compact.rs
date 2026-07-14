@@ -52,7 +52,9 @@ pub fn looks_like_diff(text: &str) -> bool {
         let trimmed = line.trim_start();
         trimmed.starts_with("*** Begin Patch")
             || trimmed.starts_with("diff --git ")
-            || (trimmed.starts_with("@@ ") && trimmed[3..].contains("@@"))
+            || trimmed
+                .strip_prefix("@@ ")
+                .is_some_and(|rest| rest.contains("@@"))
     })
 }
 
@@ -92,7 +94,10 @@ pub fn summarize_diff(text: &str) -> String {
         }
 
         // A hunk marker (`@@ ... @@`) is counted against the current file.
-        if trimmed.starts_with("@@ ") && trimmed[3..].contains("@@") {
+        if trimmed
+            .strip_prefix("@@ ")
+            .is_some_and(|rest| rest.contains("@@"))
+        {
             let key = current.clone().unwrap_or_else(|| "(unknown)".to_string());
             entry(&mut order, &mut stats, &key);
             if let Some(s) = stats.get_mut(&key) {
@@ -185,28 +190,8 @@ fn message_has_diff(msg: &Message) -> bool {
     looks_like_diff(&message_text(msg))
 }
 
-/// Diff-aware pre-selection over `msgs`.
-///
-/// Keeps every non-diff message untouched and the newest [`KEEP_RECENT_DIFFS`]
-/// diff-bearing messages verbatim, while replacing older diff messages with a
-/// new message carrying only their compact summary. Message order is
-/// preserved. When the feature is disabled this is a strict identity pass
-/// (returns references to every input message in order), so callers can wire it
-/// in without changing default behavior.
-///
-/// `budget` is accepted for interface symmetry with other pre-selection hooks
-/// and to allow future budget-aware tuning; the current policy is governed by
-/// the recent-diff count rather than a hard token budget.
-pub fn select_diff_aware<'a>(msgs: &'a [Message], _budget: usize) -> Vec<&'a Message> {
-    if !is_enabled() {
-        return msgs.iter().collect();
-    }
-
-    msgs.iter().collect()
-}
-
-/// Owned, summary-rewriting variant of [`select_diff_aware`] for the compaction
-/// call site, which threads owned `Message` values. Keeps the newest
+/// Diff-aware pre-selection for the compaction call site, which threads owned
+/// `Message` values. Keeps the newest
 /// [`KEEP_RECENT_DIFFS`] diff messages verbatim and replaces older diff
 /// messages with a single-text summary message; non-diff messages pass through
 /// unchanged. When disabled it clones the input verbatim (identity).
@@ -343,9 +328,6 @@ mod tests {
             Message::assistant().with_text(begin_patch_blob()),
             Message::user().with_text("thanks"),
         ];
-        let selected = select_diff_aware(&msgs, 1000);
-        assert_eq!(selected.len(), msgs.len());
-
         let owned = select_diff_aware_owned(&msgs, 1000);
         assert_eq!(owned.len(), msgs.len());
         assert_eq!(owned[1].as_concat_text(), begin_patch_blob());

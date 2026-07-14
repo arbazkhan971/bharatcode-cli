@@ -19,11 +19,14 @@ pub mod logging;
 pub mod notify;
 pub mod project_tracker;
 pub mod recipes;
+pub mod release_info;
 pub mod scenario_tests;
+pub mod serve_registry;
 pub mod session;
 pub mod signal;
 pub mod subagent_settings;
 pub mod theme;
+pub mod ui_box;
 
 // Re-export commonly used types
 pub use cli::Cli;

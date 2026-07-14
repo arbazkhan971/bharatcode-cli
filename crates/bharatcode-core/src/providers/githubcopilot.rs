@@ -7,10 +7,10 @@ use crate::providers::openai_compatible::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::http;
-use chrono::{DateTime, Utc};
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::formats::openai::is_openai_responses_model;
 use bharatcode_providers::images::ImageFormat;
+use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,10 +37,10 @@ use crate::config::{Config, ConfigError};
 use crate::conversation::message::{Message, MessageContent};
 
 use crate::providers::base::{ConfigKey, MessageStream};
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use rmcp::model::{RawContent, Tool};
 use std::ops::Deref;
 

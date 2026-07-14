@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use bharatcode_providers::images::ImageFormat;
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 use super::api_client::{ApiClient, AuthMethod};

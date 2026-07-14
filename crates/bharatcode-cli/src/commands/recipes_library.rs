@@ -64,7 +64,9 @@ fn parse_meta(yaml: &str) -> RecipeMeta {
 pub fn print_library() {
     println!(
         "{}",
-        style(crate::tr!("recipes_library.header")).color256(208).bold()
+        style(crate::tr!("recipes_library.header"))
+            .color256(208)
+            .bold()
     );
     println!();
 

@@ -1,40 +1,38 @@
-//! Single source of truth for the release packaging matrix plus an offline
-//! checksum verifier.
+//! Single source of truth for the release packaging matrix.
 //!
-//! The v94 packaging feature centralises two things release/doctor tooling
-//! previously had to re-derive by hand:
+//! The v94 packaging feature centralises the artifact names release/doctor
+//! tooling previously had to re-derive by hand:
 //!
 //! * the **packaging matrix** - for each supported target triple, the exact
 //!   artifact filenames the build emits (`tar.bz2`, `zip`, `deb`, `rpm`), all
 //!   derived from the v5 `bharatcode-<triple>` naming the self-updater already
-//!   expects, plus the Homebrew formula stanza for the two macOS slices, and
-//! * an **offline verifier** that, given a built `dist/` directory, recomputes
-//!   SHA-256 over each artifact listed in `dist/SHA256SUMS` and classifies each
-//!   one as `Ok`, `Missing`, or `Mismatch`.
+//!   expects.
 //!
-//! The matrix is a `static` table so it is a compile-time constant, and the
-//! verifier is split into a pure `verify_listing` (over captured
-//! `(name, bytes)` pairs) plus a thin `verify_dir` wrapper that does the file
-//! I/O. That keeps the classification logic unit-testable with fixtures and no
-//! real files on disk.
+//! The matrix is a `static` table so it is a compile-time constant. Test-only
+//! helpers validate Homebrew rendering and checksum-manifest classification
+//! without adding unused release-tooling APIs to the runtime binary.
 //!
 //! Matrix summary lines are reached from `Config::packaging_summary` (wired in
-//! `config/base.rs`); the verifier's `dist/` location is resolved from the
-//! `BHARATCODE_DIST_DIR` config key (default `./dist`).
+//! `config/base.rs`).
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
 use crate::utils::bytes_to_hex;
 
 /// Default `dist/` directory the verifier targets when `BHARATCODE_DIST_DIR` is
 /// unset. Relative to the current working directory, matching how release
 /// tooling invokes the build.
-pub const DEFAULT_DIST_DIR: &str = "./dist";
+#[cfg(test)]
+const DEFAULT_DIST_DIR: &str = "./dist";
 
 /// Name of the checksum manifest the verifier reads inside `dist/`.
-pub const SHA256SUMS_NAME: &str = "SHA256SUMS";
+#[cfg(test)]
+const SHA256SUMS_NAME: &str = "SHA256SUMS";
 
 /// One row of the release packaging matrix: a target triple and the four
 /// artifact filenames the build emits for it.
@@ -99,11 +97,14 @@ pub static MATRIX: &[PackageTarget] = &[
 
 /// The two macOS triples the Homebrew formula ships, used by
 /// [`brew_formula_stanza`] to label the Intel / Apple-Silicon download blocks.
+#[cfg(test)]
 const BREW_X86_TRIPLE: &str = "x86_64-apple-darwin";
+#[cfg(test)]
 const BREW_ARM_TRIPLE: &str = "aarch64-apple-darwin";
 
 /// Look up the matrix row for a triple, if present.
-pub fn target_for(triple: &str) -> Option<&'static PackageTarget> {
+#[cfg(test)]
+fn target_for(triple: &str) -> Option<&'static PackageTarget> {
     MATRIX.iter().find(|t| t.triple == triple)
 }
 
@@ -111,7 +112,8 @@ pub fn target_for(triple: &str) -> Option<&'static PackageTarget> {
 ///
 /// Returns an empty vec for an unknown triple so a caller iterating user-supplied
 /// triples never panics.
-pub fn artifact_names(triple: &str) -> Vec<String> {
+#[cfg(test)]
+fn artifact_names(triple: &str) -> Vec<String> {
     match target_for(triple) {
         Some(t) => vec![
             t.tar_name.to_string(),
@@ -128,7 +130,8 @@ pub fn artifact_names(triple: &str) -> Vec<String> {
 ///
 /// The Intel block uses the `x86_64-apple-darwin` artifact and `sha_x86`; the
 /// Apple-Silicon block uses `aarch64-apple-darwin` and `sha_arm`.
-pub fn brew_formula_stanza(version: &str, sha_x86: &str, sha_arm: &str) -> String {
+#[cfg(test)]
+fn brew_formula_stanza(version: &str, sha_x86: &str, sha_arm: &str) -> String {
     let x86 = target_for(BREW_X86_TRIPLE).expect("x86_64-apple-darwin is in MATRIX");
     let arm = target_for(BREW_ARM_TRIPLE).expect("aarch64-apple-darwin is in MATRIX");
     let base = "https://github.com/lineupx/bharatcode/releases/download";
@@ -169,6 +172,7 @@ pub fn matrix_summary_lines() -> Vec<String> {
 
 /// Verification outcome for a single artifact listed in `SHA256SUMS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum ArtifactStatus {
     /// Artifact is present and its recomputed SHA-256 matches the manifest.
     Ok,
@@ -180,6 +184,7 @@ pub enum ArtifactStatus {
 
 /// Per-artifact verification result.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ArtifactResult {
     /// Artifact filename as listed in the manifest.
     pub name: String,
@@ -189,6 +194,7 @@ pub struct ArtifactResult {
 
 /// Aggregate report from a `dist/` verification.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct VerifyReport {
     /// One result per manifest entry, in manifest order.
     pub results: Vec<ArtifactResult>,
@@ -196,6 +202,7 @@ pub struct VerifyReport {
     pub manifest_missing: bool,
 }
 
+#[cfg(test)]
 impl VerifyReport {
     /// Count of artifacts with a given status.
     pub fn count(&self, status: ArtifactStatus) -> usize {
@@ -235,7 +242,8 @@ impl VerifyReport {
 /// each expected entry this recomputes SHA-256 over the matching present bytes
 /// and classifies the artifact. No file I/O, so tests can drive it with
 /// fixtures.
-pub fn verify_listing(
+#[cfg(test)]
+fn verify_listing(
     expected: &[(String, String)],
     present: &[(String, Vec<u8>)],
 ) -> Vec<ArtifactResult> {
@@ -262,6 +270,7 @@ pub fn verify_listing(
 
 /// Recompute the lowercase-hex SHA-256 of a byte slice via the crate's
 /// `bytes_to_hex` helper, matching the manifest's digest format.
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -274,7 +283,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// single space plus `*` binary marker). Blank lines and lines without a split
 /// are skipped. The name is taken verbatim after the separator, with a leading
 /// `*` binary marker and surrounding whitespace stripped.
-pub fn parse_sha256sums(contents: &str) -> Vec<(String, String)> {
+#[cfg(test)]
+fn parse_sha256sums(contents: &str) -> Vec<(String, String)> {
     contents
         .lines()
         .filter_map(|line| {
@@ -298,7 +308,8 @@ pub fn parse_sha256sums(contents: &str) -> Vec<(String, String)> {
 /// (when present) and classifies it via [`verify_listing`]. A missing manifest
 /// yields a report with `manifest_missing = true` and no results, so callers can
 /// distinguish "nothing to verify" from "all artifacts failed".
-pub fn verify_dir(dist: &Path) -> VerifyReport {
+#[cfg(test)]
+fn verify_dir(dist: &Path) -> VerifyReport {
     let manifest_path = dist.join(SHA256SUMS_NAME);
     let contents = match std::fs::read_to_string(&manifest_path) {
         Ok(c) => c,
@@ -328,7 +339,8 @@ pub fn verify_dir(dist: &Path) -> VerifyReport {
 
 /// Resolve the `dist/` directory to verify from a raw `BHARATCODE_DIST_DIR`
 /// value, falling back to [`DEFAULT_DIST_DIR`] when `None` or empty.
-pub fn dist_dir_from(raw: Option<&str>) -> PathBuf {
+#[cfg(test)]
+fn dist_dir_from(raw: Option<&str>) -> PathBuf {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         Some(s) => PathBuf::from(s),
         None => PathBuf::from(DEFAULT_DIST_DIR),

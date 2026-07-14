@@ -1,22 +1,22 @@
 //! ACP Client Example
 //!
-//! Spawns `goose acp` as a child process and sends it a completion request
+//! Spawns `bharatcode acp` as a child process and sends it a completion request
 //! using the Agent Client Protocol over stdio.
 //!
 //! # Prerequisites
 //!
-//! You must have goose built and a provider configured (`goose configure`).
+//! You must have BharatCode built and a provider configured (`bharatcode configure`).
 //!
 //! # Usage
 //!
 //! ```bash
-//! cargo run -p goose-sdk --example acp_client -- "What is 2 + 2?"
+//! cargo run -p bharatcode-sdk --example acp_client -- "What is 2 + 2?"
 //! ```
 //!
-//! Or with a custom goose binary path:
+//! Or with a custom BharatCode binary path:
 //!
 //! ```bash
-//! cargo run -p goose-sdk --example acp_client -- --goose-bin ./target/debug/goose "Explain Rust's ownership model in one sentence"
+//! cargo run -p bharatcode-sdk --example acp_client -- --bharatcode-bin ./target/debug/bharatcode "Explain Rust's ownership model in one sentence"
 //! ```
 
 use agent_client_protocol::schema::{
@@ -31,19 +31,19 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Parse args: [--goose-bin PATH] PROMPT
+    // Parse args: [--bharatcode-bin PATH] PROMPT
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (goose_bin, prompt) = parse_args(&args)?;
+    let (bharatcode_bin, prompt) = parse_args(&args)?;
 
-    eprintln!("🚀 Spawning: {} acp", goose_bin.display());
+    eprintln!("🚀 Spawning: {} acp", bharatcode_bin.display());
 
-    let mut child = tokio::process::Command::new(&goose_bin)
+    let mut child = tokio::process::Command::new(&bharatcode_bin)
         .arg("acp")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {e}", goose_bin.display()))?;
+        .map_err(|e| format!("Failed to spawn '{}': {e}", bharatcode_bin.display()))?;
 
     let child_stdin = child.stdin.take().expect("stdin should be piped");
     let child_stdout = child.stdout.take().expect("stdout should be piped");
@@ -136,14 +136,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn parse_args(args: &[String]) -> Result<(PathBuf, String), String> {
-    let mut goose_bin = PathBuf::from("goose");
+    let mut bharatcode_bin = PathBuf::from("bharatcode");
     let mut i = 0;
 
     while i < args.len() {
         match args[i].as_str() {
-            "--goose-bin" => {
+            "--bharatcode-bin" => {
                 i += 1;
-                goose_bin = PathBuf::from(args.get(i).ok_or("--goose-bin requires a value")?);
+                bharatcode_bin =
+                    PathBuf::from(args.get(i).ok_or("--bharatcode-bin requires a value")?);
             }
             _ => break,
         }
@@ -153,8 +154,8 @@ fn parse_args(args: &[String]) -> Result<(PathBuf, String), String> {
     let prompt = args[i..].join(" ");
 
     if prompt.is_empty() {
-        return Err("Usage: acp_client [--goose-bin PATH] PROMPT".into());
+        return Err("Usage: acp_client [--bharatcode-bin PATH] PROMPT".into());
     }
 
-    Ok((goose_bin, prompt))
+    Ok((bharatcode_bin, prompt))
 }

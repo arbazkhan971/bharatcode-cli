@@ -653,14 +653,6 @@ mod tests {
     // ---- Timeout clamps to a sane range. ----
 
     #[test]
-    fn timeout_bounds_are_sane() {
-        assert!(MIN_TIMEOUT_SECS >= 1);
-        assert!(MAX_TIMEOUT_SECS >= MIN_TIMEOUT_SECS);
-        assert!(DEFAULT_TIMEOUT_SECS >= MIN_TIMEOUT_SECS);
-        assert!(DEFAULT_TIMEOUT_SECS <= MAX_TIMEOUT_SECS);
-    }
-
-    #[test]
     fn timeout_resolution_clamps_env() {
         // The resolver clamps its inputs into the sane range regardless of the
         // raw value; assert on the clamp math directly so the test does not

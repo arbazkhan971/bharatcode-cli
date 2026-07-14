@@ -58,18 +58,8 @@ impl ProviderDef for ClaudeAcpProvider {
             let resolved_command = SearchPaths::builder()
                 .with_npm()
                 .resolve(CLAUDE_ACP_BINARY)?;
-            let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
-
-            let mode_mapping = HashMap::from([
-                // Closest to "autonomous": bypassPermissions skips confirmations.
-                (GooseMode::Auto, "bypassPermissions".to_string()),
-                // Claude Code's default matches "ask before risky actions".
-                (GooseMode::Approve, "default".to_string()),
-                // acceptEdits auto-accepts file edits but still prompts for risky ops.
-                (GooseMode::SmartApprove, "acceptEdits".to_string()),
-                // Plan mode disables tool execution, aligning with chat-only intent.
-                (GooseMode::Chat, "plan".to_string()),
-            ]);
+            let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
+            let mode_mapping = mode_mapping();
 
             let provider_config = AcpProviderConfig {
                 command: resolved_command,
@@ -87,5 +77,35 @@ impl ProviderDef for ClaudeAcpProvider {
             let metadata = Self::metadata();
             AcpProvider::connect(metadata.name, model, goose_mode, provider_config).await
         })
+    }
+}
+
+fn mode_mapping() -> HashMap<GooseMode, String> {
+    HashMap::from([
+        // Closest to "autonomous": bypassPermissions skips confirmations.
+        (GooseMode::Auto, "bypassPermissions".to_string()),
+        // Claude Code's default matches "ask before risky actions".
+        (GooseMode::Approve, "default".to_string()),
+        // acceptEdits auto-accepts file edits but still prompts for risky ops.
+        (GooseMode::SmartApprove, "acceptEdits".to_string()),
+        // Plan mode disables tool execution, aligning with chat-only intent.
+        (GooseMode::Chat, "plan".to_string()),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An absent BHARATCODE_MODE must not open the session in bypassPermissions.
+    #[test]
+    fn test_default_mode_does_not_bypass_permissions() {
+        assert_eq!(mode_mapping()[&GooseMode::default()], "acceptEdits");
+    }
+
+    /// Explicitly requesting Auto still bypasses permissions.
+    #[test]
+    fn test_auto_mode_remains_bypass_permissions() {
+        assert_eq!(mode_mapping()[&GooseMode::Auto], "bypassPermissions");
     }
 }

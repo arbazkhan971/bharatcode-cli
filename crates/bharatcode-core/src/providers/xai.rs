@@ -2,8 +2,8 @@ use super::api_client::{ApiClient, AuthMethod};
 use super::base::{ConfigKey, ProviderDef, ProviderMetadata};
 use super::openai_compatible::OpenAiCompatibleProvider;
 use anyhow::Result;
-use futures::future::BoxFuture;
 use bharatcode_providers::model::ModelConfig;
+use futures::future::BoxFuture;
 
 const XAI_PROVIDER_NAME: &str = "xai";
 pub const XAI_API_HOST: &str = "https://api.x.ai/v1";

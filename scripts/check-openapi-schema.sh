@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# Check if OpenAPI schema is up-to-date
-# This script generates the OpenAPI schema and compares it with the committed version
+COMMITTED="crates/bharatcode-server/ui/desktop/openapi.json"
+GENERATED="$(mktemp)"
+trap 'rm -f "$GENERATED"' EXIT
 
 echo "🔍 Checking OpenAPI schema is up-to-date..."
 
-# Check if the generated schema differs from the committed version
-echo "🔍 Comparing generated schema with committed version..."
-if ! git diff --ignore-space-change --exit-code ui/desktop/openapi.json ui/desktop/src/api/; then
+if [ ! -f "$COMMITTED" ]; then
+  echo "❌ Committed schema not found at $COMMITTED"
+  exit 1
+fi
+
+BHARATCODE_OPENAPI_OUTPUT="$GENERATED" \
+  cargo run --quiet -p bharatcode-server --bin generate_schema >/dev/null
+
+if ! diff -u --ignore-space-change "$COMMITTED" "$GENERATED"; then
   echo ""
   echo "❌ OpenAPI schema is out of date!"
   echo ""
-  echo "The generated OpenAPI schema differs from the committed version."
-  echo "This usually means that API types were added or modified without updating the schema."
+  echo "The schema generated from the server routes differs from the committed copy."
+  echo "This usually means API types were added or modified without updating the schema."
   echo ""
-  echo "To fix this issue:"
-  echo "1. Run 'just generate-openapi' locally"
-  echo "2. Commit the changes to ui/desktop/openapi.json and ui/desktop/src/api/"
-  echo "3. Push your changes"
-  echo ""
-  echo "Changes detected:"
-  git diff ui/desktop/openapi.json ui/desktop/src/api/
+  echo "Run 'just generate-openapi', then commit $COMMITTED."
   exit 1
 fi
 

@@ -97,8 +97,9 @@ pub fn count_cached(counter: &TokenCounter, msg: &Message) -> usize {
     count
 }
 
-/// Empty the cache. Exposed so callers (and tests) can force recomputation.
-pub fn clear() {
+/// Empty the cache so tests can force recomputation.
+#[cfg(test)]
+pub(crate) fn clear() {
     TOKEN_CACHE
         .lock()
         .expect("token cache mutex poisoned")
@@ -155,10 +156,10 @@ mod tests {
 
     #[tokio::test]
     async fn same_message_counted_once() {
+        let counter = counter().await;
         let _guard = super::lock_cache_tests();
         clear();
 
-        let counter = counter().await;
         let msg = Message::user().with_text("hello world, this is a repeated message");
 
         let first = count_cached(&counter, &msg);
@@ -176,10 +177,10 @@ mod tests {
 
     #[tokio::test]
     async fn distinct_messages_get_distinct_entries() {
+        let counter = counter().await;
         let _guard = super::lock_cache_tests();
         clear();
 
-        let counter = counter().await;
         let a = Message::user().with_text("first distinct message");
         let b = Message::user().with_text("second distinct message");
 
@@ -201,10 +202,10 @@ mod tests {
 
     #[tokio::test]
     async fn clear_empties_cache() {
+        let counter = counter().await;
         let _guard = super::lock_cache_tests();
         clear();
 
-        let counter = counter().await;
         let msg = Message::user().with_text("anything");
         count_cached(&counter, &msg);
         assert!(cache_contains(&msg), "entry present before clear");
@@ -215,10 +216,10 @@ mod tests {
 
     #[tokio::test]
     async fn eviction_caps_the_map() {
+        let counter = counter().await;
         let _guard = super::lock_cache_tests();
         clear();
 
-        let counter = counter().await;
         // Drive insertions past the cap; the wholesale drop keeps the map bounded.
         for i in 0..(MAX_CACHE_ENTRIES + 5) {
             count_cached(&counter, &Message::user().with_text(format!("evict-{i}")));
@@ -231,11 +232,11 @@ mod tests {
 
     #[tokio::test]
     async fn cached_sum_equals_direct_sum() {
+        let counter = counter().await;
         let _guard = super::lock_cache_tests();
         clear();
 
-        let counter = counter().await;
-        let messages = vec![
+        let messages = [
             Message::user().with_text("alpha message content"),
             Message::assistant().with_text("beta reply with more words here"),
             Message::user().with_text("alpha message content"), // duplicate, exercises a hit

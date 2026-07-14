@@ -13,30 +13,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      docs-only: ${{ steps.filter.outputs.docs-only }}
-      code: ${{ steps.filter.outputs.code }}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Check for file changes
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # pin@v3
-        id: filter
-        with:
-          filters: |
-            docs-only:
-              - 'documentation/**'
-            code:
-              - '!documentation/**'
-
   rust-format:
     name: Check Rust Code Format
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -49,8 +28,6 @@ jobs:
   rust-build-and-test:
     name: Build and Test Rust Project
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -103,8 +80,6 @@ jobs:
   rust-msrv:
     name: Check MSRV
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -140,8 +115,6 @@ jobs:
   rust-lint:
     name: Lint Rust Code
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -156,13 +129,11 @@ jobs:
           # play nicely with hermit-managed rust
           hermit uninstall rustup
           export CARGO_INCREMENTAL=0
-          cargo clippy --workspace --all-targets --exclude v8 -- -D warnings
+          cargo clippy --workspace --all-targets -- -D warnings
 
   schema-check:
     name: Check Generated Schemas are Up-to-Date
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
     steps:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -177,12 +148,6 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
 
-      - name: Install Node.js Dependencies
-        run: |
-          source ./bin/activate-hermit
-          cd ui/desktop && pnpm install --frozen-lockfile
-          cd ../sdk && pnpm install --frozen-lockfile
-
       - name: Check OpenAPI Schema is Up-to-Date
         run: |
           source ./bin/activate-hermit
@@ -194,43 +159,47 @@ jobs:
           source ./bin/activate-hermit
           just check-acp-schema
 
-      - name: Test ACP Client SDK
-        run: |
-          source ./bin/activate-hermit
-          cd ui/sdk
-          pnpm test
-          pnpm run typecheck:test
-
-  desktop-lint:
-    name: Test and Lint Electron Desktop App
-    runs-on: macos-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
+  terminal-ui:
+    name: Test Terminal UI Launcher
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      # Temporarily disabled due to GitHub Actions bug on macOS runners
-      # https://github.com/actions/runner-images/issues/13341
-      # https://github.com/actions/runner/issues/4134
-      # - name: Cache pnpm dependencies
-      #   uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7  # v5.0.2
-      #   with:
-      #     path: |
-      #       ui/desktop/node_modules
-      #       .hermit/node/cache
-      #     key: ci-pnpm-cache-v1-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
-      #     restore-keys: |
-      #       ci-pnpm-cache-v1-${{ runner.os }}-
+      - name: Build and test launcher
+        run: |
+          node ui/text/build.js
+          node ui/text/test.js
 
-      - name: Install Dependencies
-        run: source ../../bin/activate-hermit && pnpm install --frozen-lockfile
-        working-directory: ui/desktop
+  ask-ai-bot:
+    name: Build and Test Ask AI Bot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Run Lint
-        run: source ../../bin/activate-hermit && pnpm run lint:check
-        working-directory: ui/desktop
+      - name: Build and test image
+        run: docker build --target test -f services/ask-ai-bot/Dockerfile .
 
-      - name: Run Tests
-        run: source ../../bin/activate-hermit && pnpm run test:run
-        working-directory: ui/desktop
+  oidc-proxy:
+    name: Test OIDC Proxy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1  # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: oidc-proxy/pnpm-lock.yaml
+
+      - name: Install and test
+        working-directory: oidc-proxy
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test

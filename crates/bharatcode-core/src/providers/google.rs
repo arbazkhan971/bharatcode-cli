@@ -10,10 +10,10 @@ use crate::providers::formats::google::{create_request, response_to_streaming_me
 use anyhow::Result;
 use async_stream::try_stream;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
-use futures::TryStreamExt;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
+use futures::TryStreamExt;
 use rmcp::model::Tool;
 use serde_json::Value;
 use std::io;

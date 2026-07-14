@@ -47,7 +47,7 @@ BharatCode is currently built from source. You need a recent Rust toolchain
 
 ```bash
 # from the repo root
-cargo build -p goose-cli --no-default-features --features portable-default
+cargo build -p bharatcode-cli --no-default-features --features portable-default
 ```
 
 This produces the **`bharatcode`** binary:
@@ -61,9 +61,8 @@ Notes:
 
 - The `portable-default` feature set is the light build: it drops heavy native
   in-process inference engines (llama.cpp / candle / mlx), code-mode, and the
-  system keyring so the CLI builds quickly and runs anywhere.
-- The cargo **package** is still named `goose-cli` internally (a full internal
-  crate rename is a planned follow-up); the **binary it emits is `bharatcode`**.
+  system keyring so the CLI builds quickly and runs anywhere. A plain
+  `cargo build` uses the default features and pulls those engines in.
 - Because BharatCode is local-first, the recommended setup is to install
   [Ollama](https://ollama.com) and pull a coding model, then run `bharatcode`
   with no provider configured — it will target your local Ollama by default.
@@ -87,6 +86,7 @@ Handy commands:
 
 ```bash
 bharatcode                  # interactive session in the current directory
+bharatcode tui              # terminal UI (launches the ui/text artifact)
 bharatcode presets          # list the India / open-weight model presets
 bharatcode cost             # INR spend ledger (per session / day / month)
 bharatcode git              # read-only summary of the current git repo

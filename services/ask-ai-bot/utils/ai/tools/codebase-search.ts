@@ -39,6 +39,26 @@ const IGNORED_DIRS = new Set([
   "coverage",
 ]);
 
+export const MAX_SEARCH_RESULTS = 50;
+export const MAX_LIST_ENTRIES = 200;
+const MAX_QUERY_LENGTH = 200;
+const MAX_FILES_SCANNED = 5000;
+const MAX_FILE_BYTES = 512 * 1024;
+const MAX_LINE_LENGTH = 500;
+const MAX_DIR_DEPTH = 20;
+const SEARCH_BUDGET_MS = 10_000;
+
+interface SearchBudget {
+  deadline: number;
+  filesScanned: number;
+}
+
+function budgetExhausted(budget: SearchBudget): boolean {
+  return (
+    budget.filesScanned >= MAX_FILES_SCANNED || Date.now() > budget.deadline
+  );
+}
+
 function getCodebaseDir(): string {
   return process.env.CODEBASE_PATH || path.join(process.cwd(), "../..");
 }
@@ -49,6 +69,16 @@ function getSearchableDirs(): { name: string; path: string }[] {
     { name: "ui", path: path.join(base, "ui") },
     { name: "crates", path: path.join(base, "crates") },
   ];
+}
+
+function getSafeSearchableDirs(): { name: string; path: string }[] {
+  return getSearchableDirs().flatMap((dir) => {
+    if (!fs.existsSync(dir.path) || fs.lstatSync(dir.path).isSymbolicLink()) {
+      return [];
+    }
+
+    return [{ name: dir.name, path: fs.realpathSync(dir.path) }];
+  });
 }
 
 function shouldSkipDir(dirName: string): boolean {
@@ -71,30 +101,40 @@ function getContextLines(
 
   for (let i = start; i <= end; i++) {
     const prefix = i === matchLine ? ">" : " ";
-    contextLines.push(`${prefix} ${i + 1}: ${lines[i]}`);
+    contextLines.push(`${prefix} ${i + 1}: ${truncateLine(lines[i])}`);
   }
 
   return contextLines.join("\n");
 }
 
+function truncateLine(line: string): string {
+  if (line.length <= MAX_LINE_LENGTH) return line;
+  return line.slice(0, MAX_LINE_LENGTH) + "…";
+}
+
 function searchInFile(
   filePath: string,
-  pattern: RegExp,
+  needle: string,
   baseDir: string,
+  budget: SearchBudget,
+  remaining: number,
 ): CodeSearchResult[] {
   const results: CodeSearchResult[] = [];
 
   try {
+    if (fs.statSync(filePath).size > MAX_FILE_BYTES) return results;
+
     const content = fs.readFileSync(filePath, "utf-8");
     const lines = content.split("\n");
 
     for (let i = 0; i < lines.length; i++) {
-      if (pattern.test(lines[i])) {
-        const relativePath = path.relative(baseDir, filePath);
+      if (results.length >= remaining || budgetExhausted(budget)) break;
+
+      if (lines[i].toLowerCase().includes(needle)) {
         results.push({
-          filePath: relativePath,
+          filePath: path.relative(baseDir, filePath),
           line: i + 1,
-          content: lines[i].trim(),
+          content: truncateLine(lines[i].trim()),
           context: getContextLines(lines, i),
         });
       }
@@ -108,38 +148,46 @@ function searchInFile(
 
 function walkAndSearch(
   dir: string,
-  pattern: RegExp,
+  needle: string,
   baseDir: string,
   results: CodeSearchResult[],
   maxResults: number,
+  budget: SearchBudget,
+  depth: number = 0,
 ): void {
-  if (results.length >= maxResults) return;
+  if (results.length >= maxResults || depth > MAX_DIR_DEPTH) return;
+  if (budgetExhausted(budget)) return;
 
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
 
     for (const entry of entries) {
-      if (results.length >= maxResults) return;
+      if (results.length >= maxResults || budgetExhausted(budget)) return;
 
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
       if (entry.isDirectory()) {
         if (shouldSkipDir(entry.name)) continue;
         walkAndSearch(
           path.join(dir, entry.name),
-          pattern,
+          needle,
           baseDir,
           results,
           maxResults,
+          budget,
+          depth + 1,
         );
-      } else if (isSourceFile(entry.name)) {
+      } else if (entry.isFile() && isSourceFile(entry.name)) {
+        budget.filesScanned++;
         const fileResults = searchInFile(
           path.join(dir, entry.name),
-          pattern,
+          needle,
           baseDir,
+          budget,
+          maxResults - results.length,
         );
-        for (const result of fileResults) {
-          if (results.length >= maxResults) return;
-          results.push(result);
-        }
+        results.push(...fileResults);
       }
     }
   } catch (error) {
@@ -147,22 +195,32 @@ function walkAndSearch(
   }
 }
 
+/**
+ * Literal, case-insensitive substring search. The query is model-supplied, so it
+ * is never compiled as a regex — a pattern like `(a+)+$` would backtrack the
+ * event loop into the ground with no way to interrupt it.
+ */
 export function searchCodebase(
   query: string,
   limit: number = 20,
   scope?: string,
 ): CodeSearchResult[] {
-  const searchDirs = getSearchableDirs();
+  const needle = query.trim().slice(0, MAX_QUERY_LENGTH).toLowerCase();
+  if (!needle) return [];
+
+  const maxResults = Math.max(
+    1,
+    Math.min(Math.floor(limit), MAX_SEARCH_RESULTS),
+  );
+  const budget: SearchBudget = {
+    deadline: Date.now() + SEARCH_BUDGET_MS,
+    filesScanned: 0,
+  };
+
   const allResults: CodeSearchResult[] = [];
+  const baseDir = path.resolve(getCodebaseDir());
 
-  let pattern: RegExp;
-  try {
-    pattern = new RegExp(query, "i");
-  } catch {
-    pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-  }
-
-  for (const dir of searchDirs) {
+  for (const dir of getSafeSearchableDirs()) {
     if (scope && dir.name !== scope) continue;
 
     if (!fs.existsSync(dir.path)) {
@@ -170,44 +228,54 @@ export function searchCodebase(
       continue;
     }
 
-    walkAndSearch(
-      dir.path,
-      pattern,
-      path.resolve(getCodebaseDir()),
-      allResults,
-      limit,
-    );
+    walkAndSearch(dir.path, needle, baseDir, allResults, maxResults, budget);
   }
 
   logger.verbose(
-    `Code search for "${query}" returned ${allResults.length} results`,
+    `Code search for "${needle}" returned ${allResults.length} results`,
   );
-  return allResults;
+  return allResults.slice(0, maxResults);
+}
+
+/** Resolves a repo-relative path, rejecting anything outside ui/ and crates/. */
+function resolveSearchablePath(directory: string): string {
+  const baseDir = fs.realpathSync(path.resolve(getCodebaseDir()));
+  const targetDir = path.resolve(baseDir, directory);
+
+  if (!fs.existsSync(targetDir) || fs.lstatSync(targetDir).isSymbolicLink()) {
+    throw new Error(`Directory not found or unsafe: ${directory}`);
+  }
+  const realTarget = fs.realpathSync(targetDir);
+
+  const allowed = getSafeSearchableDirs().some(
+    (dir) =>
+      realTarget === dir.path || realTarget.startsWith(dir.path + path.sep),
+  );
+
+  if (!allowed) {
+    throw new Error("Invalid path - only ui/ and crates/ can be listed");
+  }
+
+  return realTarget;
 }
 
 export function listCodebaseFiles(
   directory: string,
 ): { filePath: string; isDirectory: boolean }[] {
-  const baseDir = path.resolve(getCodebaseDir());
-  const targetDir = path.resolve(path.join(baseDir, directory));
-
-  if (!targetDir.startsWith(baseDir + "/")) {
-    throw new Error("Invalid path - directory traversal not allowed");
-  }
+  const targetDir = resolveSearchablePath(directory);
 
   if (!fs.existsSync(targetDir)) {
     throw new Error(`Directory not found: ${directory}`);
   }
 
-  const stat = fs.statSync(targetDir);
-  if (!stat.isDirectory()) {
+  if (!fs.statSync(targetDir).isDirectory()) {
     throw new Error(`Not a directory: ${directory}`);
   }
 
   try {
     const entries = fs.readdirSync(targetDir, { withFileTypes: true });
     return entries
-      .filter((entry) => !shouldSkipDir(entry.name))
+      .filter((entry) => !entry.isSymbolicLink() && !shouldSkipDir(entry.name))
       .map((entry) => ({
         filePath: path.join(directory, entry.name),
         isDirectory: entry.isDirectory(),
@@ -215,8 +283,9 @@ export function listCodebaseFiles(
       .sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
         return a.filePath.localeCompare(b.filePath);
-      });
-  } catch (error) {
+      })
+      .slice(0, MAX_LIST_ENTRIES);
+  } catch {
     throw new Error(`Failed to list directory: ${directory}`);
   }
 }

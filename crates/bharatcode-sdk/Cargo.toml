@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rust SDK for Goose with optional uniffi bindings for Python/Kotlin"
+description = "Rust SDK for BharatCode with optional uniffi bindings for Python/Kotlin"
 
 [lib]
 name = "bharatcode_sdk"

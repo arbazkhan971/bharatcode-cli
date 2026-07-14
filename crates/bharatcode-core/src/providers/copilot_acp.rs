@@ -61,7 +61,7 @@ impl ProviderDef for CopilotAcpProvider {
             let resolved_command = SearchPaths::builder()
                 .with_npm()
                 .resolve(COPILOT_ACP_BINARY)?;
-            let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
+            let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
 
             let mut args = vec!["--acp".to_string()];
             if model.model_name != ACP_CURRENT_MODEL {
@@ -69,14 +69,7 @@ impl ProviderDef for CopilotAcpProvider {
                 args.push(model.model_name.clone());
             }
 
-            // Copilot modes are full protocol URIs.
-            // No approve-specific mode; permissions are handled separately.
-            let mode_mapping = HashMap::from([
-                (GooseMode::Auto, MODE_AGENT.to_string()),
-                (GooseMode::Approve, MODE_AGENT.to_string()),
-                (GooseMode::SmartApprove, MODE_AGENT.to_string()),
-                (GooseMode::Chat, MODE_PLAN.to_string()),
-            ]);
+            let mode_mapping = mode_mapping();
 
             let provider_config = AcpProviderConfig {
                 command: resolved_command,
@@ -93,5 +86,30 @@ impl ProviderDef for CopilotAcpProvider {
             let metadata = Self::metadata();
             AcpProvider::connect(metadata.name, model, goose_mode, provider_config).await
         })
+    }
+}
+
+// Copilot modes are full protocol URIs.
+// No approve-specific mode; permissions are handled separately.
+fn mode_mapping() -> HashMap<GooseMode, String> {
+    HashMap::from([
+        (GooseMode::Auto, MODE_AGENT.to_string()),
+        (GooseMode::Approve, MODE_AGENT.to_string()),
+        (GooseMode::SmartApprove, MODE_AGENT.to_string()),
+        (GooseMode::Chat, MODE_PLAN.to_string()),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Copilot has no full-access session mode: every non-Chat mode is MODE_AGENT and
+    /// approvals ride on the GooseMode handed to the provider, so the default mode is
+    /// gated by SmartApprove rather than by the session mode id.
+    #[test]
+    fn test_default_mode_uses_agent_mode() {
+        assert_eq!(mode_mapping()[&GooseMode::default()], MODE_AGENT);
+        assert_eq!(mode_mapping()[&GooseMode::Chat], MODE_PLAN);
     }
 }

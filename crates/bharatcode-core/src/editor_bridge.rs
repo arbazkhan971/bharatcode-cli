@@ -113,7 +113,7 @@ async fn status_map(working_dir: &Path) -> HashMap<PathBuf, &'static str> {
         if line.len() < 3 {
             continue;
         }
-        let code = &line[..2];
+        let code = line.get(..2).unwrap_or_default();
         let rest = line.get(3..).unwrap_or("").trim();
         if rest.is_empty() {
             continue;

@@ -1,10 +1,8 @@
 version: 2
 updates:
-  # pnpm workspace for the UI (desktop, acp, text, sdk, goose-binary/*).
-  # Point at the workspace ROOT where pnpm-lock.yaml lives so Dependabot updates
-  # both the child package.json AND ui/pnpm-lock.yaml in one PR.
+  # pnpm project for the Cloudflare OIDC proxy.
   - package-ecosystem: "npm"
-    directory: "/ui"
+    directory: "/oidc-proxy"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10

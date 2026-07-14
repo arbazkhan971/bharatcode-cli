@@ -107,17 +107,17 @@ pub struct StreamStats {
 
 impl StreamStats {
     /// Time-to-first-token, or `None` if no delta was ever observed.
-    pub fn ttft(&self) -> Option<Duration> {
+    fn ttft(&self) -> Option<Duration> {
         self.ttft
     }
 
     /// Number of streamed chunks observed.
-    pub fn chunks(&self) -> u64 {
+    fn chunks(&self) -> u64 {
         self.chunks
     }
 
     /// Approximate token count (heuristic, see `CHARS_PER_TOKEN`).
-    pub fn approx_tokens(&self) -> u64 {
+    fn approx_tokens(&self) -> u64 {
         self.approx_tokens
     }
 
@@ -133,18 +133,19 @@ impl StreamStats {
     }
 
     /// A compact one-line human-readable summary, e.g.
-    /// `"stream: 1.2s, ttft 180ms, ~340 tok, 283 tok/s"`. When no first token
-    /// was seen the ttft segment reads `ttft n/a`.
+    /// `"stream: 1.2s, ttft 180ms, 24 chunks, ~340 tok, 283 tok/s"`. When no
+    /// first token was seen the ttft segment reads `ttft n/a`.
     pub fn summary_line(&self) -> String {
-        let ttft = match self.ttft {
+        let ttft = match self.ttft() {
             Some(d) => format!("{}ms", d.as_millis()),
             None => "n/a".to_string(),
         };
         format!(
-            "stream: {:.1}s, ttft {}, ~{} tok, {:.0} tok/s",
+            "stream: {:.1}s, ttft {}, {} chunks, ~{} tok, {:.0} tok/s",
             self.elapsed.as_secs_f64(),
             ttft,
-            self.approx_tokens,
+            self.chunks(),
+            self.approx_tokens(),
             self.tokens_per_sec(),
         )
     }

@@ -9,8 +9,9 @@ use agent_client_protocol::schema::{
     WriteTextFileResponse,
 };
 use async_trait::async_trait;
-use fs_err as fs;
-use bharatcode_core::acp::server::{serve, AcpProviderFactory, GooseAcpAgent, GooseAcpAgentOptions};
+use bharatcode_core::acp::server::{
+    serve, AcpProviderFactory, GooseAcpAgent, GooseAcpAgentOptions,
+};
 pub use bharatcode_core::acp::{map_permission_response, PermissionDecision};
 use bharatcode_core::agents::GoosePlatform;
 use bharatcode_core::builtin_extension::register_builtin_extensions;
@@ -21,6 +22,7 @@ use bharatcode_core::providers::base::Provider;
 use bharatcode_core::providers::openai::OpenAiProvider;
 use bharatcode_core::session_context::SESSION_ID_HEADER;
 use bharatcode_test_support::{ExpectedSessionId, TEST_MODEL};
+use fs_err as fs;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -44,7 +46,8 @@ fn write_global_test_config(config_path: &Path, openai_base_url: &str) {
 
     let global_config_dir = Paths::config_dir();
     fs::create_dir_all(&global_config_dir).unwrap();
-    let global_config_path = global_config_dir.join(bharatcode_core::config::base::CONFIG_YAML_NAME);
+    let global_config_path =
+        global_config_dir.join(bharatcode_core::config::base::CONFIG_YAML_NAME);
     fs::write(&global_config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
 }
 
@@ -304,7 +307,7 @@ pub fn to_notifications(updates: &[SessionUpdate]) -> Vec<Notification> {
             SessionUpdate::SessionInfoUpdate(update) => {
                 let meta = update.meta.as_ref();
                 let is_active_run_update = meta
-                    .and_then(|m| m.get("goose"))
+                    .and_then(|m| m.get("bharatcode"))
                     .and_then(|g| g.get("activeRunId"))
                     .is_some();
                 if is_active_run_update {

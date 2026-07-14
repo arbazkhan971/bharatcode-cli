@@ -3,7 +3,7 @@
 # Multi-stage build for minimal final image size
 
 # Build stage
-FROM rust:1.82-bookworm AS builder
+FROM rust:1.92-bookworm@sha256:e90e846de4124376164ddfbaab4b0774c7bdeef5e738866295e5a90a34a307a2 AS builder
 
 # Install build dependencies
 RUN apt-get update && \
@@ -31,7 +31,7 @@ ENV CARGO_PROFILE_RELEASE_LTO=true
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 ENV CARGO_PROFILE_RELEASE_OPT_LEVEL=z
 ENV CARGO_PROFILE_RELEASE_STRIP=true
-RUN cargo build --release --package goose-cli
+RUN cargo build --release --locked --package bharatcode-cli --bin bharatcode
 
 # Runtime stage - minimal Debian
 FROM debian:bookworm-slim@sha256:b1a741487078b369e78119849663d7f1a5341ef2768798f7b7406c4240f86aef
@@ -73,4 +73,4 @@ CMD ["--help"]
 LABEL org.opencontainers.image.title="bharatcode"
 LABEL org.opencontainers.image.description="BharatCode CLI"
 LABEL org.opencontainers.image.vendor="BharatCode"
-LABEL org.opencontainers.image.source="https://github.com/aaif-bharatcode/bharatcode"
+LABEL org.opencontainers.image.source="https://github.com/arbazkhan971/bharatcode-cli"

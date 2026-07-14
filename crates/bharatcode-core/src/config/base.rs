@@ -1,7 +1,7 @@
 use crate::config::paths::Paths;
 use crate::config::GooseMode;
-use fs2::FileExt;
 use bharatcode_providers::thinking::ThinkingEffort;
+use fs2::FileExt;
 #[cfg(feature = "system-keyring")]
 use keyring::Entry;
 use once_cell::sync::OnceCell;
@@ -10,10 +10,12 @@ use serde_json::Value;
 use serde_yaml::Mapping;
 use std::collections::HashMap;
 use std::env;
-use std::fs::OpenOptions;
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 // Agent-capability toggles (v41-v49) are read through the typed
@@ -111,24 +113,300 @@ pub(crate) mod packaging;
 #[path = "../usage_analytics.rs"]
 pub mod usage_analytics;
 
-fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
+const SECRETS_FILE_MODE: u32 = 0o600;
+const NEW_CONFIG_FILE_MODE: u32 = 0o600;
 
-        file.write_all(content.as_bytes())
+/// How long we wait for another process to finish its read-modify-write before
+/// giving up. Every locked section is a read-parse-write of one small YAML file,
+/// so blowing this budget means the holder is wedged (or crashed on a platform
+/// that leaked the lock); failing loudly beats hanging the CLI forever.
+const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Retries for the unique temp name. Collisions are already astronomically
+/// unlikely with 64 random bits; this only exists so a pathological source of
+/// randomness cannot spin forever.
+const TEMP_NAME_ATTEMPTS: usize = 16;
+
+/// Permissions for a file produced by [`atomic_write`].
+///
+/// The rename installs a brand-new inode, so unlike an in-place rewrite it does
+/// not inherit the target's mode by default - it has to be reapplied explicitly
+/// or every save would silently reset the file to the temp's permissions.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code))]
+enum FileMode {
+    /// Copy the target's current mode when it exists, so an operator's `chmod`
+    /// survives the swap; create at this mode when it doesn't.
+    PreserveOr(u32),
+    /// Always land at exactly this mode. Used for secrets, where inheriting a
+    /// world-readable mode from an existing file would keep leaking credentials.
+    Exactly(u32),
+}
+
+impl FileMode {
+    /// Permissions the temp file is *created* with - always the restrictive
+    /// value, because the temp holds the complete contents before the rename and
+    /// must never be briefly more permissive than the file it becomes.
+    #[cfg(unix)]
+    fn create_mode(self) -> u32 {
+        match self {
+            FileMode::PreserveOr(mode) | FileMode::Exactly(mode) => mode,
+        }
+    }
+
+    #[cfg(unix)]
+    fn final_mode(self, target: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        match self {
+            FileMode::PreserveOr(mode) => std::fs::metadata(target)
+                .map(|meta| meta.permissions().mode() & 0o777)
+                .unwrap_or(mode),
+            FileMode::Exactly(mode) => mode,
+        }
+    }
+}
+
+/// A uniquely-named temp file in the target's own directory, removed on drop
+/// unless it is persisted.
+///
+/// The name must be unique per writer. A fixed name (the previous `config.tmp`)
+/// is shared by every process: a second writer's `truncate`-on-open destroys the
+/// first writer's buffer mid-flight, and once the first writer renames the temp
+/// onto the config the second writer's still-open handle is writing straight
+/// into the live config file.
+struct TempFile {
+    path: PathBuf,
+    file: File,
+    persisted: bool,
+}
+
+impl TempFile {
+    fn create(target: &Path, mode: FileMode) -> std::io::Result<Self> {
+        let dir = target.parent().unwrap_or_else(|| Path::new("."));
+        let name = target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config");
+
+        #[cfg(not(unix))]
+        let _ = mode;
+
+        for _ in 0..TEMP_NAME_ATTEMPTS {
+            let path = dir.join(format!(".{}.{:016x}.tmp", name, rand::random::<u64>()));
+
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(mode.create_mode());
+            }
+
+            match options.open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file,
+                        persisted: false,
+                    })
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("could not create a unique temp file in {}", dir.display()),
+        ))
+    }
+
+    fn persist(mut self, target: &Path) -> std::io::Result<()> {
+        self.file.sync_all()?;
+        std::fs::rename(&self.path, target)?;
+        self.persisted = true;
+        sync_dir(target);
+        Ok(())
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.persisted {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// The rename is durable only once the directory entry pointing at the new inode
+/// is on disk. Best-effort: some filesystems reject fsync on a directory, and a
+/// config save is not worth failing over that.
+#[cfg(unix)]
+fn sync_dir(target: &Path) {
+    if let Some(dir) = target.parent() {
+        if let Ok(handle) = File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_target: &Path) {}
+
+/// Replace `target` with `contents` via a uniquely-named temp file in the *same*
+/// directory. Same directory keeps the rename on one filesystem, which is what
+/// makes it atomic: a concurrent reader sees the whole old file or the whole new
+/// one, never a partial write, and a crash can never leave a truncated file.
+fn atomic_write(target: &Path, contents: &[u8], mode: FileMode) -> std::io::Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
     }
 
     #[cfg(not(unix))]
+    let _ = mode;
+
+    let mut temp = TempFile::create(target, mode)?;
+    temp.file.write_all(contents)?;
+
+    #[cfg(unix)]
     {
-        std::fs::write(path, content)
+        use std::os::unix::fs::PermissionsExt;
+        temp.file
+            .set_permissions(std::fs::Permissions::from_mode(mode.final_mode(target)))?;
     }
+
+    temp.persist(target)
+}
+
+/// Resolve one level of symlink so a write updates the file the link points at
+/// rather than replacing the link itself - renaming onto an unresolved symlink
+/// would silently turn it into a regular file.
+///
+/// Resolving also gives every process the same lock path when they reach one
+/// config through different links.
+fn resolve_write_target(path: &Path) -> Result<PathBuf, ConfigError> {
+    const MAX_SYMLINK_HOPS: usize = 1;
+
+    let mut resolved = path.to_path_buf();
+    let mut hops = 0usize;
+    loop {
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if hops >= MAX_SYMLINK_HOPS {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "Too many symlink levels (or a cycle) while resolving config path: {:?}",
+                            path
+                        ),
+                    )
+                    .into());
+                }
+                hops += 1;
+
+                let link = std::fs::read_link(&resolved)?;
+                resolved = if link.is_absolute() {
+                    link
+                } else {
+                    resolved
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(link)
+                };
+            }
+            Ok(_) => return Ok(resolved),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(resolved),
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// An advisory cross-process lock, held for a whole read-modify-write.
+struct FileLock {
+    file: File,
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn lock_path_for(target: &Path) -> PathBuf {
+    let mut name = target
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| OsString::from("config"));
+    name.push(".lock");
+    target.with_file_name(name)
+}
+
+/// Take the exclusive lock guarding `target`.
+///
+/// The lock lives on a dedicated sidecar that is never renamed over. Locking the
+/// target itself cannot work here: [`atomic_write`] swaps the target's inode, so
+/// a second process would open the *new* inode and take the lock while the first
+/// still holds it on the old, unlinked one - two writers, both convinced they
+/// hold the lock.
+///
+/// This is an advisory lock. It serializes writers that go through `Config`; it
+/// does not stop an editor or another tool from rewriting the file underneath us.
+fn acquire_file_lock(target: &Path) -> Result<FileLock, ConfigError> {
+    let path = lock_path_for(target);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ConfigError::DirectoryError(e.to_string()))?;
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(SECRETS_FILE_MODE);
+    }
+
+    let file = options
+        .open(&path)
+        .map_err(|e| ConfigError::LockError(format!("{}: {}", path.display(), e)))?;
+
+    let contended = fs2::lock_contended_error();
+    let deadline = Instant::now() + LOCK_TIMEOUT;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(FileLock { file }),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.raw_os_error() == contended.raw_os_error() =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(ConfigError::LockError(format!(
+                        "timed out after {}s waiting for another process to release {}",
+                        LOCK_TIMEOUT.as_secs(),
+                        path.display()
+                    )));
+                }
+                std::thread::sleep(LOCK_POLL_INTERVAL);
+            }
+            Err(e) => return Err(ConfigError::LockError(e.to_string())),
+        }
+    }
+}
+
+/// Write the secrets file atomically at 0600.
+///
+/// [`FileMode::Exactly`] rather than `PreserveOr`: the old in-place write set
+/// `mode(0o600)` on `OpenOptions`, which the OS only applies when *creating* the
+/// file, so a `secrets.yaml` that already existed at 0644 kept leaking every API
+/// key to other local users no matter how many times it was rewritten.
+fn write_secrets_file(path: &Path, content: &str) -> Result<(), ConfigError> {
+    let target = resolve_write_target(path)?;
+    atomic_write(
+        &target,
+        content.as_bytes(),
+        FileMode::Exactly(SECRETS_FILE_MODE),
+    )?;
+    Ok(())
 }
 
 #[cfg(feature = "system-keyring")]
@@ -566,22 +844,26 @@ impl Config {
 
     /// Load only the writable config file for read-modify-write operations.
     /// Returns an empty mapping if the file doesn't exist or can't be parsed.
-    fn load_write_config(&self) -> Result<Mapping, ConfigError> {
-        if !self.write_path().exists() {
+    ///
+    /// Callers must hold the write lock, and `target` must be the resolved path
+    /// they hold it on: reading through the lock is what makes the value we
+    /// modify the same one we later overwrite.
+    fn load_write_config_locked(target: &Path) -> Result<Mapping, ConfigError> {
+        if !target.exists() {
             return Ok(Mapping::new());
         }
-        let content = std::fs::read_to_string(self.write_path())?;
+        let content = std::fs::read_to_string(target)?;
         let mut values = parse_yaml_content(&content).unwrap_or_else(|e| {
             tracing::warn!(
                 "Config file {:?} is corrupt: {}. Starting fresh.",
-                self.write_path(),
+                target,
                 e
             );
             Mapping::new()
         });
 
         if crate::config::migrations::run_migrations(&mut values) {
-            if let Err(e) = self.save_values(&values) {
+            if let Err(e) = Self::write_values_locked(target, &values) {
                 tracing::warn!("Failed to save migrated config: {}", e);
             }
         }
@@ -778,85 +1060,53 @@ impl Config {
     }
 
     fn config_write_target_path(&self) -> Result<PathBuf, ConfigError> {
-        let mut path = self.write_path().clone();
-
-        // Follow symlinks so we update the target file without replacing the link itself.
-        const MAX_SYMLINK_HOPS: usize = 1;
-        let mut hops = 0usize;
-        loop {
-            match std::fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    if hops >= MAX_SYMLINK_HOPS {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!(
-                                "Too many symlink levels (or a cycle) while resolving config path: {:?}",
-                                self.write_path()
-                            ),
-                        )
-                        .into());
-                    }
-                    hops += 1;
-
-                    let link = std::fs::read_link(&path)?;
-                    path = if link.is_absolute() {
-                        link
-                    } else {
-                        path.parent().unwrap_or_else(|| Path::new(".")).join(link)
-                    };
-                }
-                Ok(_) => return Ok(path),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(path),
-                Err(e) => return Err(e.into()),
-            }
-        }
+        resolve_write_target(self.write_path())
     }
 
-    fn save_values(&self, values: &Mapping) -> Result<(), ConfigError> {
-        let target_path = self.config_write_target_path()?;
+    /// Run a read-modify-write of the config file under both the in-process guard
+    /// and the cross-process file lock, handing the closure the resolved write
+    /// target.
+    ///
+    /// The lock is taken *before* the load and released only after the rename, so
+    /// two `bharatcode` processes can no longer both read the same pre-image and
+    /// have the loser's key silently dropped by the winner's write.
+    ///
+    /// This closes the race only for operations that live entirely inside one
+    /// `Config` call. A caller that reads with `get_param`, decides something, and
+    /// writes back with `set_param` still races: the config is unlocked between
+    /// those two calls and this API cannot see that they belong together. Such
+    /// callers must use [`Config::update_param`], which does the whole
+    /// read-modify-write inside the lock.
+    fn with_config_write_lock<R>(
+        &self,
+        op: impl FnOnce(&Path) -> Result<R, ConfigError>,
+    ) -> Result<R, ConfigError> {
+        let _guard = self.guard.lock().unwrap();
+        let target = self.config_write_target_path()?;
+        let _lock = acquire_file_lock(&target)?;
+        op(&target)
+    }
 
-        // Convert to YAML for storage
+    /// Persist `values`. The caller must already hold the write lock; taking it
+    /// here would deadlock the read-modify-write paths, whose whole point is that
+    /// one lock spans their load and their save.
+    fn write_values_locked(target: &Path, values: &Mapping) -> Result<(), ConfigError> {
         let yaml_value = serde_yaml::to_string(values)?;
-
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::DirectoryError(e.to_string()))?;
-        }
-
-        // Write to a temporary file first for atomic operation
-        let temp_path = target_path.with_extension("tmp");
-
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&temp_path)?;
-
-            // Acquire an exclusive lock
-            file.lock_exclusive()
-                .map_err(|e| ConfigError::LockError(e.to_string()))?;
-
-            // Write the contents using the same file handle
-            file.write_all(yaml_value.as_bytes())?;
-            file.sync_all()?;
-
-            // Unlock is handled automatically when file is dropped
-        }
-
-        // Atomically replace the original file
-        std::fs::rename(&temp_path, &target_path)?;
-
+        atomic_write(
+            target,
+            yaml_value.as_bytes(),
+            FileMode::PreserveOr(NEW_CONFIG_FILE_MODE),
+        )?;
         Ok(())
     }
 
     pub fn initialize_if_empty(&self, values: Mapping) -> Result<(), ConfigError> {
-        let _guard = self.guard.lock().unwrap();
-        if !self.exists() {
-            self.save_values(&values)
-        } else {
-            Ok(())
-        }
+        self.with_config_write_lock(|target| {
+            if self.exists() {
+                return Ok(());
+            }
+            Self::write_values_locked(target, &values)
+        })
     }
 
     pub fn all_secrets(&self) -> Result<HashMap<String, Value>, ConfigError> {
@@ -995,21 +1245,27 @@ impl Config {
     }
 
     /// Read-modify-write a configuration value atomically through the write path.
+    ///
+    /// The load and the save happen under one cross-process lock, so `f` sees the
+    /// value no other `Config` writer can change out from under it. This is the
+    /// only correct way to compute a new value from the current one; a bare
+    /// `get_param` followed by `set_param` is not equivalent.
     pub fn update_param<T, V, F>(&self, key: &str, f: F) -> Result<(), ConfigError>
     where
         T: for<'de> Deserialize<'de> + Default,
         V: Serialize,
         F: FnOnce(T) -> V,
     {
-        let _guard = self.guard.lock().unwrap();
-        let mut values = self.load_write_config()?;
-        let current: T = values
-            .get(key)
-            .and_then(|v| serde_yaml::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        let updated = f(current);
-        values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(updated)?);
-        self.save_values(&values)
+        self.with_config_write_lock(|target| {
+            let mut values = Self::load_write_config_locked(target)?;
+            let current: T = values
+                .get(key)
+                .and_then(|v| serde_yaml::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let updated = f(current);
+            values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(updated)?);
+            Self::write_values_locked(target, &values)
+        })
     }
 
     /// Set a configuration value in the config file (non-secret).
@@ -1026,10 +1282,11 @@ impl Config {
     /// - There is an error reading or writing the config file
     /// - There is an error serializing the value
     pub fn set_param<V: Serialize>(&self, key: &str, value: V) -> Result<(), ConfigError> {
-        let _guard = self.guard.lock().unwrap();
-        let mut values = self.load_write_config()?;
-        values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
-        self.save_values(&values)
+        self.with_config_write_lock(|target| {
+            let mut values = Self::load_write_config_locked(target)?;
+            values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
+            Self::write_values_locked(target, &values)
+        })
     }
 
     /// Set multiple configuration values in the config file with one read and one write.
@@ -1038,12 +1295,13 @@ impl Config {
             return Ok(());
         }
 
-        let _guard = self.guard.lock().unwrap();
-        let mut values = self.load_write_config()?;
-        for (key, value) in updates {
-            values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
-        }
-        self.save_values(&values)
+        self.with_config_write_lock(|target| {
+            let mut values = Self::load_write_config_locked(target)?;
+            for (key, value) in updates {
+                values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
+            }
+            Self::write_values_locked(target, &values)
+        })
     }
 
     /// Delete a configuration value in the config file.
@@ -1060,13 +1318,11 @@ impl Config {
     /// - There is an error reading or writing the config file
     /// - There is an error serializing the value
     pub fn delete(&self, key: &str) -> Result<(), ConfigError> {
-        // Lock before reading to prevent race condition.
-        let _guard = self.guard.lock().unwrap();
-
-        let mut values = self.load_write_config()?;
-        values.shift_remove(key);
-
-        self.save_values(&values)
+        self.with_config_write_lock(|target| {
+            let mut values = Self::load_write_config_locked(target)?;
+            values.shift_remove(key);
+            Self::write_values_locked(target, &values)
+        })
     }
 
     /// Get a secret value.
@@ -1126,39 +1382,63 @@ impl Config {
         Ok(result)
     }
 
-    fn write_all_secrets(&self, values: &HashMap<String, Value>) -> Result<(), ConfigError> {
-        match &self.secrets {
-            #[cfg(feature = "system-keyring")]
-            SecretStorage::Keyring { service } => {
-                let json_value = serde_json::to_string(values)?;
-                match self.handle_keyring_operation(
-                    |entry| entry.set_password(&json_value),
-                    service,
-                    Some(values),
-                ) {
-                    Ok(_) => {}
-                    Err(ConfigError::FallbackToFileStorage) => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            SecretStorage::File { path } => {
-                let yaml_value = serde_yaml::to_string(values)?;
-                write_secrets_file(path, &yaml_value)?;
-            }
-        }
-
-        self.invalidate_secrets_cache();
-        Ok(())
-    }
-
+    /// Read-modify-write the secret store.
+    ///
+    /// File-backed secrets get the same treatment as the config file: one
+    /// cross-process lock spanning the read and the write, and an atomic rename
+    /// so a crash can never truncate `secrets.yaml` and take every API key with
+    /// it.
+    ///
+    /// Keyring-backed secrets do not, and cannot with what we have here: the
+    /// keyring is a single opaque JSON blob owned by the OS, with no handle to
+    /// lock and no compare-and-swap. Two processes writing different secrets at
+    /// once can still lose one. Fixing that needs a keyring-side primitive we
+    /// don't have, so it is left honestly broken rather than papered over with a
+    /// lock that would guard nothing.
     fn mutate_secrets(
         &self,
         mutate: impl FnOnce(&mut HashMap<String, Value>),
     ) -> Result<(), ConfigError> {
         let _guard = self.guard.lock().unwrap();
-        let mut values = self.all_secrets()?;
-        mutate(&mut values);
-        self.write_all_secrets(&values)
+
+        match &self.secrets {
+            #[cfg(feature = "system-keyring")]
+            SecretStorage::Keyring { service } => {
+                let mut values = self.all_secrets()?;
+                mutate(&mut values);
+
+                let json_value = serde_json::to_string(&values)?;
+                match self.handle_keyring_operation(
+                    |entry| entry.set_password(&json_value),
+                    service,
+                    Some(&values),
+                ) {
+                    Ok(_) => {}
+                    Err(ConfigError::FallbackToFileStorage) => {}
+                    Err(e) => return Err(e),
+                }
+
+                self.invalidate_secrets_cache();
+                Ok(())
+            }
+            SecretStorage::File { path } => {
+                let target = resolve_write_target(path)?;
+                let _lock = acquire_file_lock(&target)?;
+
+                // Re-read from disk under the lock rather than going through
+                // `all_secrets`: the cache can predate another process's write,
+                // and writing a stale map back would silently delete the secret
+                // that process just added.
+                let mut values = self.read_secrets_from_file(&target)?;
+                mutate(&mut values);
+
+                let yaml_value = serde_yaml::to_string(&values)?;
+                write_secrets_file(&target, &yaml_value)?;
+
+                self.invalidate_secrets_cache();
+                Ok(())
+            }
+        }
     }
 
     /// Set a secret value in the system keyring.
@@ -1262,11 +1542,9 @@ impl Config {
     /// Write secrets to file storage (used for fallback)
     #[cfg(feature = "system-keyring")]
     fn write_secrets_to_file(&self, values: &HashMap<String, Value>) -> Result<(), ConfigError> {
-        std::fs::create_dir_all(Paths::config_dir())?;
         let path = Self::secrets_file_path();
         let yaml_value = serde_yaml::to_string(values)?;
-        write_secrets_file(&path, &yaml_value)?;
-        Ok(())
+        write_secrets_file(&path, &yaml_value)
     }
 
     pub fn invalidate_secrets_cache(&self) {
@@ -1805,65 +2083,35 @@ mod tests {
 
     #[test]
     fn test_concurrent_writes() -> Result<(), ConfigError> {
-        use std::sync::{Arc, Barrier, Mutex};
+        use std::sync::{Arc, Barrier};
         use std::thread;
 
         let config = Arc::new(new_test_config());
-        let barrier = Arc::new(Barrier::new(3)); // For 3 concurrent threads
-        let values = Arc::new(Mutex::new(Mapping::new()));
+        let barrier = Arc::new(Barrier::new(3));
         let mut handles = vec![];
 
-        // Initialize with empty values
-        config.save_values(&Default::default())?;
-
-        // Spawn 3 threads that will try to write simultaneously
         for i in 0..3 {
             let config = Arc::clone(&config);
             let barrier = Arc::clone(&barrier);
-            let values = Arc::clone(&values);
-            let handle = thread::spawn(move || -> Result<(), ConfigError> {
-                // Wait for all threads to reach this point
+            handles.push(thread::spawn(move || -> Result<(), ConfigError> {
                 barrier.wait();
-
-                // Get the lock and update values
-                let mut values = values.lock().unwrap();
-                values.insert(
-                    serde_yaml::to_value(format!("key{}", i)).unwrap(),
-                    serde_yaml::to_value(format!("value{}", i)).unwrap(),
-                );
-
-                // Write all values
-                config.save_values(&values)?;
-                Ok(())
-            });
-            handles.push(handle);
+                config.set_param(&format!("key{}", i), format!("value{}", i))
+            }));
         }
 
-        // Wait for all threads to complete
         for handle in handles {
             handle.join().unwrap()?;
         }
 
-        // Verify all values were written correctly
         let final_values = config.all_values()?;
-
-        // Print the final values for debugging
-        println!("Final values: {:?}", final_values);
-
-        // Check that our 3 keys are present (migrations may add additional keys like "extensions")
         for i in 0..3 {
             let key = format!("key{}", i);
-            let value = format!("value{}", i);
-            assert!(
-                final_values.contains_key(&key),
-                "Missing key {} in final values",
-                key
-            );
             assert_eq!(
-                final_values.get(&key).unwrap(),
-                &Value::String(value),
-                "Incorrect value for key {}",
-                key
+                final_values.get(&key),
+                Some(&Value::String(format!("value{}", i))),
+                "concurrent set_param lost {}: {:?}",
+                key,
+                final_values
             );
         }
 
@@ -2293,6 +2541,12 @@ mod tests {
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    /// A `Config` on fixed paths inside `dir`, so several independent instances
+    /// can be pointed at the same files.
+    fn config_at(dir: &Path) -> Config {
+        Config::new_with_file_secrets(dir.join(CONFIG_YAML_NAME), dir.join("secrets.yaml")).unwrap()
     }
 
     /// Create a test config where `base_content` is a lower-priority layer
@@ -2949,5 +3203,281 @@ extensions:
             Some(ThinkingEffort::High)
         );
         assert_eq!(Config::legacy_gemini3_thinking_effort("auto"), None);
+    }
+
+    /// Each writer gets its own `Config`, so they share no in-process `Mutex` and
+    /// the cross-process file lock is the only thing that can serialize them.
+    /// This is the shape of two `bharatcode` processes racing on one config: with
+    /// the lock scoped to the write alone, every writer read the same empty
+    /// pre-image and the last rename discarded everyone else's key.
+    #[test]
+    fn test_separate_config_instances_do_not_lose_updates() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const WRITERS: usize = 8;
+
+        let dir = TempDir::new().unwrap();
+        let barrier = Arc::new(Barrier::new(WRITERS));
+
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|i| {
+                let barrier = Arc::clone(&barrier);
+                let dir = dir.path().to_path_buf();
+                thread::spawn(move || {
+                    let config = config_at(&dir);
+                    barrier.wait();
+                    config
+                        .set_param(&format!("key{}", i), format!("value{}", i))
+                        .unwrap();
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let values = config_at(dir.path()).all_values().unwrap();
+        for i in 0..WRITERS {
+            let key = format!("key{}", i);
+            assert_eq!(
+                values.get(&key),
+                Some(&Value::String(format!("value{}", i))),
+                "writer {} lost its update: {:?}",
+                i,
+                values
+            );
+        }
+    }
+
+    /// Same race, on the file-backed secret store.
+    #[test]
+    fn test_separate_config_instances_do_not_lose_secrets() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const WRITERS: usize = 8;
+
+        let dir = TempDir::new().unwrap();
+        let barrier = Arc::new(Barrier::new(WRITERS));
+
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|i| {
+                let barrier = Arc::clone(&barrier);
+                let dir = dir.path().to_path_buf();
+                thread::spawn(move || {
+                    let config = config_at(&dir);
+                    barrier.wait();
+                    config
+                        .set_secret(&format!("concurrent_secret_{}", i), &format!("value{}", i))
+                        .unwrap();
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // A fresh instance, so the assertion reads disk rather than a warm cache.
+        let config = config_at(dir.path());
+        for i in 0..WRITERS {
+            let value: String = config
+                .get_secret(&format!("concurrent_secret_{}", i))
+                .unwrap_or_else(|e| panic!("writer {} lost its secret: {}", i, e));
+            assert_eq!(value, format!("value{}", i));
+        }
+    }
+
+    /// A reader outside the lock must never see a half-written config. The
+    /// payload alternates between a short and a long sequence, because a short
+    /// write landing on top of a long one is exactly what a non-atomic rewrite
+    /// exposes as trailing garbage from the previous contents.
+    #[test]
+    fn test_concurrent_readers_never_observe_partial_config() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        const LONG_LEN: usize = 4000;
+
+        let dir = TempDir::new().unwrap();
+        let config = config_at(dir.path());
+        let config_path = dir.path().join(CONFIG_YAML_NAME);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_stop = Arc::clone(&stop);
+        let reader_path = config_path.clone();
+
+        let reader = thread::spawn(move || {
+            while !reader_stop.load(Ordering::Relaxed) {
+                // Missing is fine (nothing written yet); truncated is not.
+                let Ok(content) = std::fs::read_to_string(&reader_path) else {
+                    continue;
+                };
+                if content.is_empty() {
+                    continue;
+                }
+
+                let parsed: Mapping = serde_yaml::from_str(&content).unwrap_or_else(|e| {
+                    panic!(
+                        "reader observed a partially written config ({} bytes): {}",
+                        content.len(),
+                        e
+                    )
+                });
+
+                if let Some(payload) = parsed.get("payload") {
+                    let len = payload
+                        .as_sequence()
+                        .expect("payload should always be a sequence")
+                        .len();
+                    assert!(
+                        len == 1 || len == LONG_LEN,
+                        "reader observed a torn payload of {} items",
+                        len
+                    );
+                }
+            }
+        });
+
+        let short = vec!["x".to_string()];
+        let long: Vec<String> = (0..LONG_LEN).map(|i| format!("item{}", i)).collect();
+
+        for i in 0..40 {
+            let payload = if i % 2 == 0 { &short } else { &long };
+            config.set_param("payload", payload).unwrap();
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        reader.join().expect("reader observed a corrupt config");
+    }
+
+    /// The previous fixed `config.tmp` was shared by every writer; a unique name
+    /// per write means a failed or racing write can never strand one either.
+    #[test]
+    fn test_writes_leave_no_temp_files_behind() -> Result<(), ConfigError> {
+        let dir = TempDir::new().unwrap();
+        let config = config_at(dir.path());
+
+        for i in 0..5 {
+            config.set_param(&format!("key{}", i), i)?;
+        }
+        config.set_secret("api_key", &"secret")?;
+
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+
+        assert!(
+            leftovers.is_empty(),
+            "stray temp files left behind: {:?}",
+            leftovers
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_lock_excludes_a_second_holder() {
+        use std::thread;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join(CONFIG_YAML_NAME);
+
+        let held = acquire_file_lock(&target).unwrap();
+
+        let lock_file = lock_path_for(&target);
+        assert!(
+            lock_file.exists(),
+            "lock sidecar should sit next to the target"
+        );
+
+        // On another thread, because flock is per open-file-description: a second
+        // handle sees exactly what a second process would.
+        let probe = lock_file.clone();
+        let contended = thread::spawn(move || {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&probe)
+                .unwrap();
+            file.try_lock_exclusive().is_err()
+        })
+        .join()
+        .unwrap();
+        assert!(contended, "a second holder took the lock while it was held");
+
+        drop(held);
+
+        acquire_file_lock(&target).expect("lock must be reacquirable once released");
+    }
+
+    /// The rename installs a new inode, so permissions have to be carried over
+    /// explicitly or every save silently resets an operator's `chmod`.
+    #[test]
+    #[cfg(unix)]
+    fn test_atomic_write_preserves_existing_config_permissions() -> Result<(), ConfigError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(CONFIG_YAML_NAME);
+        std::fs::write(&config_path, "key1: value1\n")?;
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640))?;
+
+        let config = config_at(dir.path());
+        config.set_param("key2", "value2")?;
+
+        let mode = std::fs::metadata(&config_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "atomic rename reset the operator's chmod");
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_new_config_file_is_created_private() -> Result<(), ConfigError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let config = config_at(dir.path());
+
+        config.set_param("key1", "value1")?;
+
+        let mode = std::fs::metadata(dir.path().join(CONFIG_YAML_NAME))?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        Ok(())
+    }
+
+    /// `OpenOptions::mode` only applies when the OS *creates* the file, so the
+    /// old in-place write left an already-existing 0644 `secrets.yaml` leaking
+    /// every API key to other local users no matter how often it was rewritten.
+    #[test]
+    #[cfg(unix)]
+    fn test_secrets_file_permissions_repaired_on_rewrite() -> Result<(), ConfigError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let secrets_path = dir.path().join("secrets.yaml");
+        std::fs::write(&secrets_path, "existing_secret: kept\n")?;
+        std::fs::set_permissions(&secrets_path, std::fs::Permissions::from_mode(0o644))?;
+
+        let config = config_at(dir.path());
+        config.set_secret("api_key", &"secret123")?;
+
+        let mode = std::fs::metadata(&secrets_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "rewritten secrets inherited a loose mode");
+
+        let kept: String = config.get_secret("existing_secret")?;
+        assert_eq!(kept, "kept", "rewrite dropped a pre-existing secret");
+
+        Ok(())
     }
 }

@@ -98,7 +98,7 @@ pub fn theme_names() -> &'static [&'static str] {
 
 /// The active theme for this process (resolved once and cached).
 pub fn active_theme() -> &'static Theme {
-    *ACTIVE.get_or_init(resolve_theme)
+    ACTIVE.get_or_init(resolve_theme)
 }
 
 fn resolve_theme() -> &'static Theme {

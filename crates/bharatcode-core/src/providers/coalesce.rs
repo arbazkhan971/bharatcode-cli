@@ -262,18 +262,20 @@ mod tests {
     /// test never observes another test's `BHARATCODE_COALESCE` value.
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    struct GateGuard<'a>(std::sync::MutexGuard<'a, ()>);
+    struct GateGuard<'a> {
+        _lock: std::sync::MutexGuard<'a, ()>,
+    }
 
     fn enable() -> GateGuard<'static> {
         let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(ENV_VAR, "1");
-        GateGuard(g)
+        GateGuard { _lock: g }
     }
 
     fn disable() -> GateGuard<'static> {
         let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(ENV_VAR);
-        GateGuard(g)
+        GateGuard { _lock: g }
     }
 
     impl Drop for GateGuard<'_> {

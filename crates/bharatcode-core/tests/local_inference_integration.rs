@@ -14,10 +14,10 @@
 //!   TEST_VISION_MODEL="unsloth/gemma-4-E4B-it-GGUF:Q4_K_M" cargo test -p goose --test local_inference_integration test_local_inference_vision -- --ignored
 
 use base64::prelude::*;
-use futures::StreamExt;
 use bharatcode_core::conversation::message::Message;
 use bharatcode_core::providers::create;
 use bharatcode_providers::model::ModelConfig;
+use futures::StreamExt;
 
 const DEFAULT_TEST_MODEL: &str = "bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M";
 

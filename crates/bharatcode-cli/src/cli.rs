@@ -1,7 +1,4 @@
 use anyhow::Result;
-use clap::{Args, CommandFactory, Parser, Subcommand};
-use clap_complete::{generate, Shell as ClapShell};
-use clap_complete_nushell::Nushell as ClapNushell;
 use bharatcode_core::agents::GoosePlatform;
 use bharatcode_core::builtin_extension::register_builtin_extensions;
 use bharatcode_core::config::{Config, GooseMode};
@@ -10,12 +7,18 @@ use bharatcode_core::posthog::get_telemetry_choice;
 use bharatcode_core::recipe::Recipe;
 use bharatcode_core::source_roots::SourceRoot;
 use bharatcode_mcp::mcp_server_runner::{serve, McpCommand};
-use bharatcode_mcp::{AutoVisualiserRouter, ComputerControllerServer, MemoryServer, TutorialServer};
+use bharatcode_mcp::{
+    AutoVisualiserRouter, ComputerControllerServer, MemoryServer, TutorialServer,
+};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell as ClapShell};
+use clap_complete_nushell::Nushell as ClapNushell;
 
 #[cfg(feature = "telemetry")]
 use crate::commands::configure::configure_telemetry_consent_dialog;
 use crate::commands::configure::handle_configure;
 use crate::commands::info::handle_info;
+use crate::commands::mcp_registry::{handle_mcp_registry, McpRegistryAction};
 use crate::commands::plugin::{handle_plugin_install, handle_plugin_update};
 use crate::commands::project::{handle_project_default, handle_projects_interactive};
 use crate::commands::recipe::{handle_deeplink, handle_list, handle_open, handle_validate};
@@ -40,7 +43,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use tracing::warn;
 
-// `crates/goose-cli/src/commands/mod.rs` is a contended shared file in this
+// `crates/bharatcode-cli/src/commands/mod.rs` is a contended shared file in this
 // wave, so the offline model-pack module is declared here, from cli.rs (the
 // file that owns this feature), via an explicit `#[path]`.
 #[path = "commands/model_pack.rs"]
@@ -64,18 +67,6 @@ mod refactor;
 #[path = "commands/db.rs"]
 mod db_cmd;
 
-// Same rationale as the modules above: the read-only extension catalog
-// subcommand (`bharatcode catalog`) is declared here, from cli.rs, via an
-// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
-#[path = "commands/catalog.rs"]
-pub mod catalog_cmd;
-
-// Same rationale as the modules above: the read-only MCP-server registry
-// subcommand (`bharatcode mcp-registry`) is declared here, from cli.rs, via an
-// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
-#[path = "commands/mcp_registry.rs"]
-pub mod mcp_registry_cmd;
-
 // Same rationale as the modules above: the guided first-run onboarding wizard
 // (`bharatcode onboard`) is declared here, from cli.rs, via an explicit
 // `#[path]` rather than editing the contended `commands/mod.rs`.
@@ -94,19 +85,6 @@ mod transcript;
 #[path = "commands/welcome.rs"]
 mod welcome;
 
-// Same rationale as the modules above: the bounded, concurrency-capped
-// multi-session registry for the headless `bharatcode serve` path is declared
-// here, from cli.rs (the file that owns this feature), via an explicit `#[path]`
-// rather than editing the contended `commands/mod.rs`.
-#[path = "serve_registry.rs"]
-mod serve_registry;
-
-// Same rationale as the modules above: the opt-in headless multi-session
-// supervisor (`bharatcode serve-sessions`) is declared here, from cli.rs, via an
-// explicit `#[path]` rather than editing the contended `commands/mod.rs`.
-#[path = "commands/serve_sessions.rs"]
-mod serve_sessions;
-
 const BHARATCODE_SERVER_SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
 
 fn generate_serve_secret_key() -> String {
@@ -118,10 +96,117 @@ fn generate_serve_secret_key() -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindExposure {
+    /// Reachable only from this machine, so an unauthenticated endpoint stays local.
+    Loopback,
+    /// Reachable from other hosts, or not provably local. Requires a secret.
+    Exposed,
+}
+
+/// Classify a `--host` value by who can reach the resulting listener.
+///
+/// Anything that is not a literal loopback IP (or the `localhost` name) is treated
+/// as `Exposed`, including unspecified addresses (`0.0.0.0`, `::`), hostnames we
+/// would have to resolve, and values we cannot parse at all. Resolution is
+/// deliberately not attempted: a name can point anywhere, and DNS answers can
+/// change after the auth decision is made.
+fn classify_bind_host(host: &str) -> BindExposure {
+    use std::net::IpAddr;
+
+    match parse_bind_ip(host) {
+        Some(IpAddr::V4(addr)) if addr.is_loopback() => BindExposure::Loopback,
+        Some(IpAddr::V6(addr)) if addr.is_loopback() => BindExposure::Loopback,
+        Some(IpAddr::V6(addr)) if addr.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()) => {
+            BindExposure::Loopback
+        }
+        Some(_) => BindExposure::Exposed,
+        None if host.trim().eq_ignore_ascii_case("localhost") => BindExposure::Loopback,
+        None => BindExposure::Exposed,
+    }
+}
+
+/// Parse a `--host` value as a bare IP, accepting the bracketed IPv6 form (`[::1]`).
+fn parse_bind_ip(host: &str) -> Option<std::net::IpAddr> {
+    let host = host.trim();
+    host.strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse()
+        .ok()
+}
+
+/// Build the listener address. Only literal IPs are accepted, so the address we
+/// bind is the same one [`resolve_serve_auth`] classified.
+fn bind_socket_addr(host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    let ip = parse_bind_ip(host).ok_or_else(|| {
+        anyhow::anyhow!(
+            "--host {host} is not an IP address; bharatcode serve binds a literal address \
+             (for example 127.0.0.1, ::1, or 0.0.0.0)"
+        )
+    })?;
+
+    Ok(std::net::SocketAddr::new(ip, port))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ServeAuth {
+    /// Every ACP connection must present this secret.
+    Required(String),
+    /// Loopback-only bind with no secret configured: unauthenticated, as before.
+    LoopbackUnauthenticated,
+}
+
+/// Decide how the headless ACP endpoint authenticates, given the bind host and the
+/// raw `BHARATCODE_SERVER__SECRET_KEY` value.
+///
+/// A nonblank secret always enables auth. Without one, only a loopback bind is
+/// allowed to start; every other host is refused rather than silently exposed.
+fn resolve_serve_auth(host: &str, raw_secret: Option<&str>) -> Result<ServeAuth> {
+    let secret = raw_secret
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty());
+
+    if let Some(secret) = secret {
+        return Ok(ServeAuth::Required(secret.to_string()));
+    }
+
+    if classify_bind_host(host) == BindExposure::Loopback {
+        return Ok(ServeAuth::LoopbackUnauthenticated);
+    }
+
+    let cause = if raw_secret.is_some() {
+        format!("{BHARATCODE_SERVER_SECRET_KEY_ENV} is set but blank")
+    } else {
+        format!("{BHARATCODE_SERVER_SECRET_KEY_ENV} is not set")
+    };
+
+    let exposure = if parse_bind_ip(host).is_some() {
+        "is reachable beyond this machine"
+    } else {
+        "is a hostname that cannot be verified as loopback"
+    };
+
+    Err(anyhow::anyhow!(
+        "refusing to start: --host {host} {exposure}, but {cause}.\n\
+         An unauthenticated ACP endpoint on a non-loopback address lets anyone who can \
+         reach this port run tools and read files as you.\n\n\
+         Set a secret before exposing the endpoint:\n    \
+         export {BHARATCODE_SERVER_SECRET_KEY_ENV}=\"$(openssl rand -hex 32)\"\n    \
+         bharatcode serve --host {host}\n\n\
+         Or bind to loopback only, which needs no secret:\n    \
+         bharatcode serve --host 127.0.0.1"
+    ))
+}
+
 #[derive(Parser)]
 #[command(name = "bharatcode", author, version, display_name = "", about, long_about = None)]
 pub struct Cli {
-    #[arg(long, global = true, help = "Auto-approve all tool calls for this run (no confirmation prompts)")]
+    #[arg(
+        long,
+        global = true,
+        help = "Auto-approve all tool calls for this run (no confirmation prompts)"
+    )]
     pub yolo: bool,
     #[command(subcommand)]
     command: Option<Command>,
@@ -201,7 +286,10 @@ pub struct StreamableHttpOptions {
 
 fn parse_streamable_http_extension(input: &str) -> Result<StreamableHttpOptions, String> {
     let mut input_iter = input.split_whitespace();
-    let (mut url, mut timeout) = (String::new(), bharatcode_core::config::DEFAULT_EXTENSION_TIMEOUT);
+    let (mut url, mut timeout) = (
+        String::new(),
+        bharatcode_core::config::DEFAULT_EXTENSION_TIMEOUT,
+    );
 
     if let Some(url_str) = input_iter.next() {
         url.push_str(url_str);
@@ -445,6 +533,20 @@ pub struct RunBehavior {
         hide = true
     )]
     pub scheduled_job_id: Option<String>,
+}
+
+/// The mode the user asked for on this run, if any. `--yolo` is the one CLI flag
+/// that overrides both the session's own mode and the configured default, so it
+/// is carried through the session builder rather than inferred from config.
+fn explicit_goose_mode(yolo: bool) -> Option<GooseMode> {
+    yolo.then_some(GooseMode::Auto)
+}
+
+/// The mode a session created on this run is born with: the explicit request when
+/// there is one, otherwise the configured mode (which defaults to the safe
+/// [`GooseMode::SmartApprove`] when unset).
+fn session_goose_mode(explicit: Option<GooseMode>) -> GooseMode {
+    explicit.unwrap_or_else(|| Config::global().get_bharatcode_mode().unwrap_or_default())
 }
 
 async fn get_or_create_session_id(
@@ -798,30 +900,6 @@ enum SkillsCommand {
     /// List all skills available to the bharatcode agent
     #[command(about = "List all skills available to the bharatcode agent")]
     List,
-}
-
-#[derive(Subcommand)]
-enum McpRegistryAction {
-    /// List every MCP server in the registry
-    #[command(about = "List every MCP server in the registry")]
-    List,
-
-    /// Filter the registry by id, name, or category
-    #[command(about = "Filter the registry by id, name, or category (case-insensitive)")]
-    Search {
-        #[arg(
-            value_name = "QUERY",
-            help = "Substring matched against id, name, or category"
-        )]
-        query: String,
-    },
-
-    /// Show one server's details and a ready-to-paste config snippet
-    #[command(about = "Show one server's details and a ready-to-paste extension-config snippet")]
-    Show {
-        #[arg(value_name = "ID", help = "Id of the MCP server to show")]
-        id: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1289,7 +1367,7 @@ enum Command {
                       2. A local checkout's ui/text/dist/tui.js (dev workflow)\n  \
                       3. `npx --yes --package <spec> -- bharatcode-tui` (deployed installs)\n\
                       \n\
-                      Override the npm spec via BHARATCODE_TUI_NPM_SPEC (default: @aaif/bharatcode@latest).\n\
+                      Override the launcher with BHARATCODE_TUI_SCRIPT; otherwise the installed CLI starts directly.\n\
                       Local script mode requires `node` on PATH; npx mode requires `npx` on PATH.\n\
                       Any extra arguments are passed through to the TUI."
     )]
@@ -1737,13 +1815,6 @@ async fn handle_mcp_command(server: McpCommand) -> Result<()> {
     Ok(())
 }
 
-/// Headless multi-session manager, shared verbatim with `goose-server`'s
-/// `multi` module. It is `#[path]`-included here so the real
-/// `bharatcode serve --multi` call site can drive the registry without pulling
-/// the whole server crate into the CLI's dependency graph.
-#[path = "../../bharatcode-server/src/multi.rs"]
-mod bharatcode_multi;
-
 async fn handle_serve_command(
     host: String,
     port: u16,
@@ -1758,28 +1829,21 @@ async fn handle_serve_command(
     use tracing::{info, warn};
 
     let _multi_registry = if multi {
-        let registry = bharatcode_multi::MultiSessionRegistry::from_env();
+        let registry = crate::serve_registry::SessionRegistry::from_env();
         // Reserve the primary slot up front so an explicit cap of 1 still hosts
         // exactly one session, matching the legacy single-session path.
-        if let Err(err) = registry.register("primary") {
+        if let Err(err) = registry.admit("primary", Some("primary".to_string())) {
             warn!("multi-session manager could not reserve the primary slot: {err}");
         }
         info!(
             "Multi-session manager enabled (cap {}, {} active)",
-            registry.max_sessions(),
+            registry.capacity(),
             registry.active_count()
         );
         Some(Arc::new(registry))
     } else {
         None
     };
-
-    // Stand up the bounded, concurrency-capped session registry for this
-    // headless process and log its capacity before the server boots. The cap is
-    // read from `BHARATCODE_MAX_SESSIONS` (default 8); single-session behaviour
-    // is unchanged.
-    let registry = serve_registry::SessionRegistry::from_env();
-    tracing::info!("{}", registry.capacity_line());
 
     let builtins = if builtins.is_empty() {
         vec!["developer".to_string()]
@@ -1806,20 +1870,20 @@ async fn handle_serve_command(
         goose_platform: GoosePlatform::GooseCli,
         additional_source_roots,
     }));
-    let env_secret = std::env::var(BHARATCODE_SERVER_SECRET_KEY_ENV)
-        .ok()
-        .map(|secret| secret.trim().to_string())
-        .filter(|secret| !secret.is_empty());
-    let require_token = env_secret.is_some();
-    if !require_token {
-        warn!(
-            "{BHARATCODE_SERVER_SECRET_KEY_ENV} is not set; the ACP endpoint will accept unauthenticated connections"
-        );
-    }
-    let secret_key = env_secret.unwrap_or_else(generate_serve_secret_key);
+    let addr: SocketAddr = bind_socket_addr(&host, port)?;
+
+    let raw_secret = std::env::var(BHARATCODE_SERVER_SECRET_KEY_ENV).ok();
+    let (secret_key, require_token) = match resolve_serve_auth(&host, raw_secret.as_deref())? {
+        ServeAuth::Required(secret) => (secret, true),
+        ServeAuth::LoopbackUnauthenticated => {
+            warn!(
+                "{BHARATCODE_SERVER_SECRET_KEY_ENV} is not set; the loopback ACP endpoint will accept unauthenticated connections"
+            );
+            (generate_serve_secret_key(), false)
+        }
+    };
     let router = create_router(server, secret_key, require_token);
 
-    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     info!("Starting ACP server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1960,8 +2024,10 @@ async fn handle_interactive_session(
         }
     }
 
-    let goose_mode = if yolo { GooseMode::Auto } else { Config::global().get_bharatcode_mode().unwrap_or_default() };
-    let mut session_id = get_or_create_session_id(identifier, resume, false, goose_mode).await?;
+    let explicit_mode = explicit_goose_mode(yolo);
+    let mut session_id =
+        get_or_create_session_id(identifier, resume, false, session_goose_mode(explicit_mode))
+            .await?;
 
     if fork {
         if let Some(id) = session_id {
@@ -1994,6 +2060,7 @@ async fn handle_interactive_session(
         output_format: "text".to_string(),
         container: session_opts.container.map(Container::new),
         stats: false,
+        goose_mode: explicit_mode,
     })
     .await;
 
@@ -2145,7 +2212,7 @@ fn parse_run_input(
     }
 }
 
-async fn handle_run_command(
+struct RunCommandOptions {
     input_opts: InputOptions,
     identifier: Option<Identifier>,
     run_behavior: RunBehavior,
@@ -2154,7 +2221,19 @@ async fn handle_run_command(
     output_opts: OutputOptions,
     model_opts: ModelOptions,
     yolo: bool,
-) -> Result<()> {
+}
+
+async fn handle_run_command(options: RunCommandOptions) -> Result<()> {
+    let RunCommandOptions {
+        input_opts,
+        identifier,
+        run_behavior,
+        session_opts,
+        extension_opts,
+        output_opts,
+        model_opts,
+        yolo,
+    } = options;
     #[cfg(feature = "telemetry")]
     if run_behavior.interactive && get_telemetry_choice().is_none() {
         configure_telemetry_consent_dialog()?;
@@ -2177,12 +2256,12 @@ async fn handle_run_command(
         }
     }
 
-    let goose_mode = if yolo { GooseMode::Auto } else { Config::global().get_bharatcode_mode().unwrap_or_default() };
+    let explicit_mode = explicit_goose_mode(yolo);
     let session_id = get_or_create_session_id(
         identifier,
         run_behavior.resume,
         run_behavior.no_session,
-        goose_mode,
+        session_goose_mode(explicit_mode),
     )
     .await?;
 
@@ -2208,6 +2287,7 @@ async fn handle_run_command(
         output_format: output_opts.output_format,
         container: session_opts.container.map(Container::new),
         stats: run_behavior.stats,
+        goose_mode: explicit_mode,
     })
     .await;
 
@@ -2325,11 +2405,9 @@ async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
 
 #[cfg(feature = "local-inference")]
 fn print_download_progress(manager: &bharatcode_core::download_manager::DownloadManager) {
-    let Some(progress) = manager
-        .list_progress()
-        .into_iter()
-        .find(|progress| progress.status == bharatcode_core::download_manager::DownloadStatus::Downloading)
-    else {
+    let Some(progress) = manager.list_progress().into_iter().find(|progress| {
+        progress.status == bharatcode_core::download_manager::DownloadStatus::Downloading
+    }) else {
         return;
     };
 
@@ -2479,8 +2557,9 @@ async fn handle_default_session(yolo: bool) -> Result<()> {
         configure_telemetry_consent_dialog()?;
     }
 
-    let goose_mode = if yolo { GooseMode::Auto } else { Config::global().get_bharatcode_mode().unwrap_or_default() };
-    let session_id = get_or_create_session_id(None, false, false, goose_mode).await?;
+    let explicit_mode = explicit_goose_mode(yolo);
+    let session_id =
+        get_or_create_session_id(None, false, false, session_goose_mode(explicit_mode)).await?;
 
     let mut session = build_session(SessionBuilderConfig {
         session_id,
@@ -2504,6 +2583,7 @@ async fn handle_default_session(yolo: bool) -> Result<()> {
         output_format: "text".to_string(),
         container: None,
         stats: false,
+        goose_mode: explicit_mode,
     })
     .await;
     session.interactive(None).await
@@ -2571,17 +2651,10 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Db { vacuum, stats }) => {
             db_cmd::handle_db(db_cmd::DbOptions { vacuum, stats }).await
         }
-        Some(Command::Catalog { show, kind }) => catalog_cmd::handle_catalog(show, kind),
-        Some(Command::McpRegistry { action }) => {
-            let action = match action {
-                McpRegistryAction::List => mcp_registry_cmd::McpRegistryAction::List,
-                McpRegistryAction::Search { query } => {
-                    mcp_registry_cmd::McpRegistryAction::Search { query }
-                }
-                McpRegistryAction::Show { id } => mcp_registry_cmd::McpRegistryAction::Show { id },
-            };
-            mcp_registry_cmd::handle_mcp_registry(action)
+        Some(Command::Catalog { show, kind }) => {
+            crate::commands::catalog::handle_catalog(show, kind)
         }
+        Some(Command::McpRegistry { action }) => handle_mcp_registry(action),
         Some(Command::Info { verbose, check }) => handle_info(verbose, check).await,
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins }) => bharatcode_core::acp::server::run(builtins).await,
@@ -2631,7 +2704,7 @@ pub async fn cli() -> anyhow::Result<()> {
             output_opts,
             model_opts,
         }) => {
-            handle_run_command(
+            handle_run_command(RunCommandOptions {
                 input_opts,
                 identifier,
                 run_behavior,
@@ -2639,8 +2712,8 @@ pub async fn cli() -> anyhow::Result<()> {
                 extension_opts,
                 output_opts,
                 model_opts,
-                cli.yolo,
-            )
+                yolo: cli.yolo,
+            })
             .await
         }
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
@@ -2737,10 +2810,9 @@ pub async fn cli() -> anyhow::Result<()> {
             apply,
         }),
         Some(Command::ServeSessions { addr, max_sessions }) => {
-            serve_sessions::handle_serve_sessions(serve_sessions::ServeSessionsOptions {
-                addr,
-                max_sessions,
-            })
+            crate::commands::serve_sessions::handle_serve_sessions(
+                crate::commands::serve_sessions::ServeSessionsOptions { addr, max_sessions },
+            )
             .await
         }
         Some(Command::ValidateExtensions { file }) => {
@@ -2917,6 +2989,149 @@ mod tests {
         match cli.command {
             Some(Command::Tui { args }) => assert_eq!(args, vec!["--theme", "dark"]),
             _ => panic!("expected tui command"),
+        }
+    }
+
+    #[test]
+    fn loopback_hosts_are_classified_local() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.2",
+            " 127.0.0.1 ",
+            "::1",
+            "[::1]",
+            "::ffff:127.0.0.1",
+            "localhost",
+            "LocalHost",
+        ] {
+            assert_eq!(
+                classify_bind_host(host),
+                BindExposure::Loopback,
+                "{host} should be loopback"
+            );
+        }
+    }
+
+    #[test]
+    fn unspecified_and_routable_hosts_are_classified_exposed() {
+        for host in [
+            "0.0.0.0",
+            "::",
+            "[::]",
+            "192.168.1.10",
+            "10.0.0.5",
+            "172.16.4.2",
+            "203.0.113.7",
+            "2606:4700:4700::1111",
+            "::ffff:0.0.0.0",
+            "fe80::1",
+            "bharatcode.internal",
+            "localhost.attacker.example",
+            "",
+            "not-an-address",
+        ] {
+            assert_eq!(
+                classify_bind_host(host),
+                BindExposure::Exposed,
+                "{host} should be exposed"
+            );
+        }
+    }
+
+    #[test]
+    fn exposed_bind_without_secret_is_refused() {
+        for host in ["0.0.0.0", "::", "192.168.1.10", "203.0.113.7", "some-host"] {
+            let err = resolve_serve_auth(host, None)
+                .expect_err("exposed bind must not start unauthenticated");
+            let message = err.to_string();
+
+            assert!(message.contains("refusing to start"), "{message}");
+            assert!(
+                message.contains(BHARATCODE_SERVER_SECRET_KEY_ENV),
+                "{message}"
+            );
+            assert!(message.contains(host), "{message}");
+        }
+    }
+
+    #[test]
+    fn exposed_bind_with_blank_secret_is_refused() {
+        for blank in ["", "   ", "\t\n"] {
+            let err = resolve_serve_auth("0.0.0.0", Some(blank))
+                .expect_err("blank secret must not count as configured");
+
+            assert!(err.to_string().contains("is set but blank"), "{err}");
+        }
+    }
+
+    #[test]
+    fn exposed_bind_with_secret_requires_a_token() {
+        assert_eq!(
+            resolve_serve_auth("0.0.0.0", Some("  s3cret  ")).unwrap(),
+            ServeAuth::Required("s3cret".to_string())
+        );
+        assert_eq!(
+            resolve_serve_auth("::", Some("s3cret")).unwrap(),
+            ServeAuth::Required("s3cret".to_string())
+        );
+    }
+
+    #[test]
+    fn loopback_bind_without_secret_stays_unauthenticated() {
+        for host in ["127.0.0.1", "::1", "[::1]", "localhost"] {
+            assert_eq!(
+                resolve_serve_auth(host, None).unwrap(),
+                ServeAuth::LoopbackUnauthenticated,
+                "{host} should keep the no-secret loopback path"
+            );
+            assert_eq!(
+                resolve_serve_auth(host, Some("   ")).unwrap(),
+                ServeAuth::LoopbackUnauthenticated,
+                "{host} with a blank secret should keep the no-secret loopback path"
+            );
+        }
+    }
+
+    #[test]
+    fn loopback_bind_with_secret_still_requires_a_token() {
+        assert_eq!(
+            resolve_serve_auth("127.0.0.1", Some("s3cret")).unwrap(),
+            ServeAuth::Required("s3cret".to_string())
+        );
+    }
+
+    #[test]
+    fn bind_socket_addr_accepts_literal_ipv4_and_ipv6() {
+        assert_eq!(
+            bind_socket_addr("127.0.0.1", 3284).unwrap().to_string(),
+            "127.0.0.1:3284"
+        );
+        assert_eq!(
+            bind_socket_addr("::", 3284).unwrap().to_string(),
+            "[::]:3284"
+        );
+        assert_eq!(
+            bind_socket_addr("[::1]", 3284).unwrap().to_string(),
+            "[::1]:3284"
+        );
+    }
+
+    #[test]
+    fn bind_socket_addr_rejects_hostnames() {
+        let err = bind_socket_addr("localhost", 3284).expect_err("hostnames are not bound");
+
+        assert!(err.to_string().contains("is not an IP address"), "{err}");
+    }
+
+    #[test]
+    fn serve_command_defaults_to_loopback_host() {
+        let cli = Cli::try_parse_from(["bharatcode", "serve"]).expect("parse failed");
+
+        match cli.command {
+            Some(Command::Serve { host, .. }) => {
+                assert_eq!(classify_bind_host(&host), BindExposure::Loopback)
+            }
+            _ => panic!("expected serve command"),
         }
     }
 }

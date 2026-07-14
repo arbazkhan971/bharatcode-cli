@@ -107,7 +107,8 @@ impl ToolGovernor {
     /// The returned guard is held for the wrapped stream's lifetime; dropping it
     /// (on completion or cancellation) releases the slot for the next stream.
     /// When the cap is unbounded this still succeeds immediately.
-    pub async fn acquire_permit(&self) -> OwnedSemaphorePermit {
+    #[cfg(test)]
+    async fn acquire_permit(&self) -> OwnedSemaphorePermit {
         acquire_owned(&self.semaphore).await
     }
 

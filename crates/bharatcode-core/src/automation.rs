@@ -25,7 +25,7 @@
 //!
 //! This module is original work; nothing here is ported from third-party sources.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 /// A single typed step in an automation script.
@@ -138,10 +138,8 @@ pub fn parse_jsonl(input: &str) -> Result<Script> {
 ///   (`requires-agent`); the caller is responsible for dispatching it and may
 ///   update `last_output` between runs.
 ///
-/// `last_output` is the rolling "last captured output" the script asserts over;
-/// it is taken by mutable reference so an agent-aware caller can thread real
-/// output through across invocations.
-pub fn execute_offline(script: &Script, last_output: &mut String) -> ScriptReport {
+/// `last_output` is the rolling "last captured output" the script asserts over.
+pub fn execute_offline(script: &Script, last_output: &str) -> ScriptReport {
     let mut results = Vec::with_capacity(script.steps.len());
     for step in &script.steps {
         let result = match step {
@@ -230,8 +228,8 @@ mod tests {
             ],
         };
 
-        let mut last_output = String::from("the value present here");
-        let report = execute_offline(&script, &mut last_output);
+        let last_output = String::from("the value present here");
+        let report = execute_offline(&script, &last_output);
 
         assert_eq!(report.results.len(), 3);
         assert!(report.results[0].ok, "set-env passes");
@@ -251,8 +249,8 @@ mod tests {
                 prompt: "do a thing".to_string(),
             }],
         };
-        let mut out = String::new();
-        let report = execute_offline(&script, &mut out);
+        let out = String::new();
+        let report = execute_offline(&script, &out);
         assert!(report.results[0].ok, "skip is benign, not a failure");
         assert!(report.results[0].detail.contains("requires-agent"));
     }
@@ -276,8 +274,8 @@ mod tests {
                 },
             ],
         };
-        let mut out = String::from("x");
-        let report = execute_offline(&script, &mut out);
+        let out = String::from("x");
+        let report = execute_offline(&script, &out);
         for r in &report.results {
             let lower = r.detail.to_ascii_lowercase();
             assert!(!lower.contains("goose"), "detail leaks name: {}", r.detail);

@@ -6,6 +6,10 @@ use agent_client_protocol::schema::{
     SessionConfigOptionValue, SessionInfo, SetSessionConfigOptionRequest,
 };
 use agent_client_protocol::ErrorCode;
+use bharatcode_core::config::GooseMode;
+use bharatcode_core::conversation::message::{Message, MessageMetadata};
+use bharatcode_core::custom_requests::{GetSessionInfoRequest, GetSessionInfoResponse};
+use bharatcode_core::session::{SessionManager, SessionType};
 use common_tests::fixtures::server::AcpServerConnection;
 use common_tests::fixtures::{run_test, Connection, OpenAiFixture, Session, TestConnectionConfig};
 #[cfg(feature = "code-mode")]
@@ -22,10 +26,6 @@ use common_tests::{
     run_prompt_model_mismatch, run_prompt_skill, run_session_name_update_notification,
     run_shell_terminal_false, run_shell_terminal_true,
 };
-use bharatcode_core::config::GooseMode;
-use bharatcode_core::conversation::message::{Message, MessageMetadata};
-use bharatcode_core::custom_requests::{GetSessionInfoRequest, GetSessionInfoResponse};
-use bharatcode_core::session::{SessionManager, SessionType};
 use std::path::Path;
 
 tests_config_option_set_error!(AcpServerConnection);
@@ -119,11 +119,14 @@ fn assert_invalid_params(error: anyhow::Error) {
 fn include_last_message_snippet_meta(
     value: serde_json::Value,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let mut goose = serde_json::Map::new();
-    goose.insert("includeLastMessageSnippet".to_string(), value);
+    let mut bharatcode = serde_json::Map::new();
+    bharatcode.insert("includeLastMessageSnippet".to_string(), value);
 
     let mut meta = serde_json::Map::new();
-    meta.insert("goose".to_string(), serde_json::Value::Object(goose));
+    meta.insert(
+        "bharatcode".to_string(),
+        serde_json::Value::Object(bharatcode),
+    );
     meta
 }
 

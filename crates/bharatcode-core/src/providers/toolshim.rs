@@ -34,15 +34,16 @@
 use super::local_inference::LOCAL_LLM_MODEL_CONFIG_KEY;
 use super::ollama::OLLAMA_DEFAULT_PORT;
 use super::ollama::OLLAMA_HOST;
+use crate::agents::platform_extensions::developer::redact::redact;
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
 use crate::model_config::model_config_from_user_config;
 use crate::providers::base::DEFAULT_PROVIDER_TIMEOUT_SECS;
 use anyhow::Result;
-use futures::StreamExt;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::formats::openai::create_request;
 use bharatcode_providers::images::ImageFormat;
+use futures::StreamExt;
 use reqwest::Client;
 use rmcp::model::{object, CallToolRequestParams, RawContent, Tool};
 use serde_json::{json, Value};
@@ -63,6 +64,13 @@ const TOOL_CALL_BEGIN: &str = "<|tool_call_begin|>";
 const TOOL_CALL_ARGUMENT_BEGIN: &str = "<|tool_call_argument_begin|>";
 const TOOL_CALL_ARGUMENT_END: &str = "<|tool_call_argument_end|>";
 const TOOL_CALL_END: &str = "<|tool_call_end|>";
+
+/// Interpreter payloads and responses carry the whole assistant turn, so they
+/// are only ever emitted at `trace` level and are scrubbed of high-confidence
+/// secrets first.
+fn redacted_json(value: &Value) -> String {
+    redact(&serde_json::to_string(value).unwrap_or_default())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolshimBackend {
@@ -705,10 +713,7 @@ impl OllamaInterpreter {
         payload["stream"] = json!(false); // needed for the /api/chat endpoint to work
         payload["format"] = format_schema;
 
-        tracing::info!(
-            "Tool interpreter payload: {}",
-            serde_json::to_string_pretty(&payload).unwrap_or_default()
-        );
+        tracing::trace!("Tool interpreter payload: {}", redacted_json(&payload));
 
         let response = self.client.post(&url).json(&payload).send().await?;
 
@@ -739,10 +744,7 @@ impl OllamaInterpreter {
         response: &Value,
     ) -> Result<Vec<CallToolRequestParams>, ProviderError> {
         let mut tool_calls = Vec::new();
-        tracing::info!(
-            "Tool interpreter response is {}",
-            serde_json::to_string_pretty(&response).unwrap_or_default()
-        );
+        tracing::trace!("Tool interpreter response: {}", redacted_json(response));
         // Extract tool_calls array from the response
         if response.get("message").is_some() && response["message"].get("content").is_some() {
             let content = response["message"]["content"].as_str().unwrap_or_default();
@@ -1066,6 +1068,59 @@ mod tests {
                 "interpreter should not be called".to_string(),
             ))
         }
+    }
+
+    // The fake credential is assembled from fragments at runtime so no
+    // contiguous, real-looking secret literal exists in source.
+    #[test]
+    fn redacted_json_masks_secrets_in_interpreter_payload() {
+        let secret = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+        let payload = json!({
+            "model": "mistral-nemo",
+            "messages": [{
+                "role": "user",
+                "content": format!("Request: run `aws configure` with {secret}"),
+            }],
+        });
+
+        let logged = redacted_json(&payload);
+
+        assert!(
+            !logged.contains(&secret),
+            "secret leaked into log: {logged}"
+        );
+        assert!(
+            logged.contains("[REDACTED]"),
+            "expected redaction: {logged}"
+        );
+    }
+
+    #[test]
+    fn redacted_json_masks_secrets_in_interpreter_response() {
+        let secret = format!("ghp_{}", "1234567890abcdefghijklmnopqrstuvwxyz");
+        let response = json!({ "message": { "content": format!("token is {secret}") } });
+
+        let logged = redacted_json(&response);
+
+        assert!(
+            !logged.contains(&secret),
+            "secret leaked into log: {logged}"
+        );
+        assert!(
+            logged.contains("[REDACTED]"),
+            "expected redaction: {logged}"
+        );
+    }
+
+    #[test]
+    fn redacted_json_keeps_non_sensitive_fields_readable() {
+        let payload = json!({ "model": "mistral-nemo", "stream": false });
+
+        let logged = redacted_json(&payload);
+
+        assert!(logged.contains("mistral-nemo"));
+        assert!(logged.contains("stream"));
+        assert!(!logged.contains("[REDACTED]"));
     }
 
     #[test]

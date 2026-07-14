@@ -36,8 +36,11 @@ pub struct RetryConfig {
     pub backoff_multiplier: f64,
     /// Maximum interval between retries in milliseconds
     pub max_interval_ms: u64,
-    /// When true, only retry on transient errors (ServerError, NetworkError,
-    /// RateLimitExceeded). RequestFailed (4xx client errors) will not be retried.
+    /// When true, only retry transient errors (`ServerError`, `NetworkError`, and
+    /// `RateLimitExceeded`). `RequestFailed` client errors are returned immediately.
+    ///
+    /// Callers that need the previous behavior can opt in with
+    /// [`RetryConfig::retry_request_failed`].
     pub transient_only: bool,
 }
 
@@ -48,7 +51,7 @@ impl Default for RetryConfig {
             initial_interval_ms: DEFAULT_INITIAL_RETRY_INTERVAL_MS,
             backoff_multiplier: DEFAULT_BACKOFF_MULTIPLIER,
             max_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
-            transient_only: false,
+            transient_only: true,
         }
     }
 }
@@ -65,12 +68,20 @@ impl RetryConfig {
             initial_interval_ms,
             backoff_multiplier,
             max_interval_ms,
-            transient_only: false,
+            ..Default::default()
         }
     }
 
+    /// Restrict retries to transient errors. Already the default; kept so callers
+    /// can state the policy explicitly.
     pub fn transient_only(mut self) -> Self {
         self.transient_only = true;
+        self
+    }
+
+    /// Opt in to retrying `RequestFailed` errors.
+    pub fn retry_request_failed(mut self) -> Self {
+        self.transient_only = false;
         self
     }
 
@@ -294,11 +305,28 @@ impl<P: Provider> ProviderRetry for P {
 mod tests {
     use super::*;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn fast_config() -> RetryConfig {
+        RetryConfig {
+            max_retries: 2,
+            initial_interval_ms: 1,
+            max_interval_ms: 1,
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn default_config_retries_request_failed() {
+    fn default_config_skips_request_failed() {
         let config = RetryConfig::default();
         let error = ProviderError::RequestFailed("Bad request (400): model not found".into());
-        assert!(should_retry(&error, &config));
+        assert!(!should_retry(&error, &config));
+    }
+
+    #[test]
+    fn default_config_is_transient_only() {
+        assert!(RetryConfig::default().transient_only);
+        assert!(RetryConfig::new(3, 1000, 2.0, 30_000).transient_only);
     }
 
     #[test]
@@ -306,6 +334,76 @@ mod tests {
         let config = RetryConfig::default().transient_only();
         let error = ProviderError::RequestFailed("Bad request (400): model not found".into());
         assert!(!should_retry(&error, &config));
+    }
+
+    #[test]
+    fn retry_request_failed_opts_back_in() {
+        let config = RetryConfig::default().retry_request_failed();
+        assert!(!config.transient_only);
+        assert!(should_retry(
+            &ProviderError::RequestFailed("Bad request (400): model not found".into()),
+            &config
+        ));
+    }
+
+    #[test]
+    fn struct_literal_opt_in_retries_request_failed() {
+        let config = RetryConfig {
+            transient_only: false,
+            ..Default::default()
+        };
+        assert!(should_retry(
+            &ProviderError::RequestFailed("Bad request (400): model not found".into()),
+            &config
+        ));
+    }
+
+    #[tokio::test]
+    async fn default_config_calls_operation_once_on_request_failed() {
+        let calls = AtomicUsize::new(0);
+
+        let result: Result<(), ProviderError> = retry_operation(&fast_config(), || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::RequestFailed(
+                "Bad request (400): model not found".into(),
+            ))
+        })
+        .await;
+
+        assert!(matches!(result, Err(ProviderError::RequestFailed(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn opted_in_config_retries_request_failed_until_exhausted() {
+        let config = fast_config().retry_request_failed();
+        let calls = AtomicUsize::new(0);
+
+        let result: Result<(), ProviderError> = retry_operation(&config, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::RequestFailed(
+                "Bad request (400): model not found".into(),
+            ))
+        })
+        .await;
+
+        assert!(matches!(result, Err(ProviderError::RequestFailed(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), config.max_retries + 1);
+    }
+
+    #[tokio::test]
+    async fn default_config_retries_server_error() {
+        let calls = AtomicUsize::new(0);
+        let config = fast_config();
+
+        let result: Result<(), ProviderError> = retry_operation(&config, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::ServerError("500 internal".into()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(ProviderError::ServerError(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), config.max_retries + 1);
     }
 
     #[test]

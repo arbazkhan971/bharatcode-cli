@@ -27,11 +27,11 @@ GOOSE_BIN="$SCRIPT_DIR/target/debug/goose"
 # Apply provider/model overrides if set
 if [ -n "$COMPACTION_PROVIDER" ]; then
   echo "Using override provider: $COMPACTION_PROVIDER"
-  export GOOSE_PROVIDER="$COMPACTION_PROVIDER"
+  export BHARATCODE_PROVIDER="$COMPACTION_PROVIDER"
 fi
 if [ -n "$COMPACTION_MODEL" ]; then
   echo "Using override model: $COMPACTION_MODEL"
-  export GOOSE_MODEL="$COMPACTION_MODEL"
+  export BHARATCODE_MODEL="$COMPACTION_MODEL"
 fi
 if [ -n "$COMPACTION_PROVIDER" ] || [ -n "$COMPACTION_MODEL" ]; then
   echo ""
@@ -296,9 +296,9 @@ else
   else
     # Configure provider to use proxy and skip backoff
     export ANTHROPIC_HOST="http://localhost:$PROXY_PORT"
-    export GOOSE_PROVIDER_SKIP_BACKOFF=true
-    export GOOSE_PROVIDER=anthropic
-    export GOOSE_MODEL=claude-haiku-4-5
+    export BHARATCODE_PROVIDER_SKIP_BACKOFF=true
+    export BHARATCODE_PROVIDER=anthropic
+    export BHARATCODE_MODEL=claude-haiku-4-5
 
     echo "Step 1: Creating session (should trigger context-length error and compaction)..."
     (cd "$TESTDIR" && "$GOOSE_BIN" run --text "hello world" 2>&1) | tee "$OUTPUT"
@@ -339,9 +339,9 @@ else
     pkill -f "uv run.*--port $PROXY_PORT" 2>/dev/null || true
     wait $PROXY_PID 2>/dev/null || true
     unset ANTHROPIC_HOST
-    unset GOOSE_PROVIDER_SKIP_BACKOFF
-    unset GOOSE_PROVIDER
-    unset GOOSE_MODEL
+    unset BHARATCODE_PROVIDER_SKIP_BACKOFF
+    unset BHARATCODE_PROVIDER
+    unset BHARATCODE_MODEL
     unset UV_INDEX_URL
   fi
 fi

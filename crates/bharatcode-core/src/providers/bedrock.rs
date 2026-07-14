@@ -15,12 +15,12 @@ use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamError;
 use aws_sdk_bedrockruntime::types::error::ConverseStreamOutputError;
 use aws_sdk_bedrockruntime::{types as bedrock, Client};
 use base64::Engine;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::formats::openai::extract_reasoning_effort;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, Tool};
 use serde_json::Value;
@@ -274,7 +274,7 @@ impl BedrockProvider {
         let response = req
             .send()
             .await
-            .map_err(|e| ProviderError::RequestFailed(format!("Mantle request failed: {}", e)))?;
+            .map_err(|e| ProviderError::NetworkError(format!("Mantle request failed: {}", e)))?;
 
         handle_status(response).await
     }

@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::agents::platform_extensions::developer::redact;
@@ -394,8 +393,13 @@ mod tests {
     #[test]
     fn flipping_a_byte_in_checksum_is_rejected() {
         let mut bundle = sample_bundle();
-        // Corrupt the stored checksum directly.
-        bundle.sha256 = format!("{}0", &bundle.sha256[..bundle.sha256.len() - 1]);
+        let replacement = if bundle.sha256.ends_with('0') {
+            '1'
+        } else {
+            '0'
+        };
+        bundle.sha256.pop();
+        bundle.sha256.push(replacement);
         assert!(bundle.verify_checksum().is_err());
     }
 
@@ -421,7 +425,7 @@ mod tests {
     #[test]
     fn export_strips_planted_secret_inside_a_built_bundle() {
         let planted = format!("AKIA{}", "IOSFODNN7EXAMPLE");
-        let messages = vec![Message::user().with_text(format!("export AWS_KEY={planted}"))];
+        let messages = [Message::user().with_text(format!("export AWS_KEY={planted}"))];
 
         let mut bundle = SessionBundle {
             schema_version: BUNDLE_SCHEMA_VERSION,

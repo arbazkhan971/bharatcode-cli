@@ -6,8 +6,8 @@
 
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use bharatcode_providers::errors::ProviderError;
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Response, StatusCode};
 use serde_json::Value;
@@ -220,6 +220,18 @@ pub fn map_http_error_to_provider_error(
                 ProviderError::RequestFailed(format!("Bad request (400): {}", payload_str))
             }
         }
+        // 408 and 425 are the two 4xx statuses that are safe to replay: neither
+        // reached a decision on the request itself. They must land on a typed
+        // transient variant, since the default retry policy is `transient_only`
+        // and drops `RequestFailed` without a retry.
+        StatusCode::REQUEST_TIMEOUT => ProviderError::NetworkError(format!(
+            "Request timed out (408) at {url}: {}",
+            extract_message()
+        )),
+        StatusCode::TOO_EARLY => ProviderError::NetworkError(format!(
+            "Request rejected as too early (425) at {url}: {}",
+            extract_message()
+        )),
         StatusCode::TOO_MANY_REQUESTS => ProviderError::RateLimitExceeded {
             details: extract_message(),
             retry_delay: None,
@@ -278,6 +290,7 @@ pub async fn handle_response(response: Response) -> Result<Value, ProviderError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bharatcode_providers::retry::{should_retry, RetryConfig};
     use serde_json::json;
 
     fn empty_headers() -> HeaderMap {
@@ -391,6 +404,79 @@ mod tests {
     fn retry_after_clamps_infinite_body_seconds() {
         let payload = json!({ "error": { "metadata": { "retry_after_seconds": f64::INFINITY } } });
         assert!(extract_retry_after(&empty_headers(), Some(&payload)).is_none());
+    }
+
+    /// The retry policy replays only typed transient variants, so the status →
+    /// variant mapping *is* the retry decision. Pin both together: a remapping
+    /// that makes a permanent 4xx retryable, or that drops a transient status
+    /// into `RequestFailed`, fails here rather than in production.
+    #[test]
+    fn status_classification_drives_retry_decision() {
+        let cases = [
+            (StatusCode::BAD_REQUEST, "request", false),
+            (StatusCode::UNAUTHORIZED, "auth", false),
+            (StatusCode::FORBIDDEN, "auth", false),
+            (StatusCode::NOT_FOUND, "request", false),
+            (StatusCode::REQUEST_TIMEOUT, "network", true),
+            (StatusCode::TOO_EARLY, "network", true),
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limit", true),
+            (StatusCode::INTERNAL_SERVER_ERROR, "server", true),
+            (StatusCode::BAD_GATEWAY, "server", true),
+            (StatusCode::SERVICE_UNAVAILABLE, "server", true),
+            (StatusCode::GATEWAY_TIMEOUT, "server", true),
+        ];
+
+        let config = RetryConfig::default();
+        for (status, expected_variant, expected_retry) in cases {
+            let error = map_http_error_to_provider_error(
+                status,
+                Some(json!({ "error": { "message": "upstream said no" } })),
+                "https://api.example.com/v1/chat",
+            );
+            assert_eq!(
+                error.telemetry_type(),
+                expected_variant,
+                "wrong variant for {status}: {error:?}"
+            );
+            assert_eq!(
+                should_retry(&error, &config),
+                expected_retry,
+                "wrong retry decision for {status}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_statuses_preserve_provider_message() {
+        let statuses = [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_EARLY,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ];
+
+        for status in statuses {
+            let error = map_http_error_to_provider_error(
+                status,
+                Some(json!({ "error": { "message": "upstream took too long" } })),
+                "https://api.example.com/v1/chat",
+            );
+            assert!(
+                error.to_string().contains("upstream took too long"),
+                "provider message dropped for {status}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_length_bad_request_stays_permanent() {
+        let error = map_http_error_to_provider_error(
+            StatusCode::BAD_REQUEST,
+            Some(json!({ "error": { "message": "prompt is too long for this model" } })),
+            "https://api.example.com/v1/chat",
+        );
+        assert_eq!(error.telemetry_type(), "context_length");
+        assert!(!should_retry(&error, &RetryConfig::default()));
     }
 
     #[test]

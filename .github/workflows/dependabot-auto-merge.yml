@@ -1,4 +1,4 @@
-name: Dependabot Auto Merge
+name: Dependabot Review
 
 on:
   pull_request_target:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'aaif-goose/goose'
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.repository.fork == false
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
@@ -29,9 +29,19 @@ jobs:
 
       - name: Enable auto-merge for patch and minor PRs
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --merge "$PR_URL"
+          vars.DEPENDABOT_AUTO_MERGE == 'true' &&
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor')
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          required_checks=$(gh api \
+            "repos/${{ github.repository }}/branches/$BASE_BRANCH/protection" \
+            --jq '((.required_status_checks.contexts // []) + ((.required_status_checks.checks // []) | map(.context))) | unique | length')
+          if [ "$required_checks" -eq 0 ]; then
+            echo "Dependabot auto-merge requires branch protection with required checks." >&2
+            exit 1
+          fi
+          gh pr merge --auto --merge "$PR_URL"

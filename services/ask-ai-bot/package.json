@@ -1,5 +1,5 @@
 {
-  "name": "goose-ask-ai-bot",
+  "name": "bharatcode-ask-ai-bot",
   "private": true,
   "version": "1.0.2",
   "description": "Bot created with discraft",
@@ -8,7 +8,8 @@
   "scripts": {
     "start": "discraft start",
     "build": "discraft build",
-    "dev": "discraft dev"
+    "dev": "discraft dev",
+    "test": "bun test"
   },
   "devDependencies": {
     "discraft": "^1.7.11",

@@ -58,7 +58,7 @@ impl ProviderDef for CodexAcpProvider {
                 .with_npm()
                 .resolve(CODEX_ACP_PROVIDER_NAME)?;
             let env = vec![];
-            let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
+            let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
             let mcp_servers = extension_configs_to_mcp_servers(&extensions);
 
             // fixed goose mode via -c overrides until session/set-mode works
@@ -82,14 +82,6 @@ impl ProviderDef for CodexAcpProvider {
                 ]);
             }
 
-            // Chat and Approve both map to "read-only".
-            let mode_mapping = HashMap::from([
-                (GooseMode::Auto, "full-access".to_string()),
-                (GooseMode::Approve, "read-only".to_string()),
-                (GooseMode::SmartApprove, "auto".to_string()),
-                (GooseMode::Chat, "read-only".to_string()),
-            ]);
-
             let provider_config = AcpProviderConfig {
                 command: resolved_command,
                 args,
@@ -99,7 +91,7 @@ impl ProviderDef for CodexAcpProvider {
                 mcp_servers,
                 // Disabled until https://github.com/zed-industries/codex-acp/issues/179 is fixed.
                 session_mode_id: None,
-                mode_mapping,
+                mode_mapping: mode_mapping(),
                 notification_callback: None,
             };
 
@@ -107,6 +99,16 @@ impl ProviderDef for CodexAcpProvider {
             AcpProvider::connect(metadata.name, model, goose_mode, provider_config).await
         })
     }
+}
+
+// Chat and Approve both map to "read-only".
+fn mode_mapping() -> HashMap<GooseMode, String> {
+    HashMap::from([
+        (GooseMode::Auto, "full-access".to_string()),
+        (GooseMode::Approve, "read-only".to_string()),
+        (GooseMode::SmartApprove, "auto".to_string()),
+        (GooseMode::Chat, "read-only".to_string()),
+    ])
 }
 
 // Codex sandbox scope determines what needs approval: operations within the
@@ -134,5 +136,24 @@ mod tests {
         let (approval, sandbox) = map_goose_mode(mode);
         assert_eq!(approval, expected_approval);
         assert_eq!(sandbox, expected_sandbox);
+    }
+
+    /// An absent BHARATCODE_MODE must not sandbox-escape into danger-full-access.
+    #[test]
+    fn test_default_mode_is_not_full_access() {
+        let (approval, sandbox) = map_goose_mode(GooseMode::default());
+        assert_eq!((approval, sandbox), ("on-request", "workspace-write"));
+
+        assert_eq!(mode_mapping()[&GooseMode::default()], "auto");
+    }
+
+    /// Explicitly requesting Auto still grants full access.
+    #[test]
+    fn test_auto_mode_remains_full_access() {
+        assert_eq!(
+            map_goose_mode(GooseMode::Auto),
+            ("never", "danger-full-access")
+        );
+        assert_eq!(mode_mapping()[&GooseMode::Auto], "full-access");
     }
 }

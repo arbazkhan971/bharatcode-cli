@@ -65,7 +65,8 @@ struct Doc {
 
 impl Index {
     /// Number of indexed files.
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.docs.len()
     }
 

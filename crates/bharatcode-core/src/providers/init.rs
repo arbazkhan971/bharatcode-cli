@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -178,14 +179,47 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
         Arc::new(|| Box::pin(HuggingFaceProvider::cleanup())),
     );
 
-    if let Err(e) = load_custom_providers_into_registry(&mut registry) {
+    if let Err(e) = register_declarative_providers(&mut registry) {
         tracing::warn!("Failed to load custom providers: {}", e);
     }
     RwLock::new(registry)
 }
 
-fn load_custom_providers_into_registry(registry: &mut ProviderRegistry) -> Result<()> {
-    register_declarative_providers(registry)
+/// Loads custom providers into a staging registry so a malformed config fails
+/// before the live registry is touched. The fixed declarative providers staged
+/// alongside them are discarded, since they are compiled in rather than read
+/// from disk and the live registry already holds them.
+fn build_custom_provider_entries() -> Result<HashMap<String, ProviderEntry>> {
+    let tls_config =
+        crate::config::tls::provider_tls_config_from_config(crate::config::Config::global())?;
+    let mut staged = ProviderRegistry::new(tls_config);
+    register_declarative_providers(&mut staged)?;
+
+    Ok(staged
+        .entries
+        .into_iter()
+        .filter(|(_, entry)| entry.provider_type() == ProviderType::Custom)
+        .collect())
+}
+
+fn replace_custom_provider_entries(
+    registry: &mut ProviderRegistry,
+    custom_entries: HashMap<String, ProviderEntry>,
+) -> Result<()> {
+    if let Some(name) = custom_entries.keys().find(|name| {
+        registry
+            .entries
+            .get(name.as_str())
+            .is_some_and(|entry| entry.provider_type() != ProviderType::Custom)
+    }) {
+        anyhow::bail!("Custom provider '{name}' conflicts with an existing provider");
+    }
+
+    registry
+        .entries
+        .retain(|_, entry| entry.provider_type() != ProviderType::Custom);
+    registry.entries.extend(custom_entries);
+    Ok(())
 }
 
 async fn get_registry() -> &'static RwLock<ProviderRegistry> {
@@ -200,14 +234,26 @@ pub async fn providers() -> Vec<(ProviderMetadata, ProviderType)> {
         .all_metadata_with_types()
 }
 
+/// Replaces the registered custom providers with the ones currently on disk.
+///
+/// The new set is built before any lock is taken, so a failed load leaves the
+/// previously registered providers in place. The removal and the insertion then
+/// happen under a single write lock, so readers never observe a registry that is
+/// missing its custom providers.
 pub async fn refresh_custom_providers() -> Result<()> {
-    let registry = get_registry().await;
-    registry.write().unwrap().remove_custom_providers();
+    let custom_entries = match build_custom_provider_entries() {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to refresh custom providers, keeping previously loaded ones: {}",
+                e
+            );
+            return Err(e);
+        }
+    };
 
-    if let Err(e) = load_custom_providers_into_registry(&mut registry.write().unwrap()) {
-        tracing::warn!("Failed to refresh custom providers: {}", e);
-        return Err(e);
-    }
+    let mut registry = get_registry().await.write().unwrap();
+    replace_custom_provider_entries(&mut registry, custom_entries)?;
 
     tracing::info!("Custom providers refreshed");
     Ok(())
@@ -530,6 +576,163 @@ mod tests {
             .await
             .expect("custom_zero provider should be creatable");
         assert_eq!(zero_provider.get_model_config().context_limit, None);
+
+        std::env::remove_var("BHARATCODE_PATH_ROOT");
+    }
+
+    fn custom_provider_json(name: &str, model: &str) -> String {
+        format!(
+            r#"{{
+  "name": "{name}",
+  "engine": "openai",
+  "display_name": "{name}",
+  "description": "test provider",
+  "api_key_env": "",
+  "base_url": "https://example.invalid/v1/chat/completions",
+  "models": [
+    {{"name": "{model}", "context_limit": 128000}}
+  ],
+  "requires_auth": false
+}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn test_failed_refresh_preserves_previously_loaded_custom_providers() {
+        let _guard = env_lock::lock_env([("BHARATCODE_PATH_ROOT", None::<&str>)]);
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        std::env::set_var("BHARATCODE_PATH_ROOT", temp_dir.path());
+
+        let custom_dir = Paths::config_dir().join("custom_providers");
+        fs::create_dir_all(&custom_dir).expect("custom providers dir should be created");
+        fs::write(
+            custom_dir.join("custom_working.json"),
+            custom_provider_json("custom_working", "working-model"),
+        )
+        .expect("custom_working.json should be written");
+
+        refresh_custom_providers()
+            .await
+            .expect("custom providers should refresh");
+        get_from_registry("custom_working")
+            .await
+            .expect("custom_working should be registered");
+
+        fs::write(custom_dir.join("custom_broken.json"), "{ this is not json")
+            .expect("custom_broken.json should be written");
+
+        assert!(
+            refresh_custom_providers().await.is_err(),
+            "a malformed custom provider config should fail the refresh"
+        );
+
+        let preserved = get_from_registry("custom_working")
+            .await
+            .expect("custom_working should survive a failed refresh");
+        assert_eq!(preserved.provider_type(), ProviderType::Custom);
+        assert_eq!(preserved.metadata().default_model, "working-model");
+
+        assert!(
+            get_from_registry("custom_broken").await.is_err(),
+            "the malformed provider should not be registered"
+        );
+        get_from_registry("anthropic")
+            .await
+            .expect("built-in providers should survive a failed refresh");
+
+        std::env::remove_var("BHARATCODE_PATH_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_successful_refresh_replaces_custom_providers_atomically() {
+        let _guard = env_lock::lock_env([("BHARATCODE_PATH_ROOT", None::<&str>)]);
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        std::env::set_var("BHARATCODE_PATH_ROOT", temp_dir.path());
+
+        let custom_dir = Paths::config_dir().join("custom_providers");
+        fs::create_dir_all(&custom_dir).expect("custom providers dir should be created");
+        fs::write(
+            custom_dir.join("custom_before.json"),
+            custom_provider_json("custom_before", "before-model"),
+        )
+        .expect("custom_before.json should be written");
+
+        refresh_custom_providers()
+            .await
+            .expect("custom providers should refresh");
+        get_from_registry("custom_before")
+            .await
+            .expect("custom_before should be registered");
+
+        fs::remove_file(custom_dir.join("custom_before.json"))
+            .expect("custom_before.json should be removed");
+        fs::write(
+            custom_dir.join("custom_after.json"),
+            custom_provider_json("custom_after", "after-model"),
+        )
+        .expect("custom_after.json should be written");
+
+        refresh_custom_providers()
+            .await
+            .expect("custom providers should refresh");
+
+        let replacement = get_from_registry("custom_after")
+            .await
+            .expect("custom_after should replace the previous custom provider");
+        assert_eq!(replacement.provider_type(), ProviderType::Custom);
+        assert_eq!(replacement.metadata().default_model, "after-model");
+
+        assert!(
+            get_from_registry("custom_before").await.is_err(),
+            "a custom provider whose config was deleted should be unregistered"
+        );
+
+        let providers_list = providers().await;
+        assert!(
+            providers_list
+                .iter()
+                .any(|(m, t)| m.name == "anthropic" && *t == ProviderType::Preferred),
+            "built-in providers should be preserved across a refresh"
+        );
+        assert!(
+            providers_list
+                .iter()
+                .any(|(m, t)| m.name == "tanzu_ai" && *t == ProviderType::Declarative),
+            "fixed declarative providers should be preserved across a refresh"
+        );
+
+        std::env::remove_var("BHARATCODE_PATH_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_rejects_custom_provider_that_shadows_builtin() {
+        let _guard = env_lock::lock_env([("BHARATCODE_PATH_ROOT", None::<&str>)]);
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        std::env::set_var("BHARATCODE_PATH_ROOT", temp_dir.path());
+
+        let anthropic = get_from_registry("anthropic")
+            .await
+            .expect("anthropic should initially be registered");
+        assert_eq!(anthropic.provider_type(), ProviderType::Preferred);
+
+        let custom_dir = Paths::config_dir().join("custom_providers");
+        fs::create_dir_all(&custom_dir).expect("custom providers dir should be created");
+        fs::write(
+            custom_dir.join("anthropic.json"),
+            custom_provider_json("anthropic", "shadow-model"),
+        )
+        .expect("anthropic.json should be written");
+
+        assert!(
+            refresh_custom_providers().await.is_err(),
+            "a custom provider must not shadow a built-in provider"
+        );
+
+        let anthropic = get_from_registry("anthropic")
+            .await
+            .expect("anthropic should remain registered");
+        assert_eq!(anthropic.provider_type(), ProviderType::Preferred);
+        assert_ne!(anthropic.metadata().default_model, "shadow-model");
 
         std::env::remove_var("BHARATCODE_PATH_ROOT");
     }

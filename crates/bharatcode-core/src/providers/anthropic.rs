@@ -1,9 +1,9 @@
 use anyhow::Result;
 use async_stream::try_stream;
 use async_trait::async_trait;
-use futures::TryStreamExt;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::TryStreamExt;
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::io;
@@ -21,8 +21,8 @@ use super::openai_compatible::map_http_error_to_provider_error;
 use super::retry::ProviderRetry;
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
-use futures::future::BoxFuture;
 use bharatcode_providers::model::ModelConfig;
+use futures::future::BoxFuture;
 use rmcp::model::Tool;
 
 pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-4-5";

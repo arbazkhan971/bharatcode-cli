@@ -97,7 +97,7 @@ fn build_and_get_binary_path() -> PathBuf {
             "build",
             "--frozen",
             "-p",
-            "goose-test",
+            "bharatcode-test",
             "--bin",
             "capture",
             "--message-format=json",
@@ -213,6 +213,10 @@ async fn test_replayed_session(
         TestMode::Playback => "playback",
     };
     let cmd = REPLAY_BINARY_PATH.to_string_lossy().to_string();
+    std::env::set_var(
+        bharatcode_core::agents::extension_malware_check::EXTENSION_ALLOWLIST_KEY,
+        &cmd,
+    );
     let mut args = vec!["stdio", mode_arg]
         .into_iter()
         .map(str::to_string)
@@ -315,12 +319,13 @@ async fn test_replayed_session(
 
     if let Err(err) = result {
         if matches!(mode, TestMode::Playback) {
-            let errors =
+            if let Ok(errors) =
                 fs::read_to_string(format!("{}.errors.txt", replay_file_path.to_string_lossy()))
-                    .expect("could not read errors");
-            eprintln!("errors from {}", replay_file_path.to_string_lossy());
-            eprintln!("{}", errors);
-            eprintln!();
+            {
+                eprintln!("errors from {}", replay_file_path.to_string_lossy());
+                eprintln!("{}", errors);
+                eprintln!();
+            }
         }
         panic!("Test failed: {:?}", err);
     }

@@ -5,24 +5,18 @@
 //! onto the per-target packaging artifacts, plus a small SHA-256 checksum
 //! manifest reader/writer used for release integrity:
 //!
-//!   * [`PackageTarget`]      — one matrix row: target `triple`, the release
-//!                              `artifact` filename, and the `deb`/`rpm`
-//!                              architecture labels for that triple.
-//!   * [`MATRIX`]             — every triple BharatCode ships assets for, the
-//!                              same set the self-updater's `asset_name()` and
-//!                              the release / build-cli workflows use.
-//!   * [`manifest_for`]       — the exact `bharatcode-<triple>.tar.bz2` / `.zip`
-//!                              asset filename the self-updater in
-//!                              `commands/update.rs` `asset_name()` expects,
-//!                              kept in lockstep so a rename in either place
-//!                              fails CI.
-//!   * [`checksums`]          — `write_manifest(dir)` / [`verify_checksums`] over
-//!                              a `SHA256SUMS` text file (GNU-coreutils format),
-//!                              hashing with the already-vendored `sha2` crate
-//!                              (the same one `commands/update.rs` uses).
-//!   * [`checksum_status`]    — a read-only `doctor` row reporting whether a
-//!                              release checksum manifest is present and
-//!                              self-consistent.
+//! * [`PackageTarget`] — one matrix row: target `triple`, the release `artifact`
+//!   filename, and the `deb`/`rpm` architecture labels for that triple.
+//! * [`MATRIX`] — every triple BharatCode ships assets for, the same set the
+//!   self-updater's `asset_name()` and the release / build-cli workflows use.
+//! * [`manifest_for`] — the exact `bharatcode-<triple>.tar.bz2` / `.zip` asset
+//!   filename the self-updater in `commands/update.rs` `asset_name()` expects,
+//!   kept in lockstep so a rename in either place fails CI.
+//! * [`checksums`] — `write_manifest(dir)` / [`verify_checksums`] over a
+//!   `SHA256SUMS` text file (GNU-coreutils format), hashing with the
+//!   already-vendored `sha2` crate (the same one `commands/update.rs` uses).
+//! * [`checksum_status`] — a read-only `doctor` row reporting whether a release
+//!   checksum manifest is present and self-consistent.
 //!
 //! Everything here is pure over its inputs apart from the explicit filesystem
 //! helpers in [`checksums`]; no network, no new dependencies. This file is the
@@ -256,7 +250,7 @@ pub mod checksums {
     pub fn parse(body: &str) -> Result<Vec<(String, String)>, ChecksumError> {
         let mut out = Vec::new();
         for line in body.lines() {
-            let trimmed = line.trim_end_matches(|c| c == '\r' || c == '\n');
+            let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.trim().is_empty() {
                 continue;
             }
@@ -265,7 +259,7 @@ pub mod checksums {
                 .ok_or_else(|| ChecksumError::ManifestMalformed(trimmed.to_string()))?;
             // The separator is two spaces (text) or a space + `*` (binary); skip
             // whatever leading whitespace / marker precedes the filename.
-            let name = rest.trim_start_matches(|c| c == ' ' || c == '*');
+            let name = rest.trim_start_matches([' ', '*']);
             if hex.is_empty() || name.is_empty() {
                 return Err(ChecksumError::ManifestMalformed(trimmed.to_string()));
             }

@@ -118,20 +118,9 @@ impl EcosystemConfig {
     }
 }
 
-/// Resolve the ecosystem-extensibility toggles from the global config.
-pub fn resolve() -> EcosystemConfig {
-    EcosystemConfig::from_config(Config::global())
-}
-
-/// One `key = on/off` row per ecosystem toggle, in registration order, for
-/// display in `bharatcode configure`/doctor.
-pub fn summary_lines() -> Vec<String> {
-    summary_lines_for(&resolve())
-}
-
-/// Like [`summary_lines`] but resolved from a specific `Config` rather than the
-/// global one. This is the real call site reached from `Config`'s public API
-/// (`Config::ecosystem_summary`).
+/// One `key = on/off` row per ecosystem toggle, in registration order, resolved
+/// from a specific config. This is the real call site reached from `Config`'s
+/// public API (`Config::ecosystem_summary`).
 pub fn summary_lines_for_config(config: &Config) -> Vec<String> {
     summary_lines_for(&EcosystemConfig::from_config(config))
 }
@@ -139,6 +128,7 @@ pub fn summary_lines_for_config(config: &Config) -> Vec<String> {
 fn summary_lines_for(eco: &EcosystemConfig) -> Vec<String> {
     ECOSYSTEM_KEYS
         .iter()
+        .copied()
         .map(|key| {
             let state = if eco.is_enabled(key) { "on" } else { "off" };
             format!("{key} = {state}")
@@ -164,7 +154,7 @@ mod tests {
     #[test]
     fn resolve_defaults_to_all_off() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        let eco = resolve();
+        let eco = EcosystemConfig::from_config(Config::global());
         assert_eq!(eco, EcosystemConfig::default());
         assert!(!eco.catalog);
         assert!(!eco.scripts);
@@ -177,7 +167,7 @@ mod tests {
     #[test]
     fn summary_rows_all_off_when_unset() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        let lines = summary_lines();
+        let lines = summary_lines_for_config(Config::global());
         assert_eq!(lines.len(), ECOSYSTEM_KEYS.len());
         for key in ECOSYSTEM_KEYS {
             assert!(
@@ -199,7 +189,7 @@ mod tests {
         keys[2] = (CI_KEY, Some("1"));
         let _guard = env_lock::lock_env(keys);
 
-        let eco = resolve();
+        let eco = EcosystemConfig::from_config(Config::global());
         assert!(eco.ci, "CI toggle should be on when BHARATCODE_CI=1");
         // Every other toggle stays off.
         assert!(!eco.catalog);
@@ -208,7 +198,7 @@ mod tests {
         assert!(!eco.recipe_lock);
         assert!(!eco.cost_extensions);
 
-        let lines = summary_lines();
+        let lines = summary_lines_for_config(Config::global());
         assert!(
             lines.iter().any(|line| line == &format!("{CI_KEY} = on")),
             "CI row should read on: {lines:?}"
@@ -231,10 +221,10 @@ mod tests {
         // recognises it as on. A numeric coercion would have rejected the bare
         // value before it reached the toggle parser.
         assert_eq!(
-            read_key(&Config::global(), EXT_ADVISORY_KEY).as_deref(),
+            read_key(Config::global(), EXT_ADVISORY_KEY).as_deref(),
             Some("1")
         );
-        assert!(resolve().ext_advisory);
+        assert!(EcosystemConfig::from_config(Config::global()).ext_advisory);
     }
 
     #[test]
@@ -242,13 +232,13 @@ mod tests {
         let mut keys = all_keys_unset();
         keys[1] = (SCRIPTS_KEY, Some("maybe"));
         let _guard = env_lock::lock_env(keys);
-        assert!(!resolve().scripts);
+        assert!(!EcosystemConfig::from_config(Config::global()).scripts);
     }
 
     #[test]
     fn no_vendor_leakage_in_labels() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        for line in summary_lines() {
+        for line in summary_lines_for_config(Config::global()) {
             let lower = line.to_ascii_lowercase();
             assert!(
                 !lower.contains("goose"),

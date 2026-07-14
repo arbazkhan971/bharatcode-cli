@@ -279,10 +279,7 @@ impl std::str::FromStr for EvalSuite {
 
 impl EvalSuite {
     /// Parse a suite from a JSON or YAML string.
-    ///
-    /// This is the canonical constructor; it is also available through the
-    /// [`std::str::FromStr`] impl so `suite.parse::<EvalSuite>()` works too.
-    pub fn from_str(s: &str) -> Result<Self, EvalError> {
+    pub fn parse(s: &str) -> Result<Self, EvalError> {
         <Self as std::str::FromStr>::from_str(s)
     }
 
@@ -361,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn parses_runs_and_scores_half() {
-        let suite = EvalSuite::from_str(TWO_SCENARIO_JSON).expect("suite should parse");
+        let suite = EvalSuite::parse(TWO_SCENARIO_JSON).expect("suite should parse");
         assert_eq!(suite.scenarios.len(), 2);
 
         let report = suite.run(echo_turn).await.expect("run should succeed");
@@ -380,7 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn summary_line_is_one_line_brand_free_with_pass_count() {
-        let suite = EvalSuite::from_str(TWO_SCENARIO_JSON).unwrap();
+        let suite = EvalSuite::parse(TWO_SCENARIO_JSON).unwrap();
         let report = suite.run(echo_turn).await.unwrap();
 
         let line = report.summary_line();
@@ -413,7 +410,7 @@ scenarios:
       regex:
         - "id is [0-9]+"
 "#;
-        let suite = EvalSuite::from_str(yaml).expect("yaml suite should parse");
+        let suite = EvalSuite::parse(yaml).expect("yaml suite should parse");
         let report = suite.run(echo_turn).await.expect("run should succeed");
         assert_eq!(report.passed(), 1);
         assert!((report.pass_rate() - 1.0).abs() < f64::EPSILON);
@@ -429,7 +426,7 @@ scenarios:
           ]
         }
         "#;
-        let suite = EvalSuite::from_str(json).unwrap();
+        let suite = EvalSuite::parse(json).unwrap();
 
         // Turn that DID invoke the expected tool -> pass.
         let with_tool = suite
@@ -456,7 +453,7 @@ scenarios:
       regex:
         - "("
 "#;
-        let suite = EvalSuite::from_str(yaml).unwrap();
+        let suite = EvalSuite::parse(yaml).unwrap();
         let err = suite
             .run(echo_turn)
             .await
@@ -467,10 +464,10 @@ scenarios:
     #[test]
     fn malformed_suite_is_err() {
         // Neither valid JSON nor valid YAML mapping with the required fields.
-        let err = EvalSuite::from_str("name: [unterminated").unwrap_err();
+        let err = EvalSuite::parse("name: [unterminated").unwrap_err();
         assert!(matches!(err, EvalError::Parse { .. }));
         // A structurally-valid YAML scalar that is not a suite mapping also fails.
-        assert!(EvalSuite::from_str("just a string").is_err());
+        assert!(EvalSuite::parse("just a string").is_err());
     }
 
     #[test]
@@ -485,7 +482,7 @@ scenarios:
 
     #[test]
     fn from_str_and_parse_trait_agree() {
-        let direct = EvalSuite::from_str(TWO_SCENARIO_JSON).unwrap();
+        let direct = EvalSuite::parse(TWO_SCENARIO_JSON).unwrap();
         let viaparse: EvalSuite = TWO_SCENARIO_JSON.parse().unwrap();
         assert_eq!(direct, viaparse);
     }

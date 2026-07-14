@@ -18,7 +18,9 @@ mod task_execution_display;
 mod terminal_width;
 mod thinking;
 
-// Plan-mode plan-file persistence lives under crates/goose-cli/src/commands/.
+use crate::release_info;
+
+// Plan-mode plan-file persistence lives under crates/bharatcode-cli/src/commands/.
 // commands/mod.rs does not list it, so it is pulled in here via #[path] (the same
 // out-of-tree-module precedent as `verify` in agents/agent.rs) and reached only
 // from plan mode below.
@@ -40,7 +42,7 @@ mod status_line;
 mod status_banner;
 
 // Best-effort desktop notifications for long interactive turns. The module lives
-// at crates/goose-cli/src/desktop_notify.rs and is CLI-local; it is pulled in
+// at crates/bharatcode-cli/src/desktop_notify.rs and is CLI-local; it is pulled in
 // here via #[path] (the same out-of-tree precedent as `plan_file` above) so the
 // only call site — `run_interactive`'s user-turn completion below — can reach it
 // without touching goose/lib.rs. Entirely gated behind BHARATCODE_NOTIFY (OFF by
@@ -56,16 +58,6 @@ mod desktop_notify;
 #[path = "release_gate.rs"]
 mod release_gate;
 
-// BharatCode v98: canonical 1.0 GA release descriptor + one-line GA banner. The
-// module lives at the crate root and is pulled in here via #[path] (the same
-// out-of-tree-module precedent as `release_gate` above); its only call site in
-// the interactive loop is the start of `interactive()` below, which prints the
-// gated `release_info::startup_banner()` once. Default-quiet: `Some` only on a
-// GA channel with `BHARATCODE_NO_BANNER` unset, `None` (byte-identical to today)
-// otherwise.
-#[path = "../release_info.rs"]
-mod release_info;
-
 use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
 };
@@ -77,8 +69,6 @@ use tokio::signal::ctrl_c;
 use tokio_util::task::AbortOnDropHandle;
 
 pub use self::export::message_to_markdown;
-pub use builder::{build_session, SessionBuilderConfig};
-use console::Color;
 use bharatcode_core::agents::AgentEvent;
 use bharatcode_core::agents::SUBAGENT_TOOL_REQUEST_TYPE;
 use bharatcode_core::permission::permission_confirmation::PrincipalType;
@@ -87,14 +77,16 @@ use bharatcode_core::permission::PermissionConfirmation;
 use bharatcode_core::providers::base::Provider;
 use bharatcode_core::providers::base::ProviderUsage;
 use bharatcode_core::utils::safe_truncate;
+pub use builder::{build_session, SessionBuilderConfig};
+use console::Color;
 
 use anyhow::{Context, Result};
-use completion::GooseCompleter;
 use bharatcode_core::agents::extension::{Envs, ExtensionConfig, PLATFORM_EXTENSIONS};
 use bharatcode_core::agents::types::RetryConfig;
 use bharatcode_core::agents::{Agent, SessionConfig, COMPACT_TRIGGERS};
 use bharatcode_core::config::extensions::name_to_key;
 use bharatcode_core::config::{Config, GooseMode};
+use completion::GooseCompleter;
 use input::InputResult;
 use rmcp::model::ServerNotification;
 use rmcp::model::{ElicitationAction, PromptMessage};
@@ -549,7 +541,10 @@ impl CliSession {
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
         self.agent
-            .emit_hook(bharatcode_core::hooks::HookEvent::SessionStart, &self.session_id)
+            .emit_hook(
+                bharatcode_core::hooks::HookEvent::SessionStart,
+                &self.session_id,
+            )
             .await;
 
         // BharatCode v63: crash/resume recovery hint. Optional, default OFF —
@@ -597,7 +592,10 @@ impl CliSession {
         let result = self.run_interactive(prompt).await;
 
         self.agent
-            .emit_hook(bharatcode_core::hooks::HookEvent::SessionEnd, &self.session_id)
+            .emit_hook(
+                bharatcode_core::hooks::HookEvent::SessionEnd,
+                &self.session_id,
+            )
             .await;
 
         if result.is_ok() {
@@ -1059,10 +1057,13 @@ impl CliSession {
         }
 
         let extensions = self.agent.get_extension_configs().await;
-        let new_provider =
-            bharatcode_core::providers::create(&current_provider_name, new_model_config, extensions)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create provider: {e}"))?;
+        let new_provider = bharatcode_core::providers::create(
+            &current_provider_name,
+            new_model_config,
+            extensions,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create provider: {e}"))?;
 
         self.agent
             .update_provider(new_provider, &self.session_id)
@@ -1209,9 +1210,9 @@ impl CliSession {
     }
 
     async fn handle_list_skills(&mut self) -> Result<()> {
-        use comfy_table::{presets, Cell, ContentArrangement, Table};
         use bharatcode_core::custom_requests::SourceType;
         use bharatcode_core::skills::list_installed_skills;
+        use comfy_table::{presets, Cell, ContentArrangement, Table};
         let cwd = std::env::current_dir().unwrap_or_default();
         let skills = list_installed_skills(Some(&cwd));
 
@@ -1360,14 +1361,20 @@ impl CliSession {
     /// Process a single message and exit
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         self.agent
-            .emit_hook(bharatcode_core::hooks::HookEvent::SessionStart, &self.session_id)
+            .emit_hook(
+                bharatcode_core::hooks::HookEvent::SessionStart,
+                &self.session_id,
+            )
             .await;
         let message = Message::user().with_text(&prompt);
         let result = self
             .process_message(message, CancellationToken::default(), false)
             .await;
         self.agent
-            .emit_hook(bharatcode_core::hooks::HookEvent::SessionEnd, &self.session_id)
+            .emit_hook(
+                bharatcode_core::hooks::HookEvent::SessionEnd,
+                &self.session_id,
+            )
             .await;
         result?;
         Ok(())
@@ -1489,7 +1496,7 @@ impl CliSession {
                                     // Approve/SmartApprove modes since auto-allowing would
                                     // bypass the safety contract those modes are meant to enforce.
                                     let config = Config::global();
-                                    let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
+                                    let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
                                     if goose_mode == GooseMode::Approve || goose_mode == GooseMode::SmartApprove {
                                         cancel_token_clone.cancel();
                                         drop(stream);
@@ -1823,7 +1830,11 @@ impl CliSession {
                 .rev()
                 .find_map(|m| m.id.clone())
                 .unwrap_or_default();
-            bharatcode_core::turn_checkpoint::record(&self.session_id, turn_index, &last_message_id);
+            bharatcode_core::turn_checkpoint::record(
+                &self.session_id,
+                turn_index,
+                &last_message_id,
+            );
         }
 
         // BharatCode v88: opt-in desktop notification on long interactive-turn
@@ -2077,10 +2088,9 @@ impl CliSession {
             rupees_spent: None,
         };
 
-        for line in render_event::render_event(
-            &event,
-            render_event::RenderOptions::new(width_budget),
-        ) {
+        for line in
+            render_event::render_event(&event, render_event::RenderOptions::new(width_budget))
+        {
             output::render_text(&line, None, true);
         }
     }
@@ -2717,7 +2727,8 @@ async fn get_reasoner() -> Result<Arc<dyn Provider>, anyhow::Error> {
     let model_config =
         bharatcode_core::model_config::model_config_from_user_config(&provider, model.as_str())?
             .with_context_limit(planner_context_limit);
-    let extensions = bharatcode_core::config::extensions::get_enabled_extensions_with_config(config);
+    let extensions =
+        bharatcode_core::config::extensions::get_enabled_extensions_with_config(config);
     let reasoner = create(&provider, model_config, extensions).await?;
 
     Ok(reasoner)
@@ -2973,7 +2984,10 @@ mod tests {
             vec![r"C:\tools\mcp.exe", "--arg", "value"]
         );
         assert_eq!(
-            bharatcode_core::utils::split_command_args(r#""C:\Program Files\server\mcp.exe" --arg"#).unwrap(),
+            bharatcode_core::utils::split_command_args(
+                r#""C:\Program Files\server\mcp.exe" --arg"#
+            )
+            .unwrap(),
             vec![r"C:\Program Files\server\mcp.exe", "--arg"]
         );
     }

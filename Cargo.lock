@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "bharatcode-cli"
-version = "1.0.0"
+version = "1.38.0"
 dependencies = [
  "anstream",
  "anyhow",

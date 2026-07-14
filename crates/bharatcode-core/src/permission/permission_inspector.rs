@@ -3,7 +3,9 @@ use crate::agents::types::SharedProvider;
 use crate::config::permission::PermissionLevel;
 use crate::config::{GooseMode, PermissionManager};
 use crate::conversation::message::{Message, ToolRequest};
-use crate::permission::permission_judge::{detect_read_only_tools, PermissionCheckResult};
+use crate::permission::permission_judge::{
+    detect_read_only_calls, is_argument_sensitive, PermissionCheckResult,
+};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -140,7 +142,7 @@ impl ToolInspector for PermissionInspector {
                     GooseMode::Chat => continue,
                     GooseMode::Auto => InspectionAction::Allow,
                     GooseMode::Approve | GooseMode::SmartApprove => {
-                        // 1. Check user-defined permission first
+                        // 1. An explicit, user-set permission always wins.
                         if let Some(level) = permission_manager.get_user_permission(tool_name) {
                             match level {
                                 PermissionLevel::AlwaysAllow => InspectionAction::Allow,
@@ -149,29 +151,38 @@ impl ToolInspector for PermissionInspector {
                                     InspectionAction::RequireApproval(None)
                                 }
                             }
-                        // 2. Check if it's a smart-approved tool (annotation or cached LLM decision)
-                        } else if self.is_readonly_annotated_tool(tool_name)
-                            || (goose_mode == GooseMode::SmartApprove
-                                && permission_manager.get_smart_approve_permission(tool_name)
-                                    == Some(PermissionLevel::AlwaysAllow))
-                        {
-                            InspectionAction::Allow
-                        // 3. Special case for extension management
+                        // 2. Extension management is never auto-approved.
                         } else if tool_name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE {
                             InspectionAction::RequireApproval(Some(
                                 "Extension management requires approval for security".to_string(),
                             ))
-                        // 4. Defer to LLM detection (SmartApprove, not yet cached)
-                        } else if goose_mode == GooseMode::SmartApprove
-                            && permission_manager
-                                .get_smart_approve_permission(tool_name)
-                                .is_none()
-                        {
-                            llm_detect_candidates.push(request);
-                            continue;
-                        // 5. Default: require approval for unknown tools
-                        } else {
+                        // 3. Approve means ask before *every* tool call: no read-only
+                        //    annotation or smart-approve verdict may short-circuit it.
+                        } else if goose_mode == GooseMode::Approve {
                             InspectionAction::RequireApproval(None)
+                        // 4. A read-only annotation speaks for the tool as a whole.
+                        } else if self.is_readonly_annotated_tool(tool_name) {
+                            InspectionAction::Allow
+                        } else {
+                            match permission_manager.get_smart_approve_permission(tool_name) {
+                                Some(PermissionLevel::NeverAllow) => InspectionAction::Deny,
+                                Some(PermissionLevel::AskBefore) => {
+                                    InspectionAction::RequireApproval(None)
+                                }
+                                // A cached allow is keyed by tool name only, so it may
+                                // speak for a call whose behavior cannot vary with its
+                                // arguments. Anything else is judged per call below —
+                                // `shell(ls)` must not stand in for `shell(rm -rf /)`.
+                                Some(PermissionLevel::AlwaysAllow)
+                                    if !is_argument_sensitive(request) =>
+                                {
+                                    InspectionAction::Allow
+                                }
+                                _ => {
+                                    llm_detect_candidates.push(request);
+                                    continue;
+                                }
+                            }
                         }
                     }
                 };
@@ -209,33 +220,33 @@ impl ToolInspector for PermissionInspector {
             }
         }
 
-        // LLM-based read-only detection for deferred SmartApprove candidates
+        // LLM-based read-only detection for deferred SmartApprove candidates. The
+        // judge sees each call with its arguments and answers per call, so the
+        // verdict below is about this invocation only.
         if !llm_detect_candidates.is_empty() {
             let detected: HashSet<String> = match self.provider.lock().await.clone() {
                 Some(provider) => {
-                    detect_read_only_tools(provider, session_id, llm_detect_candidates.to_vec())
-                        .await
-                        .into_iter()
-                        .collect()
+                    detect_read_only_calls(provider, session_id, &llm_detect_candidates).await
                 }
                 None => Default::default(),
             };
 
             for candidate in &llm_detect_candidates {
-                let is_readonly = candidate
-                    .tool_call
-                    .as_ref()
-                    .map(|tc| detected.contains(&tc.name.to_string()))
-                    .unwrap_or(false);
+                let is_readonly = detected.contains(&candidate.id);
 
-                // Cache the LLM decision for future calls
-                if let Ok(tc) = &candidate.tool_call {
-                    let level = if is_readonly {
-                        PermissionLevel::AlwaysAllow
-                    } else {
-                        PermissionLevel::AskBefore
-                    };
-                    permission_manager.update_smart_approve_permission(&tc.name, level);
+                // The cache is keyed by tool name, so only a verdict that holds for
+                // every future call of that name may be written: caching
+                // `shell(ls) is read-only` would hand `shell(rm -rf /)` a standing,
+                // on-disk grant. Argument-sensitive calls are judged per call instead.
+                if !is_argument_sensitive(candidate) {
+                    if let Ok(tc) = &candidate.tool_call {
+                        let level = if is_readonly {
+                            PermissionLevel::AlwaysAllow
+                        } else {
+                            PermissionLevel::AskBefore
+                        };
+                        permission_manager.update_smart_approve_permission(&tc.name, level);
+                    }
                 }
 
                 results.push(InspectionResult {
@@ -270,6 +281,15 @@ mod tests {
     use test_case::test_case;
     use tokio::sync::Mutex;
 
+    fn request(name: &str, arguments: serde_json::Map<String, serde_json::Value>) -> ToolRequest {
+        ToolRequest {
+            id: "req".into(),
+            tool_call: Ok(CallToolRequestParams::new(name.to_string()).with_arguments(arguments)),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
     #[test_case(GooseMode::Auto, false, None, InspectionAction::Allow; "auto_allows")]
     #[test_case(GooseMode::SmartApprove, true, None, InspectionAction::Allow; "smart_approve_annotation_allows")]
     #[test_case(GooseMode::SmartApprove, false, Some(PermissionLevel::AlwaysAllow), InspectionAction::Allow; "smart_approve_cached_allow")]
@@ -277,6 +297,7 @@ mod tests {
     #[test_case(GooseMode::SmartApprove, false, None, InspectionAction::RequireApproval(None); "smart_approve_unknown_defers")]
     #[test_case(GooseMode::Approve, false, None, InspectionAction::RequireApproval(None); "approve_requires_approval")]
     #[test_case(GooseMode::Approve, false, Some(PermissionLevel::AlwaysAllow), InspectionAction::RequireApproval(None); "approve_ignores_cache")]
+    #[test_case(GooseMode::Approve, true, None, InspectionAction::RequireApproval(None); "approve_ignores_readonly_annotation")]
     #[tokio::test]
     async fn test_inspect_action(
         mode: GooseMode,
@@ -292,16 +313,88 @@ mod tests {
         if smart_approved {
             *inspector.readonly_tools.write().unwrap() = ["tool".to_string()].into_iter().collect();
         }
-        let req = ToolRequest {
-            id: "req".into(),
-            tool_call: Ok(CallToolRequestParams::new("tool").with_arguments(object!({}))),
-            metadata: None,
-            tool_meta: None,
-        };
         let results = inspector
-            .inspect(bharatcode_test_support::TEST_SESSION_ID, &[req], &[], mode)
+            .inspect(
+                bharatcode_test_support::TEST_SESSION_ID,
+                &[request("tool", object!({}))],
+                &[],
+                mode,
+            )
             .await
             .unwrap();
         assert_eq!(results[0].action, expected);
+    }
+
+    /// A cached read-only verdict is stored under the tool's *name*. For a tool
+    /// whose behavior depends on its arguments, that grant must not carry over to
+    /// the next call: one approved `shell(ls)` cannot silently approve
+    /// `shell(rm -rf /)`. Such a call is re-judged instead (and with no provider
+    /// wired up here, an unjudged call falls back to asking).
+    #[tokio::test]
+    async fn cached_allow_does_not_cover_a_different_argument() {
+        let pm = Arc::new(PermissionManager::new(tempfile::tempdir().unwrap().keep()));
+        pm.update_smart_approve_permission("developer__shell", PermissionLevel::AlwaysAllow);
+        let inspector = PermissionInspector::new(pm, Arc::new(Mutex::new(None)));
+
+        let results = inspector
+            .inspect(
+                bharatcode_test_support::TEST_SESSION_ID,
+                &[request(
+                    "developer__shell",
+                    object!({"command": "rm -rf /tmp/x"}),
+                )],
+                &[],
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results[0].action, InspectionAction::RequireApproval(None));
+    }
+
+    /// The smart-approve cache is a name-only grant, so a verdict on an
+    /// argument-bearing call must never be written to it.
+    #[tokio::test]
+    async fn judging_an_argument_bearing_call_writes_no_standing_grant() {
+        let pm = Arc::new(PermissionManager::new(tempfile::tempdir().unwrap().keep()));
+        let inspector = PermissionInspector::new(pm.clone(), Arc::new(Mutex::new(None)));
+
+        inspector
+            .inspect(
+                bharatcode_test_support::TEST_SESSION_ID,
+                &[request("developer__shell", object!({"command": "ls"}))],
+                &[],
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(pm.get_smart_approve_permission("developer__shell"), None);
+    }
+
+    /// A call that takes no arguments always does the same thing, so its verdict
+    /// is safe to cache by name — that is what keeps SmartApprove from re-judging
+    /// every listing call forever.
+    #[tokio::test]
+    async fn judging_an_argumentless_call_still_caches() {
+        let pm = Arc::new(PermissionManager::new(tempfile::tempdir().unwrap().keep()));
+        let inspector = PermissionInspector::new(pm.clone(), Arc::new(Mutex::new(None)));
+
+        inspector
+            .inspect(
+                bharatcode_test_support::TEST_SESSION_ID,
+                &[request("developer__list_windows", object!({}))],
+                &[],
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+
+        // No provider is configured, so nothing is detected as read-only and the
+        // call is cached on the safe side.
+        assert_eq!(
+            pm.get_smart_approve_permission("developer__list_windows"),
+            Some(PermissionLevel::AskBefore)
+        );
     }
 }

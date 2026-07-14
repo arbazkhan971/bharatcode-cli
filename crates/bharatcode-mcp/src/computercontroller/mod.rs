@@ -5,7 +5,7 @@ use crate::subprocess::SubprocessExt;
 use base64::Engine;
 use etcetera::{choose_app_strategy, AppStrategy};
 use indoc::{formatdoc, indoc};
-use reqwest::{Client, Url};
+use reqwest::{header::LOCATION, Client, Response, StatusCode, Url};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -19,8 +19,17 @@ use rmcp::{
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fs,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+    sync::Mutex,
+    time::Duration,
+};
 use tokio::process::Command;
+use url::Host;
 
 #[cfg(target_os = "macos")]
 use rmcp::model::Role;
@@ -138,7 +147,8 @@ pub struct ComputerControlParams {
 pub struct CacheParams {
     /// The command to perform
     pub command: CacheCommand,
-    /// Path to the cached file for view/delete commands
+    /// Identifier of the cached entry for view/delete commands, as reported by the
+    /// list command. Only entries inside the cache directory can be addressed.
     pub path: Option<String>,
 }
 
@@ -314,7 +324,6 @@ pub struct ComputerControllerServer {
     tool_router: ToolRouter<Self>,
     cache_dir: PathBuf,
     active_resources: Arc<Mutex<HashMap<String, ResourceContents>>>,
-    http_client: Client,
     instructions: String,
     system_automation: Arc<Box<dyn SystemAutomation + Send + Sync>>,
     #[cfg(target_os = "macos")]
@@ -324,6 +333,299 @@ pub struct ComputerControllerServer {
 impl Default for ComputerControllerServer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn cache_entry_rejected(requested: &str, reason: &str) -> ErrorData {
+    ErrorData::new(
+        ErrorCode::INVALID_PARAMS,
+        format!(
+            "Refusing to access '{}': {}. Use an entry name reported by the cache list command.",
+            requested, reason
+        ),
+        None,
+    )
+}
+
+/// Limits applied to every web_scrape fetch.
+///
+/// Production always uses [`FetchPolicy::default`]; the fields exist so the tests can shrink the
+/// limits and exempt a single loopback listener without weakening the shipped defaults.
+#[derive(Clone, Debug)]
+struct FetchPolicy {
+    max_bytes: usize,
+    max_redirects: usize,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    request_timeout: Duration,
+    total_timeout: Duration,
+    dns_timeout: Duration,
+    bypass_proxy: bool,
+    exempt_addr: Option<SocketAddr>,
+}
+
+impl Default for FetchPolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: 10 * 1024 * 1024,
+            max_redirects: 5,
+            connect_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(20),
+            request_timeout: Duration::from_secs(60),
+            total_timeout: Duration::from_secs(120),
+            dns_timeout: Duration::from_secs(5),
+            bypass_proxy: false,
+            exempt_addr: None,
+        }
+    }
+}
+
+fn scrape_rejected(message: String) -> ErrorData {
+    ErrorData::new(ErrorCode::INVALID_PARAMS, message, None)
+}
+
+fn scrape_failed(message: String) -> ErrorData {
+    ErrorData::new(ErrorCode::INTERNAL_ERROR, message, None)
+}
+
+fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_multicast()
+        || a == 0
+        || (a == 100 && (64..128).contains(&b))
+        || (a == 192 && b == 0)
+        || (a == 198 && (b & 0xfe) == 18)
+        || a >= 240
+}
+
+fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+        return is_blocked_ipv4(mapped);
+    }
+    let segments = ip.segments();
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] == 0x0064 && segments[1] == 0xff9b)
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+}
+
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_blocked_ipv4(ip),
+        IpAddr::V6(ip) => is_blocked_ipv6(ip),
+    }
+}
+
+fn is_blocked_addr(addr: SocketAddr, policy: &FetchPolicy) -> bool {
+    if policy.exempt_addr == Some(addr) {
+        return false;
+    }
+    is_blocked_ip(addr.ip())
+}
+
+/// Validate one hop and resolve it to the exact addresses the request is allowed to reach.
+///
+/// Returns the domain to pin (None for IP literals, which need no resolution) alongside the
+/// vetted addresses. Anything uncertain - an unknown scheme, a name that will not resolve, a
+/// single blocked answer in a multi-address record - is rejected rather than attempted.
+async fn resolve_scrape_target(
+    url: &Url,
+    policy: &FetchPolicy,
+) -> Result<(Option<String>, Vec<SocketAddr>), ErrorData> {
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(scrape_rejected(format!(
+                "Refusing to fetch '{}': only http and https URLs can be scraped, not '{}'",
+                url, scheme
+            )))
+        }
+    }
+
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(scrape_rejected(format!(
+            "Refusing to fetch '{}': URLs carrying credentials are not allowed",
+            url
+        )));
+    }
+
+    let host = url
+        .host()
+        .ok_or_else(|| {
+            scrape_rejected(format!("Refusing to fetch '{}': the URL has no host", url))
+        })?
+        .to_owned();
+    let port = url.port_or_known_default().ok_or_else(|| {
+        scrape_rejected(format!("Refusing to fetch '{}': the URL has no port", url))
+    })?;
+
+    let (domain, addrs) = match host {
+        Host::Ipv4(ip) => (None, vec![SocketAddr::new(IpAddr::V4(ip), port)]),
+        Host::Ipv6(ip) => (None, vec![SocketAddr::new(IpAddr::V6(ip), port)]),
+        Host::Domain(domain) => {
+            let resolved = tokio::time::timeout(
+                policy.dns_timeout,
+                tokio::net::lookup_host((domain.as_str(), port)),
+            )
+            .await
+            .map_err(|_| {
+                scrape_rejected(format!("Refusing to fetch '{}': DNS lookup timed out", url))
+            })?
+            .map_err(|e| {
+                scrape_rejected(format!(
+                    "Refusing to fetch '{}': DNS lookup failed: {}",
+                    url, e
+                ))
+            })?;
+            let addresses = resolved.collect::<Vec<_>>();
+            (Some(domain), addresses)
+        }
+    };
+
+    if addrs.is_empty() {
+        return Err(scrape_rejected(format!(
+            "Refusing to fetch '{}': the host did not resolve to any address",
+            url
+        )));
+    }
+
+    if let Some(blocked) = addrs.iter().find(|addr| is_blocked_addr(**addr, policy)) {
+        return Err(scrape_rejected(format!(
+            "Refusing to fetch '{}': it resolves to {}, which is a loopback, private, link-local or otherwise non-public address",
+            url,
+            blocked.ip()
+        )));
+    }
+
+    Ok((domain, addrs))
+}
+
+/// Build a client for a single hop, pinned to the addresses that were just vetted so a name
+/// cannot resolve to a public address during validation and a private one at connect time.
+fn build_scrape_client(
+    domain: Option<&str>,
+    addrs: &[SocketAddr],
+    policy: &FetchPolicy,
+) -> Result<Client, ErrorData> {
+    let mut builder = Client::builder()
+        .user_agent("bharatcode/1.0")
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(policy.connect_timeout)
+        .read_timeout(policy.read_timeout)
+        .timeout(policy.request_timeout);
+
+    if let Some(domain) = domain {
+        builder = builder.resolve_to_addrs(domain, addrs);
+    }
+    if policy.bypass_proxy {
+        builder = builder.no_proxy();
+    }
+
+    builder
+        .build()
+        .map_err(|e| scrape_failed(format!("Failed to build HTTP client: {}", e)))
+}
+
+fn is_redirect(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
+}
+
+async fn read_bounded(mut response: Response, max_bytes: usize) -> Result<Vec<u8>, ErrorData> {
+    let too_large = || {
+        scrape_failed(format!(
+            "Response body exceeds the {} byte limit",
+            max_bytes
+        ))
+    };
+
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return Err(too_large());
+    }
+
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| scrape_failed(format!("Failed to read response body: {}", e)))?
+    {
+        if body.len() + chunk.len() > max_bytes {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
+/// Fetch a URL under [`FetchPolicy`]: every hop is revalidated, redirects are followed by hand so
+/// they cannot pivot to an internal host, and the body is streamed under a hard byte cap.
+async fn fetch_bounded(url: &str, policy: &FetchPolicy) -> Result<Vec<u8>, ErrorData> {
+    tokio::time::timeout(policy.total_timeout, fetch_bounded_inner(url, policy))
+        .await
+        .map_err(|_| scrape_failed(format!("Timed out fetching '{}'", url)))?
+}
+
+async fn fetch_bounded_inner(url: &str, policy: &FetchPolicy) -> Result<Vec<u8>, ErrorData> {
+    let mut target =
+        Url::parse(url).map_err(|e| scrape_rejected(format!("Invalid URL '{}': {}", url, e)))?;
+    let mut redirects = 0;
+
+    loop {
+        let (domain, addrs) = resolve_scrape_target(&target, policy).await?;
+        let client = build_scrape_client(domain.as_deref(), &addrs, policy)?;
+
+        let response = client
+            .get(target.clone())
+            .header("Accept", "text/markdown, */*")
+            .send()
+            .await
+            .map_err(|e| scrape_failed(format!("Failed to fetch URL: {}", e)))?;
+
+        let status = response.status();
+        if is_redirect(status) {
+            if redirects == policy.max_redirects {
+                return Err(scrape_failed(format!(
+                    "Refusing to follow more than {} redirects for '{}'",
+                    policy.max_redirects, url
+                )));
+            }
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|location| location.to_str().ok())
+                .ok_or_else(|| {
+                    scrape_failed(format!(
+                        "Redirect status {} without a Location header",
+                        status
+                    ))
+                })?;
+            target = target.join(location).map_err(|e| {
+                scrape_rejected(format!("Invalid redirect target '{}': {}", location, e))
+            })?;
+            redirects += 1;
+            continue;
+        }
+
+        if !status.is_success() {
+            return Err(scrape_failed(format!(
+                "HTTP request failed with status: {}",
+                status
+            )));
+        }
+
+        return read_bounded(response, policy.max_bytes).await;
     }
 }
 
@@ -543,10 +845,6 @@ impl ComputerControllerServer {
             tool_router,
             cache_dir,
             active_resources: Arc::new(Mutex::new(HashMap::new())),
-            http_client: Client::builder()
-                .user_agent("bharatcode/1.0")
-                .build()
-                .unwrap(),
             instructions,
             system_automation,
             #[cfg(target_os = "macos")]
@@ -559,6 +857,125 @@ impl ComputerControllerServer {
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         self.cache_dir
             .join(format!("{}_{}.{}", prefix, timestamp, extension))
+    }
+
+    /// Resolve a caller supplied cache identifier to a file inside the cache directory.
+    ///
+    /// An identifier is an entry name reported by the list command; the absolute paths the
+    /// save helpers report are also accepted as long as they point back into the cache
+    /// directory. Traversal segments, absolute paths elsewhere on the filesystem, symlinks
+    /// and anything that is not a regular file are rejected, so view/delete can never reach
+    /// outside the cache.
+    fn resolve_cache_entry(&self, requested: &str) -> Result<PathBuf, ErrorData> {
+        let canonical_root = self.cache_dir.canonicalize().map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("Failed to resolve cache directory: {}", e),
+                None,
+            )
+        })?;
+
+        let requested = requested.trim();
+        let candidate = Path::new(requested);
+        let relative = candidate
+            .strip_prefix(&canonical_root)
+            .or_else(|_| candidate.strip_prefix(&self.cache_dir))
+            .unwrap_or(candidate);
+
+        let mut resolved = self.cache_dir.clone();
+        let mut file_type = None;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(cache_entry_rejected(
+                    requested,
+                    "only entry names inside the cache directory can be addressed",
+                ));
+            };
+            resolved.push(name);
+
+            let metadata = fs::symlink_metadata(&resolved)
+                .map_err(|_| cache_entry_rejected(requested, "no such cache entry"))?;
+            if metadata.file_type().is_symlink() {
+                return Err(cache_entry_rejected(requested, "cache entry is a symlink"));
+            }
+            file_type = Some(metadata.file_type());
+        }
+
+        match file_type {
+            Some(file_type) if file_type.is_file() => {}
+            Some(_) => {
+                return Err(cache_entry_rejected(
+                    requested,
+                    "cache entry is not a regular file",
+                ))
+            }
+            None => {
+                return Err(cache_entry_rejected(
+                    requested,
+                    "expected the name of a cache entry",
+                ))
+            }
+        }
+
+        let canonical = resolved
+            .canonicalize()
+            .map_err(|_| cache_entry_rejected(requested, "no such cache entry"))?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(cache_entry_rejected(
+                requested,
+                "resolves outside the cache directory",
+            ));
+        }
+
+        Ok(resolved)
+    }
+
+    /// Entry names, relative to the cache directory, usable as view/delete identifiers.
+    fn list_cache_entries(&self) -> Result<Vec<String>, ErrorData> {
+        let mut entries = Vec::new();
+        let mut pending = vec![self.cache_dir.clone()];
+
+        while let Some(dir) = pending.pop() {
+            let read_dir = fs::read_dir(&dir).map_err(|e| {
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to read cache directory: {}", e),
+                    None,
+                )
+            })?;
+
+            for entry in read_dir {
+                let entry = entry.map_err(|e| {
+                    ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!("Failed to read directory entry: {}", e),
+                        None,
+                    )
+                })?;
+                let file_type = entry.file_type().map_err(|e| {
+                    ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!("Failed to read directory entry: {}", e),
+                        None,
+                    )
+                })?;
+
+                if file_type.is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if file_type.is_dir() {
+                    pending.push(path);
+                } else if file_type.is_file() {
+                    if let Ok(relative) = path.strip_prefix(&self.cache_dir) {
+                        entries.push(relative.display().to_string());
+                    }
+                }
+            }
+        }
+
+        entries.sort();
+        Ok(entries)
     }
 
     // Helper function to save content to cache
@@ -618,54 +1035,17 @@ impl ComputerControllerServer {
         params: Parameters<WebScrapeParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let url = &params.url;
         let save_as = params.save_as;
 
-        // Fetch the content
-        let response = self
-            .http_client
-            .get(url)
-            .header("Accept", "text/markdown, */*")
-            .send()
-            .await
-            .map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to fetch URL: {}", e),
-                    None,
-                )
-            })?;
+        let body = fetch_bounded(&params.url, &FetchPolicy::default()).await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("HTTP request failed with status: {}", status),
-                None,
-            ));
-        }
-
-        // Process based on save_as parameter
         let (content, extension, mime_type) = match save_as {
             SaveAsFormat::Text => {
-                let text = response.text().await.map_err(|e| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to get text: {}", e),
-                        None,
-                    )
-                })?;
+                let text = String::from_utf8_lossy(&body).into_owned();
                 (text.into_bytes(), "txt", "text/plain")
             }
             SaveAsFormat::Json => {
-                let text = response.text().await.map_err(|e| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to get text: {}", e),
-                        None,
-                    )
-                })?;
-                // Verify it's valid JSON
+                let text = String::from_utf8_lossy(&body).into_owned();
                 serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
@@ -675,16 +1055,7 @@ impl ComputerControllerServer {
                 })?;
                 (text.into_bytes(), "json", "application/json")
             }
-            SaveAsFormat::Binary => {
-                let bytes = response.bytes().await.map_err(|e| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to get bytes: {}", e),
-                        None,
-                    )
-                })?;
-                (bytes.to_vec(), "bin", "application/octet-stream")
-            }
+            SaveAsFormat::Binary => (body, "bin", "application/octet-stream"),
         };
 
         // Save to cache
@@ -1503,9 +1874,10 @@ impl ComputerControllerServer {
         description = "
             Manage cached files and data:
             - list: List all cached files
-            - view: View content of a cached file
-            - delete: Delete a cached file
+            - view: View content of a cached file, by the entry name reported by list
+            - delete: Delete a cached file, by the entry name reported by list
             - clear: Clear all cached files
+            Only entries inside the cache directory can be viewed or deleted.
         "
     )]
     pub async fn cache(
@@ -1517,27 +1889,10 @@ impl ComputerControllerServer {
 
         match command {
             CacheCommand::List => {
-                let mut files = Vec::new();
-                for entry in fs::read_dir(&self.cache_dir).map_err(|e| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to read cache directory: {}", e),
-                        None,
-                    )
-                })? {
-                    let entry = entry.map_err(|e| {
-                        ErrorData::new(
-                            ErrorCode::INTERNAL_ERROR,
-                            format!("Failed to read directory entry: {}", e),
-                            None,
-                        )
-                    })?;
-                    files.push(format!("{}", entry.path().display()));
-                }
-                files.sort();
+                let entries = self.list_cache_entries()?;
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Cached files:\n{}",
-                    files.join("\n")
+                    entries.join("\n")
                 ))]))
             }
             CacheCommand::View => {
@@ -1548,8 +1903,9 @@ impl ComputerControllerServer {
                         None,
                     )
                 })?;
+                let entry = self.resolve_cache_entry(path)?;
 
-                let content = fs::read_to_string(path).map_err(|e| {
+                let content = fs::read_to_string(&entry).map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
                         format!("Failed to read file: {}", e),
@@ -1570,8 +1926,9 @@ impl ComputerControllerServer {
                         None,
                     )
                 })?;
+                let entry = self.resolve_cache_entry(path)?;
 
-                fs::remove_file(path).map_err(|e| {
+                fs::remove_file(&entry).map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
                         format!("Failed to delete file: {}", e),
@@ -1580,7 +1937,7 @@ impl ComputerControllerServer {
                 })?;
 
                 // Remove from active resources if present
-                if let Ok(url) = Url::from_file_path(path) {
+                if let Ok(url) = Url::from_file_path(&entry) {
                     self.active_resources
                         .lock()
                         .unwrap()
@@ -1686,7 +2043,7 @@ impl ServerHandler for ComputerControllerServer {
 /// `BHARATCODE_EXEC_POLICY` gate that the developer shell tool already enforces,
 /// the same allow/deny screening is reimplemented here against the same
 /// environment variable and JSON policy format, so one policy file governs both
-/// execution paths. Keep this in sync with `crates/goose/src/exec_policy.rs`.
+/// execution paths. Keep this in sync with `crates/bharatcode-core/src/exec_policy.rs`.
 mod exec_policy_gate {
     use serde::Deserialize;
     use std::path::{Path, PathBuf};
@@ -1896,5 +2253,562 @@ mod exec_policy_gate {
             let p = policy(&["echo"], &[]);
             assert!(check(&p, "echo $(curl evil.test)").is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    const ENTRY: &str = "web_20240101_000000.txt";
+
+    struct Fixture {
+        server: ComputerControllerServer,
+        cache_dir: PathBuf,
+        outside_secret: PathBuf,
+        sibling_secret: PathBuf,
+        _root: TempDir,
+    }
+
+    fn fixture() -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join(ENTRY), "cached page").unwrap();
+
+        let outside_secret = root.path().join("secret.txt");
+        fs::write(&outside_secret, "top secret").unwrap();
+
+        let sibling_dir = root.path().join("sibling");
+        fs::create_dir_all(&sibling_dir).unwrap();
+        let sibling_secret = sibling_dir.join("notes.txt");
+        fs::write(&sibling_secret, "sibling secret").unwrap();
+
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = cache_dir.clone();
+
+        Fixture {
+            server,
+            cache_dir,
+            outside_secret,
+            sibling_secret,
+            _root: root,
+        }
+    }
+
+    async fn run(
+        server: &ComputerControllerServer,
+        command: CacheCommand,
+        path: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        server
+            .cache(Parameters(CacheParams {
+                command,
+                path: path.map(str::to_string),
+            }))
+            .await
+    }
+
+    fn text(result: &CallToolResult) -> String {
+        result.content[0].as_text().unwrap().text.clone()
+    }
+
+    fn assert_rejected(result: Result<CallToolResult, ErrorData>) {
+        let error = result.expect_err("cache access outside the cache directory must be rejected");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn list_reports_entry_names_usable_for_view() {
+        let f = fixture();
+
+        let listed = text(&run(&f.server, CacheCommand::List, None).await.unwrap());
+        assert!(listed.contains(ENTRY));
+        assert!(!listed.contains(&f.cache_dir.display().to_string()));
+
+        let viewed = text(
+            &run(&f.server, CacheCommand::View, Some(ENTRY))
+                .await
+                .unwrap(),
+        );
+        assert!(viewed.contains("cached page"));
+    }
+
+    #[tokio::test]
+    async fn view_accepts_full_path_inside_cache_dir() {
+        let f = fixture();
+        let full_path = f.cache_dir.join(ENTRY);
+
+        let viewed = text(
+            &run(
+                &f.server,
+                CacheCommand::View,
+                Some(full_path.to_str().unwrap()),
+            )
+            .await
+            .unwrap(),
+        );
+        assert!(viewed.contains("cached page"));
+    }
+
+    #[tokio::test]
+    async fn view_accepts_nested_entry() {
+        let f = fixture();
+        let nested_dir = f.cache_dir.join("pdf_images");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(nested_dir.join("page_1.txt"), "extracted").unwrap();
+
+        let listed = text(&run(&f.server, CacheCommand::List, None).await.unwrap());
+        assert!(listed.contains("page_1.txt"));
+
+        let nested_id = format!("pdf_images{}page_1.txt", std::path::MAIN_SEPARATOR);
+        let viewed = text(
+            &run(&f.server, CacheCommand::View, Some(nested_id.as_str()))
+                .await
+                .unwrap(),
+        );
+        assert!(viewed.contains("extracted"));
+    }
+
+    #[tokio::test]
+    async fn view_rejects_absolute_path_outside_cache() {
+        let f = fixture();
+
+        assert_rejected(
+            run(
+                &f.server,
+                CacheCommand::View,
+                Some(f.outside_secret.to_str().unwrap()),
+            )
+            .await,
+        );
+        assert_rejected(run(&f.server, CacheCommand::View, Some("/etc/passwd")).await);
+        assert!(f.outside_secret.exists());
+    }
+
+    #[tokio::test]
+    async fn view_rejects_traversal() {
+        let f = fixture();
+        let escaping = f.cache_dir.join("..").join("secret.txt");
+
+        assert_rejected(run(&f.server, CacheCommand::View, Some("../secret.txt")).await);
+        assert_rejected(run(&f.server, CacheCommand::View, Some("../../etc/passwd")).await);
+        assert_rejected(
+            run(
+                &f.server,
+                CacheCommand::View,
+                Some(escaping.to_str().unwrap()),
+            )
+            .await,
+        );
+        assert!(f.outside_secret.exists());
+    }
+
+    #[tokio::test]
+    async fn view_rejects_sibling_directory_entry() {
+        let f = fixture();
+
+        assert_rejected(
+            run(
+                &f.server,
+                CacheCommand::View,
+                Some(f.sibling_secret.to_str().unwrap()),
+            )
+            .await,
+        );
+        assert_rejected(run(&f.server, CacheCommand::View, Some("../sibling/notes.txt")).await);
+        assert!(f.sibling_secret.exists());
+    }
+
+    #[tokio::test]
+    async fn view_rejects_non_regular_entry() {
+        let f = fixture();
+        fs::create_dir_all(f.cache_dir.join("subdir")).unwrap();
+
+        assert_rejected(run(&f.server, CacheCommand::View, Some("subdir")).await);
+        assert_rejected(run(&f.server, CacheCommand::Delete, Some("subdir")).await);
+        assert!(f.cache_dir.join("subdir").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_entry_is_rejected_and_unlisted() {
+        let f = fixture();
+        std::os::unix::fs::symlink(&f.outside_secret, f.cache_dir.join("link.txt")).unwrap();
+
+        let listed = text(&run(&f.server, CacheCommand::List, None).await.unwrap());
+        assert!(!listed.contains("link.txt"));
+
+        assert_rejected(run(&f.server, CacheCommand::View, Some("link.txt")).await);
+        assert_rejected(run(&f.server, CacheCommand::Delete, Some("link.txt")).await);
+        assert!(f.outside_secret.exists());
+        assert!(f.cache_dir.join("link.txt").symlink_metadata().is_ok());
+    }
+
+    #[tokio::test]
+    async fn delete_removes_listed_entry_only() {
+        let f = fixture();
+
+        run(&f.server, CacheCommand::Delete, Some(ENTRY))
+            .await
+            .unwrap();
+        assert!(!f.cache_dir.join(ENTRY).exists());
+
+        let listed = text(&run(&f.server, CacheCommand::List, None).await.unwrap());
+        assert!(!listed.contains(ENTRY));
+        assert_rejected(run(&f.server, CacheCommand::View, Some(ENTRY)).await);
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_targets_outside_cache() {
+        let f = fixture();
+
+        assert_rejected(
+            run(
+                &f.server,
+                CacheCommand::Delete,
+                Some(f.outside_secret.to_str().unwrap()),
+            )
+            .await,
+        );
+        assert_rejected(run(&f.server, CacheCommand::Delete, Some("../secret.txt")).await);
+        assert_rejected(
+            run(
+                &f.server,
+                CacheCommand::Delete,
+                Some(f.sibling_secret.to_str().unwrap()),
+            )
+            .await,
+        );
+
+        assert!(f.outside_secret.exists());
+        assert!(f.sibling_secret.exists());
+    }
+}
+
+#[cfg(test)]
+mod web_scrape_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    enum Behavior {
+        Body(&'static str),
+        Chunked(usize),
+        DeclaredLength(u64),
+        RedirectTo(String),
+        SelfRedirect,
+        Stall,
+    }
+
+    /// A loopback listener that counts connections, so a test can prove a blocked target was
+    /// never even reached rather than merely that the call returned an error.
+    struct TestServer {
+        addr: SocketAddr,
+        hits: Arc<AtomicUsize>,
+    }
+
+    impl TestServer {
+        fn spawn(behavior: Behavior) -> Self {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let hits = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&hits);
+
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.read(&mut [0u8; 2048]);
+
+                    match &behavior {
+                        Behavior::Body(body) => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                        }
+                        Behavior::Chunked(total) => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+                            );
+                            let chunk = [b'a'; 256];
+                            let mut sent = 0;
+                            while sent < *total {
+                                if write!(stream, "{:x}\r\n", chunk.len()).is_err()
+                                    || stream.write_all(&chunk).is_err()
+                                    || stream.write_all(b"\r\n").is_err()
+                                {
+                                    break;
+                                }
+                                sent += chunk.len();
+                            }
+                            let _ = stream.write_all(b"0\r\n\r\n");
+                        }
+                        Behavior::DeclaredLength(len) => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                                len
+                            );
+                        }
+                        Behavior::RedirectTo(location) => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\n\r\n",
+                                location
+                            );
+                        }
+                        Behavior::SelfRedirect => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n",
+                            );
+                        }
+                        Behavior::Stall => {
+                            let _ =
+                                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+                            let _ = stream.flush();
+                            std::thread::sleep(Duration::from_secs(30));
+                        }
+                    }
+                    let _ = stream.flush();
+                }
+            });
+
+            Self { addr, hits }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/", self.addr)
+        }
+
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+
+        /// A policy that reaches this server but keeps every other destination guarded.
+        fn policy(&self) -> FetchPolicy {
+            FetchPolicy {
+                max_bytes: 1024,
+                max_redirects: 3,
+                connect_timeout: Duration::from_secs(2),
+                read_timeout: Duration::from_millis(300),
+                request_timeout: Duration::from_secs(5),
+                total_timeout: Duration::from_secs(10),
+                dns_timeout: Duration::from_secs(2),
+                bypass_proxy: true,
+                exempt_addr: Some(self.addr),
+            }
+        }
+    }
+
+    fn server_with_cache() -> (ComputerControllerServer, TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = ComputerControllerServer::new();
+        server.cache_dir = root.path().to_path_buf();
+        (server, root)
+    }
+
+    async fn scrape(url: &str) -> Result<CallToolResult, ErrorData> {
+        let (server, _root) = server_with_cache();
+        server
+            .web_scrape(Parameters(WebScrapeParams {
+                url: url.to_string(),
+                save_as: SaveAsFormat::Text,
+            }))
+            .await
+    }
+
+    fn assert_rejected(result: Result<CallToolResult, ErrorData>, expected: &str) {
+        let error = result.expect_err("web_scrape should have refused this target");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        let message = error.message.to_lowercase();
+        assert!(
+            message.contains(expected),
+            "expected {:?} to mention {:?}",
+            message,
+            expected
+        );
+    }
+
+    #[test]
+    fn non_public_addresses_are_blocked() {
+        for ip in [
+            "127.0.0.1",
+            "0.0.0.0",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.100.100.200",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(
+                is_blocked_ip(ip.parse().unwrap()),
+                "{} should be treated as non-public",
+                ip
+            );
+        }
+
+        for ip in ["1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"] {
+            assert!(
+                !is_blocked_ip(ip.parse().unwrap()),
+                "{} should be allowed",
+                ip
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_non_http_schemes() {
+        assert_rejected(scrape("file:///etc/passwd").await, "http and https");
+        assert_rejected(scrape("ftp://example.com/secrets").await, "http and https");
+        assert_rejected(scrape("javascript:alert(1)").await, "http and https");
+    }
+
+    #[tokio::test]
+    async fn rejects_embedded_credentials() {
+        assert_rejected(scrape("http://user:pass@example.com/").await, "credentials");
+    }
+
+    #[tokio::test]
+    async fn rejects_loopback_without_connecting() {
+        let server = TestServer::spawn(Behavior::Body("internal secret"));
+
+        assert_rejected(scrape(&server.url()).await, "loopback");
+        assert_eq!(
+            server.hits(),
+            0,
+            "the loopback service must never be dialled"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_metadata_and_private_literals() {
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fd00::1]/",
+            "http://10.0.0.5/admin",
+            "http://192.168.1.1/",
+            "http://[::1]:8080/",
+        ] {
+            assert_rejected(scrape(url).await, "non-public");
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolvable_host_fails_closed() {
+        let policy = FetchPolicy {
+            dns_timeout: Duration::ZERO,
+            bypass_proxy: true,
+            ..FetchPolicy::default()
+        };
+
+        let error = fetch_bounded("http://example.com/", &policy)
+            .await
+            .expect_err("a name we could not resolve must not be fetched");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("DNS"), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn rejects_redirect_pivot_to_loopback() {
+        let internal = TestServer::spawn(Behavior::Body("internal secret"));
+        let entry = TestServer::spawn(Behavior::RedirectTo(internal.url()));
+
+        let error = fetch_bounded(&entry.url(), &entry.policy())
+            .await
+            .expect_err("a redirect into loopback must be refused");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(entry.hits(), 1);
+        assert_eq!(
+            internal.hits(),
+            0,
+            "the redirect target must never be dialled"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_redirect_pivot_to_metadata_and_file() {
+        for location in [
+            "http://169.254.169.254/latest/meta-data/",
+            "file:///etc/passwd",
+        ] {
+            let entry = TestServer::spawn(Behavior::RedirectTo(location.to_string()));
+
+            let error = fetch_bounded(&entry.url(), &entry.policy())
+                .await
+                .expect_err("redirect target must be revalidated");
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        }
+    }
+
+    #[tokio::test]
+    async fn caps_redirect_chains() {
+        let entry = TestServer::spawn(Behavior::SelfRedirect);
+        let policy = entry.policy();
+
+        let error = fetch_bounded(&entry.url(), &policy)
+            .await
+            .expect_err("an endless redirect chain must terminate");
+        assert!(error.message.contains("redirects"), "{}", error.message);
+        assert_eq!(entry.hits(), policy.max_redirects + 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_streamed_body_over_limit() {
+        let server = TestServer::spawn(Behavior::Chunked(64 * 1024));
+
+        let error = fetch_bounded(&server.url(), &server.policy())
+            .await
+            .expect_err("an oversized body must not be buffered");
+        assert!(error.message.contains("byte limit"), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn rejects_declared_body_over_limit() {
+        let server = TestServer::spawn(Behavior::DeclaredLength(1_000_000));
+
+        let error = fetch_bounded(&server.url(), &server.policy())
+            .await
+            .expect_err("an oversized content-length must be refused up front");
+        assert!(error.message.contains("byte limit"), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn stalled_response_times_out() {
+        let server = TestServer::spawn(Behavior::Stall);
+        let policy = server.policy();
+
+        let started = Instant::now();
+        fetch_bounded(&server.url(), &policy)
+            .await
+            .expect_err("a stalled body must not hang the fetch");
+        assert!(
+            started.elapsed() < policy.request_timeout,
+            "the read timeout should fire well before the request timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetches_an_ordinary_page() {
+        let server = TestServer::spawn(Behavior::Body("hello world"));
+
+        let body = fetch_bounded(&server.url(), &server.policy())
+            .await
+            .unwrap();
+        assert_eq!(body, b"hello world");
+        assert_eq!(server.hits(), 1);
     }
 }

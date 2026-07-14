@@ -93,10 +93,7 @@ function initializeSearch(): MiniSearch<DocFile> {
 }
 
 function generateWebUrl(filePath: string): string {
-  const baseUrl = "https://goose-docs.ai/docs";
-  // Remove file extension for the URL path
-  const urlPath = filePath.replace(/\.[^/.]+$/, "");
-  return `${baseUrl}/${urlPath}`;
+  return `https://github.com/arbazkhan971/bharatcode-cli/blob/main/${filePath}`;
 }
 
 function getPreview(content: string, maxLength: number = 1000): string {

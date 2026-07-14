@@ -149,7 +149,7 @@ impl ProfileKnobs {
 
     /// Whether this is the default (`balanced`) posture with all-default knobs.
     pub fn is_default(&self) -> bool {
-        self.profile == ProfileName::Balanced
+        self.profile() == ProfileName::Balanced
     }
 
     /// Human-readable rows describing the selected profile and each resolved
@@ -159,10 +159,10 @@ impl ProfileKnobs {
     pub fn summary_lines(&self) -> Vec<String> {
         let default_tag = if self.is_default() { " (default)" } else { "" };
         vec![
-            format!("profile: {}{}", self.profile.as_str(), default_tag),
-            format!("stream-flush: {}ms", self.stream_flush_ms),
-            format!("max-concurrent-tools: {}", self.max_concurrent_tools),
-            format!("context-budget-hint: {} tokens", self.context_budget_hint),
+            format!("profile: {}{}", self.profile().as_str(), default_tag),
+            format!("stream-flush: {}ms", self.stream_flush_ms()),
+            format!("max-concurrent-tools: {}", self.max_concurrent_tools()),
+            format!("context-budget-hint: {} tokens", self.context_budget_hint()),
         ]
     }
 }
@@ -204,11 +204,6 @@ pub fn profile_for_config(config: &Config) -> ProfileName {
 /// single typed source advisory perf consumers can read.
 pub fn knobs_for_config(config: &Config) -> ProfileKnobs {
     profile_for_config(config).knobs()
-}
-
-/// Resolve the selected profile from the global config.
-pub fn resolve() -> ProfileKnobs {
-    knobs_for_config(Config::global())
 }
 
 /// Human-readable summary rows for the selected profile, resolved from a specific

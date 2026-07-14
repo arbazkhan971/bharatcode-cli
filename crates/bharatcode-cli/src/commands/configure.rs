@@ -1,6 +1,4 @@
 use crate::recipes::github_recipe::BHARATCODE_RECIPE_GITHUB_REPO_CONFIG_KEY;
-use cliclack::spinner;
-use console::style;
 use bharatcode_core::agents::extension::{ToolInfo, PLATFORM_EXTENSIONS};
 use bharatcode_core::agents::extension_manager::get_parameter_names;
 use bharatcode_core::agents::Agent;
@@ -26,6 +24,8 @@ use bharatcode_core::providers::provider_test::test_provider_configuration;
 use bharatcode_core::providers::{create, providers, retry_operation, RetryConfig};
 use bharatcode_core::session::SessionType;
 use bharatcode_providers::thinking::ThinkingEffort;
+use cliclack::spinner;
+use console::style;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -500,7 +500,8 @@ async fn handle_oauth_configuration(provider_name: &str, key_name: &str) -> anyh
     ));
 
     // Create a temporary provider instance to handle OAuth
-    let temp_model = bharatcode_core::model_config::model_config_from_user_config(provider_name, "temp")?;
+    let temp_model =
+        bharatcode_core::model_config::model_config_from_user_config(provider_name, "temp")?;
     match create(provider_name, temp_model, Vec::new()).await {
         Ok(provider) => match provider.configure_oauth().await {
             Ok(_) => {
@@ -1724,7 +1725,8 @@ pub async fn configure_tool_permissions_dialog() -> anyhow::Result<()> {
     let model: String = config
         .get_bharatcode_model()
         .expect("No model configured. Please set model first");
-    let model_config = bharatcode_core::model_config::model_config_from_user_config(&provider_name, &model)?;
+    let model_config =
+        bharatcode_core::model_config::model_config_from_user_config(&provider_name, &model)?;
 
     let agent = Agent::new();
 
@@ -1944,15 +1946,17 @@ pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
     // Test configuration - get the model that was configured
     println!("\nTesting configuration...");
     let configured_model: String = config.get_bharatcode_model()?;
-    let model_config =
-        match bharatcode_core::model_config::model_config_from_user_config("openrouter", &configured_model) {
-            Ok(config) => config,
-            Err(e) => {
-                eprintln!("⚠️  Invalid model configuration: {}", e);
-                eprintln!("Your settings have been saved. Please check your model configuration.");
-                return Ok(());
-            }
-        };
+    let model_config = match bharatcode_core::model_config::model_config_from_user_config(
+        "openrouter",
+        &configured_model,
+    ) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("⚠️  Invalid model configuration: {}", e);
+            eprintln!("Your settings have been saved. Please check your model configuration.");
+            return Ok(());
+        }
+    };
 
     match create("openrouter", model_config, Vec::new()).await {
         Ok(provider) => {
@@ -1983,7 +1987,9 @@ pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
                             config: ExtensionConfig::Platform {
                                 name: "developer".to_string(),
                                 description: "Developer extension".to_string(),
-                                display_name: Some(bharatcode_core::config::DEFAULT_DISPLAY_NAME.to_string()),
+                                display_name: Some(
+                                    bharatcode_core::config::DEFAULT_DISPLAY_NAME.to_string(),
+                                ),
                                 bundled: Some(true),
                                 available_tools: Vec::new(),
                             },
@@ -2026,15 +2032,17 @@ pub async fn handle_tetrate_auth() -> anyhow::Result<()> {
     // Test configuration
     println!("\nTesting configuration...");
     let configured_model: String = config.get_bharatcode_model()?;
-    let model_config =
-        match bharatcode_core::model_config::model_config_from_user_config("tetrate", &configured_model) {
-            Ok(config) => config,
-            Err(e) => {
-                eprintln!("⚠️  Invalid model configuration: {}", e);
-                eprintln!("Your settings have been saved. Please check your model configuration.");
-                return Ok(());
-            }
-        };
+    let model_config = match bharatcode_core::model_config::model_config_from_user_config(
+        "tetrate",
+        &configured_model,
+    ) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("⚠️  Invalid model configuration: {}", e);
+            eprintln!("Your settings have been saved. Please check your model configuration.");
+            return Ok(());
+        }
+    };
 
     match create("tetrate", model_config, Vec::new()).await {
         Ok(provider) => {
@@ -2055,7 +2063,9 @@ pub async fn handle_tetrate_auth() -> anyhow::Result<()> {
                             config: ExtensionConfig::Platform {
                                 name: "developer".to_string(),
                                 description: "Developer extension".to_string(),
-                                display_name: Some(bharatcode_core::config::DEFAULT_DISPLAY_NAME.to_string()),
+                                display_name: Some(
+                                    bharatcode_core::config::DEFAULT_DISPLAY_NAME.to_string(),
+                                ),
                                 bundled: Some(true),
                                 available_tools: Vec::new(),
                             },
@@ -2248,9 +2258,12 @@ fn add_provider() -> anyhow::Result<()> {
 }
 
 async fn remove_provider() -> anyhow::Result<()> {
-    let custom_providers_dir = bharatcode_core::config::declarative_providers::custom_providers_dir();
+    let custom_providers_dir =
+        bharatcode_core::config::declarative_providers::custom_providers_dir();
     let custom_providers = if custom_providers_dir.exists() {
-        bharatcode_core::config::declarative_providers::load_custom_providers(&custom_providers_dir)?
+        bharatcode_core::config::declarative_providers::load_custom_providers(
+            &custom_providers_dir,
+        )?
     } else {
         Vec::new()
     };

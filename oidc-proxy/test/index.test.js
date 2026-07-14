@@ -57,13 +57,13 @@ function validPayload(overrides = {}) {
   const now = Math.floor(Date.now() / 1000);
   return {
     iss: "https://token.actions.githubusercontent.com",
-    aud: "goose-oidc-proxy",
+    aud: "bharatcode-oidc-proxy",
     iat: now - 10,
     exp: now + 300,
     jti: `test-jti-${++jtiCounter}`,
-    repository: "aaif-goose/goose",
+    repository: "arbazkhan971/bharatcode-cli",
     ref: "refs/heads/main",
-    sub: "repo:aaif-goose/goose:ref:refs/heads/main",
+    sub: "repo:arbazkhan971/bharatcode-cli:ref:refs/heads/main",
     ...overrides,
   };
 }
@@ -137,11 +137,11 @@ function mockTokenBucket(overrides = {}) {
 function testEnv(overrides = {}) {
   return {
     OIDC_ISSUER: "https://token.actions.githubusercontent.com",
-    OIDC_AUDIENCE: "goose-oidc-proxy",
+    OIDC_AUDIENCE: "bharatcode-oidc-proxy",
     UPSTREAM_URL: "https://api.anthropic.com",
     UPSTREAM_AUTH_HEADER: "x-api-key",
     UPSTREAM_API_KEY: "sk-ant-real-key",
-    ALLOWED_REPOS: "aaif-goose/goose",
+    ALLOWED_REPOS: "arbazkhan971/bharatcode-cli",
     MAX_TOKEN_AGE_SECONDS: "1200",
     MAX_REQUESTS_PER_TOKEN: "200",
     RATE_LIMIT_PER_SECOND: "2",

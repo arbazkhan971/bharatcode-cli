@@ -46,10 +46,7 @@ pub enum Locale {
 /// a supported regional language falls back to [`Locale::En`].
 fn normalize_locale(raw: &str) -> Locale {
     let lowered = raw.trim().to_ascii_lowercase();
-    let primary = lowered
-        .split(|c| c == '_' || c == '-' || c == '.')
-        .next()
-        .unwrap_or("");
+    let primary = lowered.split(['_', '-', '.']).next().unwrap_or("");
     match primary {
         "hi" => Locale::Hi,
         "ta" => Locale::Ta,

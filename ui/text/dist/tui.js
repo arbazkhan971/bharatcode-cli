@@ -26,7 +26,7 @@ function main() {
   const args = process.argv.slice(2);
   const hasForwarding = args.length > 0 && args[0] === '--';
 
-  if (!hasForwarding && args.some((arg) => arg === '-h' || arg === '--help')) {
+  if (!process.env.BHARATCODE_BINARY && !hasForwarding && args.some((arg) => arg === '-h' || arg === '--help')) {
     printUsage();
     return 0;
   }
@@ -39,7 +39,7 @@ function main() {
     return 1;
   }
 
-  const delegateArgs = hasForwarding ? args.slice(1) : [];
+  const delegateArgs = hasForwarding ? args.slice(1) : args;
 
   const child = spawn(binaryPath, delegateArgs, {
     env: {

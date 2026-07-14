@@ -416,7 +416,7 @@ mod tests {
         let root = dir.path();
         fs::write(
             root.join("README.md"),
-            "# Title\n".to_string() + &"x".repeat(50_000),
+            "# Title\n".to_string() + "x".repeat(50_000).as_str(),
         )
         .unwrap();
         for i in 0..50 {

@@ -87,22 +87,23 @@ fn parse_allowlist(raw: &str) -> Vec<String> {
 /// path, port, or leading `*.` wildcard so matching is forgiving of how the
 /// operator wrote it.
 fn normalize_host_entry(entry: &str) -> String {
-    let mut host = entry.trim().to_ascii_lowercase();
-    if let Some(idx) = host.find("://") {
-        host = host[idx + 3..].to_string();
+    let mut host = entry.trim();
+    if let Some((_, after_scheme)) = host.split_once("://") {
+        host = after_scheme;
     }
     // Drop any path / query suffix.
-    if let Some(idx) = host.find('/') {
-        host = host[..idx].to_string();
+    if let Some((before_path, _)) = host.split_once('/') {
+        host = before_path;
     }
     // Drop a trailing :port (but keep IPv6 brackets intact).
     if !host.starts_with('[') {
-        if let Some(idx) = host.rfind(':') {
-            host = host[..idx].to_string();
+        if let Some((before_port, _)) = host.rsplit_once(':') {
+            host = before_port;
         }
     }
-    host = host.trim_start_matches("*.").to_string();
-    host.trim_matches('.').to_string()
+    host.trim_start_matches("*.")
+        .trim_matches('.')
+        .to_ascii_lowercase()
 }
 
 /// Extract the bare lowercase host from an endpoint string that may be a full

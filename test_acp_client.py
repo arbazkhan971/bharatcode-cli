@@ -20,7 +20,7 @@ import time
 class AcpClient:
     def __init__(self):
         self.process = subprocess.Popen(
-            ['cargo', 'run', '-p', 'goose-cli', '--', 'acp'],
+            ['cargo', 'run', '-p', 'bharatcode-cli', '--', 'acp'],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

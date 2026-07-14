@@ -8,7 +8,6 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use futures::future::join_all;
 use bharatcode_core::config::paths::Paths;
 use bharatcode_core::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
 use bharatcode_core::providers::huggingface_auth;
@@ -26,6 +25,7 @@ use bharatcode_core::providers::local_inference::{
     },
     recommend_local_model,
 };
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
@@ -201,9 +201,9 @@ async fn ensure_featured_models_in_registry() -> Result<(), ErrorResponse> {
     for (model_id, url, path) in mmproj_downloads_needed {
         if !path.exists() && started_paths.insert(path.clone()) {
             let download_id = format!("{}-mmproj", model_id);
-            let dominated_by_active = dm
-                .get_progress(&download_id)
-                .is_some_and(|p| p.status == bharatcode_core::download_manager::DownloadStatus::Downloading);
+            let dominated_by_active = dm.get_progress(&download_id).is_some_and(|p| {
+                p.status == bharatcode_core::download_manager::DownloadStatus::Downloading
+            });
             if !dominated_by_active {
                 tracing::info!(model_id = %model_id, "Auto-downloading vision encoder for existing model");
                 if let Err(e) = dm

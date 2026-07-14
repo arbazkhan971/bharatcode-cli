@@ -289,7 +289,7 @@ fn parse_checksums(body: &str) -> Vec<(String, String)> {
         let Some((hex, rest)) = trimmed.split_once(' ') else {
             continue;
         };
-        let name = rest.trim_start_matches(|c| c == ' ' || c == '*').trim();
+        let name = rest.trim_start_matches([' ', '*']).trim();
         if hex.is_empty() || name.is_empty() {
             continue;
         }
@@ -510,14 +510,9 @@ mod tests {
     /// previous value afterwards. The doctor env probes are process-global, so
     /// the few tests that touch the env are kept self-contained here.
     fn with_dist_dir<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
-        let prev = std::env::var(DIST_DIR_ENV).ok();
-        std::env::set_var(DIST_DIR_ENV, dir);
-        let out = f();
-        match prev {
-            Some(v) => std::env::set_var(DIST_DIR_ENV, v),
-            None => std::env::remove_var(DIST_DIR_ENV),
-        }
-        out
+        let value = dir.to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([(DIST_DIR_ENV, Some(value.as_str()))]);
+        f()
     }
 
     #[test]

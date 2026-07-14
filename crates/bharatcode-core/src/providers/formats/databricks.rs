@@ -10,7 +10,9 @@ use bharatcode_providers::formats::openai::{
     extract_reasoning_effort, is_openai_responses_model, is_valid_function_name,
     openai_reasoning_effort_for_thinking, sanitize_function_name,
 };
-use bharatcode_providers::images::{convert_image, detect_image_path, load_image_file, ImageFormat};
+use bharatcode_providers::images::{
+    convert_image, detect_image_path, load_image_file, ImageFormat,
+};
 use bharatcode_providers::json::safely_parse_json;
 use rmcp::model::{
     object, AnnotateAble, CallToolRequestParams, Content, ErrorCode, ErrorData, RawContent,

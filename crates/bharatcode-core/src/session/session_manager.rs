@@ -9,9 +9,9 @@ use crate::session::session_naming::{
     generate_session_name, MSG_COUNT_FOR_SESSION_NAME_GENERATION,
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use bharatcode_providers::conversation::token_usage::Usage;
 use bharatcode_providers::model::ModelConfig;
+use chrono::{DateTime, Utc};
 use rmcp::model::Role;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -1681,11 +1681,7 @@ impl SessionStorage {
         } else {
             "LEFT JOIN messages m ON s.id = m.session_id"
         };
-        let order_by = if query.cursor.is_some() || query.limit.is_some() {
-            "ORDER BY datetime(s.updated_at) DESC, s.id DESC"
-        } else {
-            "ORDER BY s.updated_at DESC"
-        };
+        let order_by = "ORDER BY datetime(s.updated_at) DESC, s.id DESC";
         let limit_clause = if query.limit.is_some() { "LIMIT ?" } else { "" };
 
         let sql = format!(
@@ -2135,7 +2131,8 @@ mod tests {
             _system: &str,
             _messages: &[Message],
             _tools: &[rmcp::model::Tool],
-        ) -> std::result::Result<MessageStream, bharatcode_providers::errors::ProviderError> {
+        ) -> std::result::Result<MessageStream, bharatcode_providers::errors::ProviderError>
+        {
             unimplemented!("session naming calls complete_fast")
         }
 
@@ -2623,6 +2620,35 @@ mod tests {
 
         let cursor = assert_session_list_page(&sm, None, None, 2, &expected_ids[0..2], true).await;
         assert_session_list_page(&sm, cursor.as_ref(), None, 2, &expected_ids[2..3], false).await;
+    }
+
+    #[tokio::test]
+    async fn test_session_list_normalizes_mixed_timestamp_formats() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let newer = create_session_for_list(&sm, "/tmp/session-list", true).await;
+        let older = create_session_for_list(&sm, "/tmp/session-list", true).await;
+        let pool = sm.storage().pool().await.unwrap();
+
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind("2026-01-02 00:00:00")
+            .bind(&newer)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind("2026-01-01T23:59:59+00:00")
+            .bind(&older)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let sessions = sm
+            .list_sessions_by_types(&[SessionType::User])
+            .await
+            .unwrap();
+        assert_eq!(sessions[0].id, newer);
+        assert_eq!(sessions[1].id, older);
     }
 
     #[tokio::test]

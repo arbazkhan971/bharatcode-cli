@@ -5,7 +5,8 @@ use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS
 use crate::agents::tool_execution::ToolCallContext;
 use crate::agents::AgentConfig;
 use crate::config::paths::Paths;
-use crate::config::{Config, GooseMode};
+use crate::config::Config;
+use crate::permission::approval_mode::subagent_mode;
 use crate::providers;
 use crate::recipe::build_recipe::build_recipe_from_template;
 use crate::recipe::local_recipes::load_local_recipe_file;
@@ -1241,18 +1242,18 @@ impl SummonClient {
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
 
-        // Subagents must use Auto until get_agent_messages forwards
-        // ActionRequired messages to the parent. Until then, any mode
-        // that requires approval will hang on the subagent's confirmation_rx.
+        let subagent_mode = subagent_mode(session.goose_mode);
+
         let agent_config = AgentConfig::new(
             self.context.session_manager.clone(),
             crate::config::permission::PermissionManager::instance(),
             None,
-            GooseMode::Auto,
+            subagent_mode,
             true, // disable session naming for subagents
             crate::agents::GoosePlatform::GooseCli,
         )
-        .with_use_login_shell_path(self.context.use_login_shell_path);
+        .with_use_login_shell_path(self.context.use_login_shell_path)
+        .with_unattended(true);
 
         let subagent_session = self
             .context
@@ -1261,7 +1262,7 @@ impl SummonClient {
                 task_config.parent_working_dir.clone(),
                 "Delegated task".to_string(),
                 SessionType::SubAgent,
-                GooseMode::Auto,
+                subagent_mode,
             )
             .await
             .map_err(|e| format!("Failed to create subagent session: {}", e))?;
@@ -1774,18 +1775,18 @@ impl SummonClient {
 
         let description = safe_truncate(&Self::get_task_description(&params), TASK_LABEL_BUDGET);
 
-        // Subagents must use Auto until get_agent_messages forwards
-        // ActionRequired messages to the parent. Until then, any mode
-        // that requires approval will hang on the subagent's confirmation_rx.
+        let subagent_mode = subagent_mode(session.goose_mode);
+
         let agent_config = AgentConfig::new(
             self.context.session_manager.clone(),
             crate::config::permission::PermissionManager::instance(),
             None,
-            GooseMode::Auto,
+            subagent_mode,
             true, // disable session naming for subagents
             crate::agents::GoosePlatform::GooseCli,
         )
-        .with_use_login_shell_path(self.context.use_login_shell_path);
+        .with_use_login_shell_path(self.context.use_login_shell_path)
+        .with_unattended(true);
 
         let subagent_session = self
             .context
@@ -1794,7 +1795,7 @@ impl SummonClient {
                 task_config.parent_working_dir.clone(),
                 description.clone(),
                 SessionType::SubAgent,
-                GooseMode::Auto,
+                subagent_mode,
             )
             .await
             .map_err(|e| format!("Failed to create subagent session: {}", e))?;

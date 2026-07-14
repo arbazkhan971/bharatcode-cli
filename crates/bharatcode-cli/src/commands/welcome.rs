@@ -12,11 +12,11 @@
 //! The current state shown for each step is read from the same accessors the
 //! features themselves use at runtime:
 //!
-//!   * locale       — [`crate::i18n::active_locale`]
-//!   * provider/model — [`bharatcode_core::config::providers::get_active_provider`] /
-//!                      [`bharatcode_core::config::providers::get_active_model`]
-//!   * theme        — [`crate::theme::active_theme`]
-//!   * privacy      — [`crate::commands::privacy::PrivacyPosture::resolve`]
+//! * locale — [`crate::i18n::active_locale`]
+//! * provider/model — [`bharatcode_core::config::providers::get_active_provider`] /
+//!   [`bharatcode_core::config::providers::get_active_model`]
+//! * theme — [`crate::theme::active_theme`]
+//! * privacy — [`crate::commands::privacy::PrivacyPosture::resolve`]
 //!
 //! The output is deliberately plain (no boxes, one fact per line) so screen
 //! readers announce it cleanly, and it honours `NO_COLOR` transparently because
@@ -307,8 +307,9 @@ mod tests {
 
         let before = std::fs::read(&config_path).expect("read before");
 
-        let cfg = bharatcode_core::config::Config::new_with_file_secrets(&config_path, &secrets_path)
-            .expect("temp config");
+        let cfg =
+            bharatcode_core::config::Config::new_with_file_secrets(&config_path, &secrets_path)
+                .expect("temp config");
         // Building the plan must not touch the config file in any way.
         let _ = plan_lines(false);
         // The temp Config handle exists but the dry-run path never sets a value.

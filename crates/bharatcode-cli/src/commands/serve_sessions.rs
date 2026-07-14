@@ -215,7 +215,10 @@ fn host_of(addr: &str) -> Result<String> {
         let end = rest
             .find(']')
             .ok_or_else(|| anyhow!("malformed IPv6 bind address '{addr}'"))?;
-        return Ok(rest[..end].to_string());
+        return Ok(rest
+            .get(..end)
+            .expect("closing bracket is a UTF-8 boundary")
+            .to_string());
     }
     let host = addr
         .rsplit_once(':')

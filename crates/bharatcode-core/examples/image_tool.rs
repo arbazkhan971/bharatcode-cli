@@ -1,11 +1,11 @@
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use dotenvy::dotenv;
 use bharatcode_core::conversation::message::Message;
 use bharatcode_core::providers::anthropic::ANTHROPIC_DEFAULT_MODEL;
 use bharatcode_core::providers::create_with_named_model;
 use bharatcode_core::providers::databricks::DATABRICKS_DEFAULT_MODEL;
 use bharatcode_core::providers::openai::OPEN_AI_DEFAULT_MODEL;
+use dotenvy::dotenv;
 use rmcp::model::{CallToolRequestParams, Content, Tool};
 use rmcp::object;
 use std::fs;
@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     ];
     for provider in providers {
         // Read and encode test image
-        let image_data = fs::read("crates/goose/examples/test_assets/test_image.png")?;
+        let image_data = fs::read("crates/bharatcode-core/examples/test_assets/test_image.png")?;
         let base64_image = BASE64.encode(image_data);
 
         // Create a message sequence that includes a tool response with both text and image

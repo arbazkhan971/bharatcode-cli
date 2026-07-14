@@ -58,10 +58,7 @@ enum Locale {
 
 fn normalize_locale(raw: &str) -> Locale {
     let lowered = raw.trim().to_ascii_lowercase();
-    let primary = lowered
-        .split(|c| c == '_' || c == '-' || c == '.')
-        .next()
-        .unwrap_or("");
+    let primary = lowered.split(['_', '-', '.']).next().unwrap_or("");
     match primary {
         "hi" => Locale::Hi,
         "ta" => Locale::Ta,
@@ -133,7 +130,8 @@ impl Announcer {
 
     /// Create an announcer with an explicit interval (used by tests to drive a
     /// deterministic, fixed-clock schedule).
-    pub fn with_interval(interval: Duration) -> Self {
+    #[cfg(test)]
+    fn with_interval(interval: Duration) -> Self {
         Self {
             last_emit: None,
             interval,

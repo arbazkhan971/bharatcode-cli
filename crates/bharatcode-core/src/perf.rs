@@ -1,16 +1,9 @@
-//! Opt-in release-perf profile manifest plus a lightweight per-turn streaming
-//! perf probe (BHARATCODE_PERF).
+//! Lightweight per-turn streaming perf probe (`BHARATCODE_PERF`).
 //!
-//! This module has two jobs, both pure-`std` (plus `once_cell` for the global
-//! handle) and entirely network-free:
+//! The runtime path is pure-`std` (plus `once_cell` for the global handle) and
+//! entirely network-free:
 //!
-//! 1. [`release_profile_manifest`] returns the *recommended* release build
-//!    profile as structured data (LTO mode, codegen units, panic behaviour,
-//!    strip, plus runtime perf thresholds). It is a pure function with no
-//!    side-effects so the packaging / release docs can consume it as the single
-//!    source of truth for how an optimised BharatCode binary should be built.
-//!
-//! 2. [`PerfProbe`] is a process-global, lock-free probe that the real provider
+//! [`PerfProbe`] is a process-global, lock-free probe that the real provider
 //!    streaming path brackets around each turn: [`PerfProbe::mark_request_start`]
 //!    before streaming, [`PerfProbe::mark_first_token`] on the first yielded
 //!    chunk, and [`PerfProbe::mark_complete`] at the end. It derives
@@ -21,6 +14,9 @@
 //! mark is a single relaxed atomic-bool load that returns immediately. There is
 //! no allocation, no logging, and no behavioural change on the disabled (default)
 //! path, so a stock binary pays effectively nothing.
+//!
+//! Test-only manifest fixtures assert the intended release-profile knobs
+//! without shipping an unused runtime configuration API.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -39,6 +35,7 @@ const TTFT_BUDGET_ENV_VAR: &str = "BHARATCODE_PERF_TTFT_BUDGET_MS";
 /// Default recommended ttft budget (milliseconds) baked into the release-profile
 /// manifest so the docs always carry a concrete target even when the runtime
 /// override env var is unset.
+#[cfg(test)]
 const DEFAULT_TTFT_BUDGET_MS: u64 = 800;
 
 /// Average characters per token used to estimate output-token counts from raw
@@ -221,7 +218,6 @@ impl PerfProbe {
     /// call regardless of the enabled flag.
     pub fn snapshot(&self) -> PerfSnapshot {
         PerfSnapshot {
-            enabled: self.is_enabled(),
             ttft_ms: self.last_ttft_ms.load(Ordering::Relaxed),
             tokens_per_sec: self.last_tps_milli.load(Ordering::Relaxed) as f64 / 1000.0,
             turns: self.turns.load(Ordering::Relaxed),
@@ -244,7 +240,6 @@ fn tokens_per_sec(tokens: u64, elapsed: Duration) -> f64 {
 /// An immutable snapshot of the probe's most recently recorded turn.
 #[derive(Debug, Clone)]
 pub struct PerfSnapshot {
-    enabled: bool,
     ttft_ms: u64,
     tokens_per_sec: f64,
     turns: u64,
@@ -252,30 +247,20 @@ pub struct PerfSnapshot {
 }
 
 impl PerfSnapshot {
-    /// Whether the probe was enabled when this snapshot was taken.
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-
     /// Time-to-first-token of the last completed turn, in milliseconds (0 when
     /// nothing has been recorded yet).
-    pub fn ttft_ms(&self) -> u64 {
+    fn ttft_ms(&self) -> u64 {
         self.ttft_ms
     }
 
     /// Approximate tokens/second of the last completed turn.
-    pub fn tokens_per_sec(&self) -> f64 {
+    fn tokens_per_sec(&self) -> f64 {
         self.tokens_per_sec
     }
 
     /// Number of turns recorded since process start.
-    pub fn turns(&self) -> u64 {
+    fn turns(&self) -> u64 {
         self.turns
-    }
-
-    /// The configured ttft budget in milliseconds, if any.
-    pub fn ttft_budget_ms(&self) -> Option<u64> {
-        self.ttft_budget_ms
     }
 
     /// Whether the recorded ttft breaches the configured budget. `false` when no
@@ -292,7 +277,9 @@ impl PerfSnapshot {
     pub fn summary_line(&self) -> String {
         format!(
             "perf: ttft {}ms, {:.0} tok/s, {} turns",
-            self.ttft_ms, self.tokens_per_sec, self.turns,
+            self.ttft_ms(),
+            self.tokens_per_sec(),
+            self.turns(),
         )
     }
 }
@@ -300,6 +287,7 @@ impl PerfSnapshot {
 /// Linker/codegen knob and its recommended release value, expressed as data so
 /// packaging / release docs can render or assert against it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ProfileKnob {
     /// The knob's stable key, e.g. `"lto"` or `"codegen-units"`.
     pub key: &'static str,
@@ -316,6 +304,7 @@ pub struct ProfileKnob {
 /// build knobs (LTO, codegen units, panic behaviour, strip) and the runtime
 /// perf threshold the probe enforces.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct ReleaseProfileManifest {
     /// The build/codegen knobs and their recommended release values.
     pub knobs: Vec<ProfileKnob>,
@@ -326,6 +315,7 @@ pub struct ReleaseProfileManifest {
     pub ttft_budget_ms: u64,
 }
 
+#[cfg(test)]
 impl ReleaseProfileManifest {
     /// Look up a knob's recommended value by key.
     pub fn knob(&self, key: &str) -> Option<&ProfileKnob> {
@@ -344,7 +334,8 @@ impl ReleaseProfileManifest {
 /// running process or reads the environment. It encodes a `lto = thin`,
 /// `codegen-units = 1`, `panic = abort`, `strip = symbols` release profile plus
 /// the default ttft budget the probe enforces at runtime.
-pub fn release_profile_manifest() -> ReleaseProfileManifest {
+#[cfg(test)]
+fn release_profile_manifest() -> ReleaseProfileManifest {
     ReleaseProfileManifest {
         knobs: vec![
             ProfileKnob {
@@ -414,7 +405,6 @@ mod tests {
         probe.mark_complete(1234);
 
         let snap = probe.snapshot();
-        assert!(!snap.enabled(), "snapshot reflects disabled");
         assert_eq!(snap.ttft_ms(), 0, "no ttft recorded while disabled");
         assert_eq!(snap.tokens_per_sec(), 0.0, "no tps recorded while disabled");
         assert_eq!(snap.turns(), 0, "no turns counted while disabled");
@@ -462,7 +452,6 @@ mod tests {
         probe.mark_complete(64);
 
         let snap = probe.snapshot();
-        assert!(snap.enabled());
         assert_eq!(snap.turns(), 1, "one full cycle == one turn");
         // tokens_per_sec is positive for a non-empty, non-instant turn; on a
         // pathologically fast machine the elapsed could round to 0, in which
@@ -490,7 +479,6 @@ mod tests {
         // Build a snapshot by hand so the threshold logic is tested without
         // depending on wall-clock timing.
         let breaching = PerfSnapshot {
-            enabled: true,
             ttft_ms: 1200,
             tokens_per_sec: 100.0,
             turns: 1,

@@ -122,10 +122,7 @@ fn blurb_for<'a>(tip: &'a Tip, locale: &str) -> &'a str {
 /// short codes the embedded table understands (`hi`, `ta`, else `en`).
 fn normalize_locale(raw: &str) -> &'static str {
     let lowered = raw.trim().to_ascii_lowercase();
-    let primary = lowered
-        .split(|c| c == '_' || c == '-' || c == '.')
-        .next()
-        .unwrap_or("");
+    let primary = lowered.split(['_', '-', '.']).next().unwrap_or("");
     match primary {
         "hi" => "hi",
         "ta" => "ta",

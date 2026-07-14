@@ -68,10 +68,13 @@ do_not_version/
 /build.bat
 /build.ps1
 /build_check.ps1
-/crates/goose/src/agents/snapshots/*.snap.new
+/crates/bharatcode-core/src/agents/snapshots/*.snap.new
+
+# Local agent workflow artifacts
+/.workflow/
 
 # Error log artifacts from mcp replay tests
-crates/goose/tests/mcp_replays/*errors.txt
+crates/bharatcode-core/tests/mcp_replays/*errors.txt
 
 .gromastate
 # Nix build output

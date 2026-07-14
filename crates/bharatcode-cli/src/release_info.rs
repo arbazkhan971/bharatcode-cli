@@ -1,18 +1,14 @@
-//! Canonical GA release-info source for BharatCode.
+//! Canonical release-info source for BharatCode.
 //!
 //! A single, self-contained place that answers "what release is this, and how
-//! should it be announced once at startup?". It deliberately keeps the
-//! *marketing* GA version (the `1.0` General-Availability milestone) separate
-//! from the *internal* crate/workspace version: the workspace `Cargo.toml`
-//! tracks fast-moving fork plumbing (currently `1.38.x`), while the
-//! user-facing product reaches GA at `1.0.0`. Conflating the two would leak an
-//! incidental internal number into a brand-facing banner, so the GA marker is
-//! pinned here as a deliberate, reviewed constant.
+//! should it be announced once at startup?". The version is compiled from
+//! `CARGO_PKG_VERSION`, which the release workflow derives from the public tag.
+//! This keeps the banner, `bharatcode info`, and `bharatcode --version` aligned.
 //!
 //! The surfaced artifact is a brand-clean, single-line banner:
 //!
 //! ```text
-//! BharatCode 1.0.0 (GA) — Apache-2.0
+//! BharatCode 1.1.0 (GA) — Apache-2.0
 //! ```
 //!
 //! It is shown exactly once, at the start of an interactive session, and is
@@ -24,17 +20,10 @@
 //! Everything here is pure (no I/O beyond an env-var read in [`should_show`]),
 //! so the release struct and the banner string are trivially unit-testable.
 
-// This module is brought in at two disjoint call sites via `#[path]`
-// (`session/builder.rs` for the startup banner, `commands/info.rs` for the
-// version surface). Each site exercises a different subset of the public API,
-// so from any single inclusion's vantage point the rest looks unused; the
-// canonical source is shared and every item is reachable across the binary.
-#![allow(dead_code)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The General-Availability product version. This is the *brand* version, not
-/// the internal crate version; it is intentionally pinned to the `1.0.0` GA
-/// milestone and reviewed by hand on each GA cut.
-const GA_VERSION: &str = "1.0.0";
+/// The product version compiled into this artifact.
+const GA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Release channel marker surfaced in the banner.
 const CHANNEL_GA: &str = "GA";
@@ -60,18 +49,18 @@ const BANNER_KEY: &str = "release.banner";
 const NO_BANNER_ENV: &str = "BHARATCODE_NO_BANNER";
 
 /// Environment variable that selects the release channel at runtime. Unset (the
-/// default for the 1.0 GA wave) resolves to [`Channel::Ga`]; recognized values
+/// default for stable releases) resolves to [`Channel::Ga`]; recognized values
 /// are `ga`/`stable`, `beta`, and `canary`/`nightly` (case-insensitive). Any
 /// unrecognized value falls back to GA, so a stray value never demotes a GA
 /// build's banner.
 const RELEASE_CHANNEL_ENV: &str = "BHARATCODE_RELEASE_CHANNEL";
 
-/// Typed release channel. The 1.0 GA wave ships on [`Channel::Ga`]; the other
+/// Typed release channel. Stable releases ship on [`Channel::Ga`]; the other
 /// variants exist so pre-release builds can self-identify without a code change
 /// (they are selected via [`RELEASE_CHANNEL_ENV`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    /// General Availability — the stable, supported 1.0 line.
+    /// General Availability — the stable, supported release line.
     Ga,
     /// Pre-release beta.
     Beta,
@@ -90,7 +79,7 @@ impl Channel {
     }
 
     /// Resolve the active channel from [`RELEASE_CHANNEL_ENV`], defaulting to
-    /// [`Channel::Ga`] for the 1.0 wave. Unrecognized values resolve to GA so a
+    /// [`Channel::Ga`] for stable releases. Unrecognized values resolve to GA so a
     /// typo never silently demotes the banner.
     pub fn from_env() -> Channel {
         match std::env::var(RELEASE_CHANNEL_ENV) {
@@ -113,14 +102,14 @@ impl std::fmt::Display for Channel {
 /// Immutable snapshot of the current release's brand-facing identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReleaseInfo {
-    /// Semantic GA product version (e.g. `1.0.0`).
+    /// Semantic product version (e.g. `1.1.0`).
     pub ga_version: &'static str,
     /// Semantic GA product version (alias of [`ReleaseInfo::ga_version`]). The
     /// canonical, semver-parseable `MAJOR.MINOR.PATCH` brand version.
     pub version: &'static str,
     /// Release channel marker badge (`GA`).
     pub channel: &'static str,
-    /// Typed release channel for this build ([`Channel::Ga`] in the 1.0 wave).
+    /// Typed release channel for this build.
     pub channel_kind: Channel,
     /// Apache-2.0 compliance / upstream-attribution line.
     pub attribution: &'static str,
@@ -144,11 +133,7 @@ pub fn current() -> ReleaseInfo {
 /// the same channel.
 const CHANNEL_STABLE: &str = "stable";
 
-/// The General-Availability product version (`1.0.0`).
-///
-/// Canonical, single-source-of-truth GA version string: the *brand* version
-/// surfaced to users, intentionally distinct from the internal
-/// `CARGO_PKG_VERSION` workspace crate version (see module docs).
+/// The product version compiled into this artifact.
 pub fn ga_version() -> &'static str {
     GA_VERSION
 }
@@ -163,13 +148,13 @@ pub fn channel() -> &'static str {
 /// Single source of truth for "what build is this", composed only from
 /// compile-time constants so it adds **no new build dependency**:
 ///
-///   * the internal workspace crate version (`CARGO_PKG_VERSION`), and
+///   * the compiled product version (`CARGO_PKG_VERSION`), and
 ///   * optional VERGEN-style git/build env (`VERGEN_GIT_SHA`,
 ///     `VERGEN_BUILD_TIMESTAMP`) read via [`option_env!`].
 ///
 /// When the optional VERGEN env is absent at compile time (the default — no
 /// build script is required), this falls back to just the crate version, e.g.
-/// `1.38.0`. With git metadata present it reads `1.38.0 (abc1234 2026-06-20)`.
+/// `1.1.0`. With git metadata present it reads `1.1.0 (abc1234 2026-06-20)`.
 pub fn build_metadata() -> String {
     let crate_version = env!("CARGO_PKG_VERSION");
     let git_sha = option_env!("VERGEN_GIT_SHA");
@@ -198,7 +183,7 @@ pub fn build_metadata() -> String {
 /// in `NOTICE`, satisfying Apache-2.0 Section 4 without a trademark leak).
 ///
 /// ```text
-/// BharatCode 1.0.0 (channel: stable) — Apache-2.0; derivative work, see NOTICE for attribution.
+/// BharatCode 1.1.0 (channel: stable) — Apache-2.0; derivative work, see NOTICE for attribution.
 /// ```
 pub fn long_version_line() -> String {
     let info = current();
@@ -236,7 +221,7 @@ fn tr_or(key: &str, default: &str) -> String {
 /// substitution); until then this returns the built-in English line:
 ///
 /// ```text
-/// BharatCode 1.0.0 (GA) — Apache-2.0
+/// BharatCode 1.1.0 (GA) — Apache-2.0
 /// ```
 pub fn banner_line() -> String {
     let info = current();
@@ -285,25 +270,15 @@ pub fn should_show(interactive: bool, quiet: bool) -> bool {
     claim_banner_once()
 }
 
-/// Process-wide one-shot env flag used to dedup the GA banner across the two
-/// call sites (the session builder and the interactive-loop start). A runtime
-/// environment variable is used deliberately: the module is brought in via
-/// `#[path]` at multiple sites, so each inclusion has its own statics — a
-/// regular `OnceLock`/`AtomicBool` would *not* be shared between them, but the
-/// process environment is. The variable is internal plumbing (double
-/// underscore) and never read by users.
-const BANNER_CLAIM_ENV: &str = "BHARATCODE__GA_BANNER_EMITTED";
+/// Process-wide one-shot shared by the session builder and interactive loop.
+static BANNER_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 /// Claim the single GA-banner emission for this process. Returns `true` for the
 /// first caller and `false` for every caller thereafter, so whichever of the
 /// two call sites runs first owns the one printed line and the other becomes a
 /// silent no-op (keeping default output to exactly one banner).
 fn claim_banner_once() -> bool {
-    if std::env::var_os(BANNER_CLAIM_ENV).is_some() {
-        return false;
-    }
-    std::env::set_var(BANNER_CLAIM_ENV, "1");
-    true
+    !BANNER_CLAIMED.swap(true, Ordering::AcqRel)
 }
 
 /// The gated, deduplicated one-time GA startup banner for an interactive
@@ -352,16 +327,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ga_version_is_one_dot_zero_semver() {
+    fn product_version_matches_compiled_semver() {
         let v = current().ga_version;
-        assert_eq!(v, "1.0.0");
+        assert_eq!(v, env!("CARGO_PKG_VERSION"));
         // Parse as a semantic version without pulling a semver dependency:
-        // exactly three dot-separated numeric components, equal to 1.0.0.
-        let parts: Vec<u64> = v
+        // exactly three dot-separated numeric core components.
+        let core = v.split_once('-').map_or(v, |(core, _)| core);
+        let parts: Vec<u64> = core
             .split('.')
             .map(|p| p.parse::<u64>().expect("semver component must be numeric"))
             .collect();
-        assert_eq!(parts, vec![1, 0, 0]);
+        assert_eq!(parts.len(), 3);
     }
 
     #[test]
@@ -373,7 +349,10 @@ mod tests {
     fn banner_is_brand_clean_and_complete() {
         let line = banner_line();
         // Contains the GA version, the GA channel marker, and the license.
-        assert!(line.contains("1.0.0"), "banner missing GA version: {line}");
+        assert!(
+            line.contains(ga_version()),
+            "banner missing product version: {line}"
+        );
         assert!(line.contains("GA"), "banner missing GA channel: {line}");
         assert!(
             line.contains("Apache-2.0"),
@@ -397,8 +376,8 @@ mod tests {
     }
 
     #[test]
-    fn ga_version_accessor_is_one_dot_zero() {
-        assert_eq!(ga_version(), "1.0.0");
+    fn product_version_accessor_matches_compiled_version() {
+        assert_eq!(ga_version(), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
@@ -425,8 +404,8 @@ mod tests {
         let line = long_version_line();
         // Contains the canonical GA version, the published channel, and license.
         assert!(
-            line.contains("1.0.0"),
-            "long version line missing GA version: {line}"
+            line.contains(ga_version()),
+            "long version line missing product version: {line}"
         );
         assert!(
             line.contains("stable"),
@@ -454,14 +433,12 @@ mod tests {
         );
     }
 
-    /// Guards the single-source-of-truth invariant: the GA brand version is a
-    /// clean `1.x` milestone, parsed and compared against the internal
-    /// `CARGO_PKG_VERSION` so a stray edit that lets the internal crate version
-    /// masquerade as the GA brand version is caught.
+    /// Guards the single-source-of-truth invariant across every version surface.
     #[test]
-    fn ga_version_is_a_clean_one_dot_zero_milestone() {
+    fn product_version_is_the_compiled_artifact_version() {
         let ga = ga_version();
-        let ga_parts: Vec<u64> = ga
+        let core = ga.split_once('-').map_or(ga, |(core, _)| core);
+        let ga_parts: Vec<u64> = core
             .split('.')
             .map(|p| {
                 p.parse::<u64>()
@@ -473,28 +450,10 @@ mod tests {
             3,
             "GA version must be MAJOR.MINOR.PATCH: {ga}"
         );
-        assert_eq!(ga_parts[0], 1, "GA milestone major must be 1: {ga}");
-
-        // Parse the internal crate version: the GA marker must be a reviewed
-        // constant distinct from the fast-moving internal crate version (which
-        // tracks fork plumbing and is not the brand version).
         let crate_version = env!("CARGO_PKG_VERSION");
-        let crate_major: u64 = crate_version
-            .split('.')
-            .next()
-            .and_then(|p| p.parse().ok())
-            .expect("crate version must have a numeric major");
-        assert_ne!(
+        assert_eq!(
             ga, crate_version,
-            "GA brand version must be a reviewed constant distinct from the internal crate version"
-        );
-        // The GA milestone is a deliberate major bump: its major component is at
-        // or above the internal crate major. This compares the parsed integers
-        // (not the strings) so the 1.0 GA marker is provably the leading version.
-        assert!(
-            ga_parts[0] >= crate_major,
-            "GA major ({}) must be >= internal crate major ({crate_major})",
-            ga_parts[0]
+            "product version must match the version compiled into the artifact"
         );
     }
 
@@ -527,7 +486,7 @@ mod tests {
 
     #[test]
     fn current_channel_kind_is_ga_by_default() {
-        // The default 1.0 wave resolves to the GA channel when the override env
+        // Stable releases resolve to the GA channel when the override env
         // is unset. Guard against a developer environment forcing a channel.
         if std::env::var_os(RELEASE_CHANNEL_ENV).is_none() {
             assert_eq!(current().channel_kind, Channel::Ga);
@@ -540,7 +499,8 @@ mod tests {
         // version is an alias of the canonical GA version.
         assert_eq!(v, current().ga_version);
         // Parse MAJOR.MINOR.PATCH as numeric components without a semver dep.
-        let parts: Vec<u64> = v
+        let core = v.split_once('-').map_or(v, |(core, _)| core);
+        let parts: Vec<u64> = core
             .split('.')
             .map(|p| p.parse::<u64>().expect("semver component must be numeric"))
             .collect();
@@ -589,8 +549,8 @@ mod tests {
     fn startup_banner_text_is_brand_clean_and_complete() {
         let banner = banner_line();
         assert!(
-            banner.contains("1.0.0"),
-            "banner missing GA version: {banner}"
+            banner.contains(ga_version()),
+            "banner missing product version: {banner}"
         );
         assert!(banner.contains("GA"), "banner missing GA channel: {banner}");
         assert!(
@@ -608,8 +568,7 @@ mod tests {
 
     /// Pure eligibility matrix for `startup_banner`'s decision: a banner is
     /// shown iff the launch is not opted out *and* on the GA channel. No process
-    /// env is touched, so this is hermetic and parallel-safe across the multiple
-    /// `#[path]` inclusions of this module.
+    /// env is touched, so this is hermetic and parallel-safe.
     #[test]
     fn banner_eligibility_matrix() {
         // (suppressed, is_ga) => eligible
@@ -627,8 +586,7 @@ mod tests {
 
     /// The once-per-process claim must hand the single banner emission to
     /// exactly one caller. Tested through a fresh, locally-scoped claim variable
-    /// so it neither reads nor mutates the production `BANNER_CLAIM_ENV` (and so
-    /// never races the live wiring or the multiple module inclusions).
+    /// so it neither reads nor mutates the production `BANNER_CLAIMED` state.
     #[test]
     fn claim_is_a_single_hand_off() {
         // Model of `claim_banner_once` over a private flag: the first observer

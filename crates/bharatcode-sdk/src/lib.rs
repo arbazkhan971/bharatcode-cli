@@ -1,8 +1,8 @@
 //! Goose SDK.
 //!
 //! With default features this crate re-exports the shared SDK wire types from
-//! `goose-sdk-types` so you can build an Agent Client Protocol (ACP) client
-//! that talks to `goose acp` over stdio.
+//! `bharatcode-sdk-types` so you can build an Agent Client Protocol (ACP) client
+//! that talks to `bharatcode acp` over stdio.
 //!
 //! With `--features uniffi` the crate additionally compiles as a
 //! `cdylib`/`staticlib` and exposes a small in-process API to Python and Kotlin
@@ -15,7 +15,7 @@
 pub use bharatcode_sdk_types::{custom_notifications, custom_requests};
 
 #[cfg(feature = "uniffi")]
-uniffi::setup_scaffolding!("aaif_goose");
+uniffi::setup_scaffolding!("bharatcode_sdk");
 
 #[cfg(feature = "uniffi")]
 pub mod bindings;

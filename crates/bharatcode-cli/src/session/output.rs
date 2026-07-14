@@ -1,6 +1,5 @@
 use anstream::println;
 use bat::WrappingMode;
-use console::{measure_text_width, style, Color, Term};
 use bharatcode_core::config::Config;
 use bharatcode_core::conversation::message::{
     ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
@@ -11,6 +10,7 @@ use bharatcode_core::providers::canonical::maybe_get_canonical_model;
 use bharatcode_core::subprocess::SubprocessExt;
 use bharatcode_core::utils::safe_truncate;
 use bharatcode_providers::conversation::token_usage::Usage;
+use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rmcp::model::{CallToolRequestParams, JsonObject, PromptArgument};
 use serde_json::Value;
@@ -21,17 +21,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::streaming_buffer::MarkdownBuffer;
-use crate::commands::cost_ledger;
-
-#[path = "../a11y.rs"]
-mod a11y;
-
-/// Screen-reader-friendly *plain* rewriting of the session ready banner
-/// (opt-in, default OFF). Distinct from the `a11y` mode module above: this owns
-/// the [`a11y_banner::plainify`] glyph stripper used only at the ready-banner
-/// render site, gated on `BHARATCODE_A11Y` / `BHARATCODE_SCREEN_READER`.
-#[path = "a11y.rs"]
-mod a11y_banner;
+use crate::{a11y, commands::cost_ledger};
 
 pub const DEFAULT_MIN_PRIORITY: f32 = 0.0;
 pub const DEFAULT_CLI_LIGHT_THEME: &str = "GitHub";
@@ -153,6 +143,14 @@ pub fn a11y() -> crate::a11y::A11yProfile {
     A11Y_PROFILE.read().map(|slot| *slot).unwrap_or_default()
 }
 
+fn screen_reader_enabled() -> bool {
+    a11y().screen_reader || a11y::is_enabled()
+}
+
+fn animations_suppressed() -> bool {
+    a11y().no_spinner || a11y::suppress_animations()
+}
+
 // Simple wrapper around spinner to manage its state
 #[derive(Default)]
 pub struct ThinkingIndicator {
@@ -203,7 +201,7 @@ thread_local! {
 }
 
 pub fn show_thinking() {
-    if a11y::suppress_animations() {
+    if animations_suppressed() {
         return;
     }
     if std::io::stdout().is_terminal() {
@@ -520,7 +518,7 @@ fn render_thinking_streaming(
 }
 
 fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
-    if a11y::is_enabled() {
+    if screen_reader_enabled() {
         if let Ok(call) = &req.tool_call {
             let (tool, _extension) = split_tool_name(&call.name);
             println!("{}", a11y::announce_tool_request(&tool));
@@ -546,7 +544,7 @@ fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
 fn render_tool_response(resp: &ToolResponse, debug: bool) {
     let config = Config::global();
 
-    if a11y::is_enabled() {
+    if screen_reader_enabled() {
         println!("{}", a11y::announce_tool_response());
     }
 
@@ -1397,11 +1395,11 @@ pub fn display_session_info(
         );
     }
     let ready = crate::tr!("session.ready");
-    if a11y_banner::is_enabled() {
+    if screen_reader_enabled() {
         // Screen-reader plain mode: drop the ASCII-art leg glyphs and any
         // decorative chrome in the message, and skip color styling (the escape
         // codes are themselves noise to a screen reader).
-        println!("  {}", a11y_banner::plainify(&format!("L L   {ready}")));
+        println!("  {}", a11y::plainify(&format!("L L   {ready}")));
     } else {
         println!(
             "  {}  {}",

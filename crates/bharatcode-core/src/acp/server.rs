@@ -2190,7 +2190,7 @@ impl GooseAcpAgent {
         let mut active_prompt_runs = self.active_prompt_runs.lock().await;
         if let Some(active_run) = active_prompt_runs.get(session_id) {
             return Err(agent_client_protocol::Error::invalid_params().data(format!(
-                "session already has active run `{}`; use _bharatcode/unstable/session/steer",
+                "session already has active run `{}`; use the session steering custom request",
                 active_run.run_id.as_str()
             )));
         }

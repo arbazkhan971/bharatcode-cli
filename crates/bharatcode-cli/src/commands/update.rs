@@ -67,6 +67,129 @@ fn sha256_hex(data: &[u8]) -> String {
     bharatcode_core::utils::bytes_to_hex(hasher.finalize())
 }
 
+// ---------------------------------------------------------------------------
+// Release integrity: checksum manifest
+// ---------------------------------------------------------------------------
+
+/// sha256 manifest published alongside every release asset by release.yml.
+const CHECKSUM_MANIFEST: &str = "checksums.txt";
+
+const ALLOW_UNVERIFIED_ENV: &str = "BHARATCODE_ALLOW_UNVERIFIED";
+
+fn parse_allow_unverified(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes")
+    )
+}
+
+/// Escape hatch for updating from a release older than the checksum manifest, or from a
+/// network position that cannot reach the attestation API. It never bypasses a *mismatch*.
+fn allow_unverified() -> bool {
+    parse_allow_unverified(env::var(ALLOW_UNVERIFIED_ENV).ok().as_deref())
+}
+
+fn verification_required(allow_unverified: bool) -> bool {
+    !allow_unverified
+}
+
+/// Look up the expected digest for exactly `asset` in an sha256sum-format manifest.
+///
+/// Matching is on the whole filename: a lookup of `bharatcode.zip` must not be satisfied by an
+/// entry for `bharatcode-x86_64-pc-windows-msvc.zip`.
+fn checksum_for_asset(manifest: &str, asset: &str) -> Option<String> {
+    if asset.is_empty() {
+        return None;
+    }
+    manifest.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let digest = fields.next()?;
+        let name = fields.next()?;
+        let name = name.trim_start_matches('*').trim_start_matches("./");
+        let well_formed = digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit());
+        (name == asset && well_formed).then(|| digest.to_ascii_lowercase())
+    })
+}
+
+async fn fetch_checksum_manifest(tag: &str) -> Result<Option<String>> {
+    let url = format!(
+        "https://github.com/arbazkhan971/bharatcode-cli/releases/download/{tag}/{CHECKSUM_MANIFEST}"
+    );
+
+    let resp = reqwest::get(&url)
+        .await
+        .context("Failed to fetch checksum manifest")?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        bail!(
+            "Checksum manifest fetch returned HTTP {} for {url}",
+            resp.status()
+        );
+    }
+
+    Ok(Some(
+        resp.text()
+            .await
+            .context("Failed to read checksum manifest")?,
+    ))
+}
+
+/// Gate the downloaded archive on the release's checksum manifest.
+///
+/// Returns `Ok(true)` verified, `Ok(false)` skipped, `Err` refuse to proceed. A digest mismatch
+/// is always an error, regardless of `allow_unverified`; only a *missing* manifest or entry can
+/// be waived, and only when the caller opted out explicitly.
+fn verify_checksum(
+    archive: &[u8],
+    manifest: Option<&str>,
+    asset: &str,
+    tag: &str,
+    allow_unverified: bool,
+) -> Result<bool> {
+    let required = verification_required(allow_unverified);
+
+    let Some(manifest) = manifest else {
+        if required {
+            bail!(
+                "Release '{tag}' publishes no {CHECKSUM_MANIFEST}, so {asset} cannot be verified.\n\
+                 Refusing to replace the current binary with an unverified archive.\n\
+                 Set {ALLOW_UNVERIFIED_ENV}=1 to update anyway."
+            );
+        }
+        eprintln!("Warning: no {CHECKSUM_MANIFEST} for '{tag}'; skipping checksum verification.");
+        return Ok(false);
+    };
+
+    let Some(expected) = checksum_for_asset(manifest, asset) else {
+        if required {
+            bail!(
+                "{asset} is not listed in {CHECKSUM_MANIFEST} for release '{tag}'.\n\
+                 Refusing to replace the current binary with an archive the release does not \
+                 vouch for.\n\
+                 Set {ALLOW_UNVERIFIED_ENV}=1 to update anyway."
+            );
+        }
+        eprintln!(
+            "Warning: {asset} is not listed in {CHECKSUM_MANIFEST}; skipping checksum verification."
+        );
+        return Ok(false);
+    };
+
+    let actual = sha256_hex(archive);
+    if actual != expected {
+        bail!(
+            "Checksum mismatch for {asset}.\n  expected: {expected}\n  actual:   {actual}\n\
+             The download is corrupt or has been tampered with; aborting update."
+        );
+    }
+
+    println!("Checksum verified against {CHECKSUM_MANIFEST}.");
+    Ok(true)
+}
+
 #[derive(serde::Deserialize)]
 struct AttestationResponse {
     attestations: Vec<AttestationEntry>,
@@ -81,7 +204,7 @@ const GITHUB_ACTIONS_ISSUER: &str = "https://token.actions.githubusercontent.com
 
 async fn fetch_attestations(digest: &str, token: Option<&str>) -> Result<Vec<serde_json::Value>> {
     let url = format!(
-        "https://api.github.com/repos/aaif-bharatcode/bharatcode/attestations/sha256:{digest}\
+        "https://api.github.com/repos/arbazkhan971/bharatcode-cli/attestations/sha256:{digest}\
          ?per_page=30&predicate_type=https://slsa.dev/provenance/v1"
     );
 
@@ -143,7 +266,11 @@ fn verify_bundle(
 }
 
 /// Returns `Ok(true)` verified, `Ok(false)` skipped (soft warning), `Err` hard failure.
-async fn verify_provenance(archive_data: &[u8], tag: &str) -> Result<bool> {
+///
+/// Fail-closed by default: an *absent* attestation and an attestation API call that cannot
+/// complete are both treated as verification failures, because both are exactly what an attacker
+/// substituting an archive would arrange. Only an explicit opt-out may skip.
+async fn verify_provenance(archive_data: &[u8], tag: &str, allow_unverified: bool) -> Result<bool> {
     let digest = sha256_hex(archive_data);
     println!("Archive SHA-256: {digest}");
 
@@ -158,16 +285,32 @@ async fn verify_provenance(archive_data: &[u8], tag: &str) -> Result<bool> {
 
     println!("Verifying SLSA provenance via Sigstore...");
 
+    let required = verification_required(allow_unverified);
+
     let bundles = match fetch_attestations(&digest, token.as_deref()).await {
         Ok(b) if b.is_empty() => {
-            eprintln!(
-                "Warning: No Sigstore attestation found for this build. \
-                 This may be expected for canary or nightly builds."
-            );
+            if required {
+                bail!(
+                    "No Sigstore attestation found for this archive (sha256:{digest}).\n\
+                     Releases are attested by their publishing workflow, so an archive without one \
+                     is not a build this project published.\n\
+                     Refusing to replace the current binary.\n\
+                     Set {ALLOW_UNVERIFIED_ENV}=1 to update anyway."
+                );
+            }
+            eprintln!("Warning: No Sigstore attestation found for this build.");
             return Ok(false);
         }
         Ok(b) => b,
         Err(e) => {
+            if required {
+                return Err(e).context(
+                    "Could not complete the Sigstore provenance check, so this archive cannot be \
+                     verified. Refusing to replace the current binary.\nIf this is the GitHub API \
+                     rate limit, set GITHUB_TOKEN (or GH_TOKEN) to raise it. To update without \
+                     provenance verification, set BHARATCODE_ALLOW_UNVERIFIED=1",
+                );
+            }
             eprintln!(
                 "Warning: Sigstore provenance check could not complete: {e}\n\
                  This may be expected for releases published before provenance \
@@ -223,7 +366,7 @@ pub async fn update(canary: bool, reconfigure: bool) -> Result<()> {
         let tag = if canary { "canary" } else { "stable" };
         let asset = asset_name();
         let url = format!(
-            "https://github.com/aaif-bharatcode/bharatcode/releases/download/{tag}/{asset}"
+            "https://github.com/arbazkhan971/bharatcode-cli/releases/download/{tag}/{asset}"
         );
 
         println!("Downloading {asset} from {tag} release...");
@@ -248,8 +391,38 @@ pub async fn update(canary: bool, reconfigure: bool) -> Result<()> {
 
         println!("Downloaded {} bytes.", bytes.len());
 
+        let allow_unverified = allow_unverified();
+        if allow_unverified {
+            eprintln!(
+                "Warning: {ALLOW_UNVERIFIED_ENV} is set; release integrity checks may be skipped."
+            );
+        }
+
+        // --- Verify the archive BEFORE extracting or executing any part of it ---
+        // Both gates run against the downloaded bytes while they are still only bytes. Nothing
+        // below may touch the filesystem or the installed binary until both have passed.
+        let manifest = match fetch_checksum_manifest(tag).await {
+            Ok(m) => m,
+            Err(e) => {
+                if verification_required(allow_unverified) {
+                    return Err(e).context(
+                        "Could not fetch the release checksum manifest, so the download cannot be \
+                         verified. Refusing to replace the current binary.\nTo update without \
+                         checksum verification, set BHARATCODE_ALLOW_UNVERIFIED=1",
+                    );
+                }
+                eprintln!("Warning: could not fetch {CHECKSUM_MANIFEST}: {e}");
+                None
+            }
+        };
+
+        let checksum_verified =
+            verify_checksum(&bytes, manifest.as_deref(), asset, tag, allow_unverified)?;
+
         // --- Verify SLSA provenance via Sigstore --------------------------------
-        let provenance_verified = verify_provenance(&bytes, tag).await?;
+        // The manifest is served from the same origin as the archive, so it alone cannot attest
+        // to *who built* the archive. Provenance is the control that does.
+        let provenance_verified = verify_provenance(&bytes, tag, allow_unverified).await?;
 
         // --- Extract to temp dir (hardened against path traversal) --------------
         let tmp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
@@ -276,10 +449,17 @@ pub async fn update(canary: bool, reconfigure: bool) -> Result<()> {
         #[cfg(target_os = "windows")]
         copy_dlls(&extracted_binary, &current_exe)?;
 
-        if provenance_verified {
-            println!("bharatcode updated successfully (verified with Sigstore SLSA provenance).");
-        } else {
-            println!("bharatcode updated successfully.");
+        match (checksum_verified, provenance_verified) {
+            (true, true) => println!(
+                "bharatcode updated successfully (checksum verified, Sigstore SLSA provenance verified)."
+            ),
+            (true, false) => {
+                println!("bharatcode updated successfully (checksum verified, provenance unverified).")
+            }
+            (false, true) => println!(
+                "bharatcode updated successfully (Sigstore SLSA provenance verified, checksum unverified)."
+            ),
+            (false, false) => println!("bharatcode updated successfully (UNVERIFIED)."),
         }
 
         // --- Reconfigure if requested -------------------------------------------
@@ -404,7 +584,7 @@ fn extract_tar_bz2(data: &[u8], dest: &Path) -> Result<()> {
 ///   2. Directly at the top level
 ///   3. In some other single subdirectory
 fn find_binary(extract_dir: &Path, binary_name: &str) -> Option<PathBuf> {
-    // 1. Check goose-package subdir (matches download_cli.sh / download_cli.ps1)
+    // 1. Check bharatcode-package subdir (matches download_cli.sh / download_cli.ps1)
     let package_dir = extract_dir.join("bharatcode-package");
     if package_dir.is_dir() {
         let p = package_dir.join(binary_name);
@@ -685,7 +865,7 @@ mod tests {
 
         let tmp = tempdir().unwrap();
 
-        // Create a zip in memory with goose-package/ structure
+        // Create a zip in memory with bharatcode-package/ structure
         let mut buf = Vec::new();
         {
             let cursor = Cursor::new(&mut buf);
@@ -715,7 +895,7 @@ mod tests {
         let content = fs::read_to_string(binary.unwrap()).unwrap();
         assert_eq!(content, "fake bharatcode binary");
 
-        // DLL should be in goose-package too
+        // DLL should be in bharatcode-package too
         assert!(tmp.path().join("bharatcode-package/libtest.dll").exists());
     }
 
@@ -808,18 +988,208 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Sigstore provenance verification test
+    // Sigstore provenance verification tests
     // -----------------------------------------------------------------------
 
+    // These bytes have no attestation, and the API call may also simply fail. Both outcomes are
+    // treated identically by the policy under test, so the assertions hold with or without network.
+
     #[tokio::test]
-    async fn test_verify_provenance_warns_on_missing_attestation() {
-        let result = verify_provenance(b"not a real archive", "stable").await;
-        // Network failures and missing attestations are soft warnings: Ok(false), not hard errors.
+    async fn test_verify_provenance_fails_closed_on_stable() {
+        let result = verify_provenance(b"not a real archive", "stable", false).await;
+        assert!(
+            result.is_err(),
+            "stable must fail closed when provenance cannot be established"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_provenance_fails_closed_on_canary() {
+        let result = verify_provenance(b"not a real archive", "canary", false).await;
+        assert!(
+            result.is_err(),
+            "canary releases are attested and must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_provenance_stable_respects_opt_out() {
+        let result = verify_provenance(b"not a real archive", "stable", true).await;
         assert_eq!(
             result.ok(),
             Some(false),
-            "verify_provenance should return Ok(false) when attestations cannot be fetched"
+            "an explicit opt-out downgrades stable provenance failure to a warning"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Checksum manifest tests
+    // -----------------------------------------------------------------------
+
+    const HELLO_WORLD_SHA256: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+    fn test_manifest() -> String {
+        format!(
+            "{HELLO_WORLD_SHA256}  bharatcode-x86_64-unknown-linux-gnu.tar.bz2\n\
+             {zeros}  bharatcode-aarch64-apple-darwin.tar.bz2\n\
+             {HELLO_WORLD_SHA256}  *bharatcode-x86_64-pc-windows-msvc.zip\n\
+             {HELLO_WORLD_SHA256}  ./bharatcode-x86_64-unknown-linux-musl.tar.bz2\n\
+             not-a-digest  bharatcode-bogus.tar.bz2\n\
+             \n",
+            zeros = "0".repeat(64),
+        )
+    }
+
+    #[test]
+    fn test_checksum_for_asset_finds_entry() {
+        assert_eq!(
+            checksum_for_asset(
+                &test_manifest(),
+                "bharatcode-x86_64-unknown-linux-gnu.tar.bz2"
+            ),
+            Some(HELLO_WORLD_SHA256.to_string())
+        );
+    }
+
+    #[test]
+    fn test_checksum_for_asset_strips_markers() {
+        // sha256sum writes a `*` before the name in binary mode, and a `./` prefix if given one.
+        assert_eq!(
+            checksum_for_asset(&test_manifest(), "bharatcode-x86_64-pc-windows-msvc.zip"),
+            Some(HELLO_WORLD_SHA256.to_string())
+        );
+        assert_eq!(
+            checksum_for_asset(
+                &test_manifest(),
+                "bharatcode-x86_64-unknown-linux-musl.tar.bz2"
+            ),
+            Some(HELLO_WORLD_SHA256.to_string())
+        );
+    }
+
+    #[test]
+    fn test_checksum_for_asset_rejects_malformed_and_missing() {
+        assert_eq!(
+            checksum_for_asset(&test_manifest(), "bharatcode-bogus.tar.bz2"),
+            None
+        );
+        assert_eq!(
+            checksum_for_asset(&test_manifest(), "bharatcode-not-published.tar.bz2"),
+            None
+        );
+        assert_eq!(checksum_for_asset(&test_manifest(), ""), None);
+    }
+
+    #[test]
+    fn test_checksum_for_asset_does_not_substring_match() {
+        // A suffix match would let an attacker's asset name satisfy the lookup for another.
+        assert_eq!(
+            checksum_for_asset(&test_manifest(), "unknown-linux-gnu.tar.bz2"),
+            None
+        );
+        assert_eq!(checksum_for_asset(&test_manifest(), "bharatcode"), None);
+    }
+
+    #[test]
+    fn test_verify_checksum_accepts_matching_archive() {
+        let verified = verify_checksum(
+            b"hello world",
+            Some(&test_manifest()),
+            "bharatcode-x86_64-unknown-linux-gnu.tar.bz2",
+            "stable",
+            false,
+        )
+        .unwrap();
+        assert!(verified);
+    }
+
+    #[test]
+    fn test_verify_checksum_mismatch_is_always_fatal() {
+        // A mismatch is tampering or corruption. Neither canary nor the opt-out may wave it through.
+        for (tag, allow_unverified) in [("stable", false), ("canary", false), ("stable", true)] {
+            let result = verify_checksum(
+                b"hello world",
+                Some(&test_manifest()),
+                "bharatcode-aarch64-apple-darwin.tar.bz2",
+                tag,
+                allow_unverified,
+            );
+            let err = match result {
+                Err(e) => e,
+                Ok(_) => panic!(
+                    "a digest mismatch must abort (tag={tag}, allow_unverified={allow_unverified})"
+                ),
+            };
+            assert!(err.to_string().contains("Checksum mismatch"));
+        }
+    }
+
+    #[test]
+    fn test_verify_checksum_stable_fails_closed_without_manifest() {
+        let err = verify_checksum(
+            b"hello world",
+            None,
+            "bharatcode-x86_64-unknown-linux-gnu.tar.bz2",
+            "stable",
+            false,
+        )
+        .expect_err("stable must refuse to install an archive it cannot verify");
+        assert!(err.to_string().contains("no checksums.txt"));
+    }
+
+    #[test]
+    fn test_verify_checksum_stable_fails_closed_when_asset_unlisted() {
+        let err = verify_checksum(
+            b"hello world",
+            Some(&test_manifest()),
+            "bharatcode-not-published.tar.bz2",
+            "stable",
+            false,
+        )
+        .expect_err("stable must refuse an archive the release does not list");
+        assert!(err.to_string().contains("not listed in checksums.txt"));
+    }
+
+    #[test]
+    fn test_verify_checksum_requires_manifest_for_every_release_unless_opted_out() {
+        assert!(verify_checksum(
+            b"hello world",
+            None,
+            "bharatcode-x86_64-unknown-linux-gnu.tar.bz2",
+            "canary",
+            false,
+        )
+        .is_err());
+
+        assert!(!verify_checksum(
+            b"hello world",
+            None,
+            "bharatcode-x86_64-unknown-linux-gnu.tar.bz2",
+            "stable",
+            true,
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn test_verification_required() {
+        assert!(verification_required(false));
+        assert!(!verification_required(true));
+    }
+
+    #[test]
+    fn test_parse_allow_unverified() {
+        for raw in ["1", "true", "TRUE", " yes ", "Yes"] {
+            assert!(parse_allow_unverified(Some(raw)), "{raw} should opt out");
+        }
+        for raw in ["0", "false", "", "no", "maybe"] {
+            assert!(
+                !parse_allow_unverified(Some(raw)),
+                "{raw} should not opt out"
+            );
+        }
+        assert!(!parse_allow_unverified(None));
     }
 
     #[cfg(not(target_os = "windows"))]

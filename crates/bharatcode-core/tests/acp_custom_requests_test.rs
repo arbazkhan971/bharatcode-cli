@@ -5,16 +5,16 @@ mod common_tests;
 use agent_client_protocol::schema::{
     ContentBlock, PromptRequest, SessionUpdate, StopReason, TextContent,
 };
-use common_tests::fixtures::server::AcpServerConnection;
-use common_tests::fixtures::{
-    run_test, send_custom, Connection, PermissionDecision, Session, SessionData,
-    TestConnectionConfig,
-};
 use bharatcode_core::acp::server::AcpProviderFactory;
 use bharatcode_core::providers::base::{MessageStream, Provider};
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_test_support::{EnforceSessionId, IgnoreSessionId};
+use common_tests::fixtures::server::AcpServerConnection;
+use common_tests::fixtures::{
+    run_test, send_custom, Connection, PermissionDecision, Session, SessionData,
+    TestConnectionConfig,
+};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -88,7 +88,7 @@ fn active_run_id_from_update(update: &SessionUpdate) -> Option<String> {
     };
     info.meta
         .as_ref()?
-        .get("goose")?
+        .get("bharatcode")?
         .get("activeRunId")?
         .as_str()
         .map(ToString::to_string)
@@ -103,7 +103,7 @@ fn queued_steer_message_ids(updates: &[SessionUpdate]) -> Vec<String> {
             };
             info.meta
                 .as_ref()?
-                .get("goose")?
+                .get("bharatcode")?
                 .get("queuedSteer")?
                 .get("messageId")?
                 .as_str()
@@ -119,9 +119,12 @@ fn steer_chunk_message_ids(updates: &[SessionUpdate]) -> Vec<String> {
             let SessionUpdate::UserMessageChunk(chunk) = update else {
                 return None;
             };
-            let goose = chunk.meta.as_ref()?.get("goose")?;
-            goose.get("steer")?.as_bool().filter(|b| *b)?;
-            goose.get("messageId")?.as_str().map(ToString::to_string)
+            let bharatcode = chunk.meta.as_ref()?.get("bharatcode")?;
+            bharatcode.get("steer")?.as_bool().filter(|b| *b)?;
+            bharatcode
+                .get("messageId")?
+                .as_str()
+                .map(ToString::to_string)
         })
         .collect()
 }
@@ -142,7 +145,7 @@ fn steer_chunk_texts(updates: &[SessionUpdate]) -> Vec<String> {
             let is_steer = chunk
                 .meta
                 .as_ref()
-                .and_then(|m| m.get("goose"))
+                .and_then(|m| m.get("bharatcode"))
                 .and_then(|g| g.get("steer"))
                 .and_then(|s| s.as_bool())
                 .unwrap_or(false);
@@ -193,7 +196,13 @@ fn test_custom_get_tools() {
 #[serial]
 fn test_custom_get_extensions() {
     let config_key = "test-stdio-acp-mutation-flow";
-    let _guard = env_lock::lock_env([("EXTENSIONS", None::<&str>)]);
+    let _guard = env_lock::lock_env([
+        ("EXTENSIONS", None),
+        (
+            bharatcode_core::agents::extension_malware_check::EXTENSION_ALLOWLIST_KEY,
+            Some("test-command"),
+        ),
+    ]);
     write_acp_global_config(DEFAULT_ACP_TEST_CONFIG);
 
     run_test(async move {
@@ -454,7 +463,7 @@ fn test_steer_session_adds_input_to_active_prompt() {
             steer_chunks
                 .iter()
                 .any(|t| t.contains("steer while active")),
-            "expected a chunk marked _meta.goose.steer with the steer text, got: {steer_chunks:?}"
+            "expected a chunk marked _meta.bharatcode.steer with the steer text, got: {steer_chunks:?}"
         );
 
         // The queued steer must be announced (so a UI can show it as pending)
@@ -495,8 +504,8 @@ fn test_custom_list_builtin_skill_sources() {
             .expect("missing sources array");
         let builtin = sources
             .iter()
-            .find(|source| source.get("name") == Some(&serde_json::json!("goose-doc-guide")))
-            .expect("expected goose-doc-guide builtin skill");
+            .find(|source| source.get("name") == Some(&serde_json::json!("bharatcode-doc-guide")))
+            .expect("expected bharatcode-doc-guide builtin skill");
 
         assert_eq!(
             builtin.get("type"),
@@ -505,7 +514,7 @@ fn test_custom_list_builtin_skill_sources() {
         assert_eq!(builtin.get("global"), Some(&serde_json::json!(true)));
         assert_eq!(
             builtin.get("path"),
-            Some(&serde_json::json!("builtin://skills/goose-doc-guide"))
+            Some(&serde_json::json!("builtin://skills/bharatcode-doc-guide"))
         );
     });
 }
@@ -870,9 +879,9 @@ fn test_provider_switching_updates_session_state() {
             .await
             .expect("provider switch to openai should succeed");
 
-        conn.set_config_option(&session_id, "provider", "goose")
+        conn.set_config_option(&session_id, "provider", "bharatcode")
             .await
-            .expect("provider reset to goose should succeed");
+            .expect("provider reset to the BharatCode default should succeed");
     });
 }
 
