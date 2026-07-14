@@ -15,9 +15,9 @@ use crate::config::ConfigError;
 use crate::conversation::message::Message;
 use bharatcode_providers::errors::ProviderError;
 
-use futures::future::BoxFuture;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use rmcp::model::Tool;
 
 const SNOWFLAKE_PROVIDER_NAME: &str = "snowflake";

@@ -7,7 +7,7 @@ const result = spawnSync(process.execPath, [script, '--help'], {
   encoding: 'utf8',
   env: {
     ...process.env,
-    BHARATCODE_BINARY: '/usr/bin/env-not-set',
+    BHARATCODE_BINARY: '',
   },
 });
 

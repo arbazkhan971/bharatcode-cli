@@ -1,13 +1,15 @@
 use super::TunnelInfo;
 use anyhow::{Context, Result};
-use futures::{SinkExt, StreamExt};
+use bharatcode_core::acp::transport::auth::token_matches;
+use futures::{SinkExt, Stream, StreamExt};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use socket2::{SockRef, TcpKeepalive};
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
@@ -22,26 +24,22 @@ struct ProxyContext {
     http_client: reqwest::Client,
 }
 
-/// Constant-time comparison using hash to prevent timing attacks
-fn secure_compare(a: &str, b: &str) -> bool {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher_a = DefaultHasher::new();
-    a.hash(&mut hasher_a);
-    let hash_a = hasher_a.finish();
-
-    let mut hasher_b = DefaultHasher::new();
-    b.hash(&mut hasher_b);
-    let hash_b = hasher_b.finish();
-
-    hash_a == hash_b
-}
-
 const WORKER_URL: &str = "https://cloudflare-tunnel-proxy.michael-neale.workers.dev";
 const IDLE_TIMEOUT_SECS: u64 = 300;
 const CONNECTION_TIMEOUT_SECS: u64 = 30;
 const MAX_WS_SIZE: usize = 900_000;
+
+/// Requests the tunnel will proxy at once for a single websocket connection. A streaming
+/// response holds its slot for the lifetime of the stream, so this also bounds concurrent
+/// SSE subscriptions.
+const MAX_CONCURRENT_REQUESTS: usize = 16;
+
+/// Upper bound on a buffered (non-streaming) response body. Streaming responses are
+/// forwarded chunk by chunk and are never subject to this cap.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+const STATUS_PAYLOAD_TOO_LARGE: u16 = 413;
+const STATUS_SERVICE_UNAVAILABLE: u16 = 503;
 
 fn get_worker_url() -> String {
     std::env::var("BHARATCODE_TUNNEL_WORKER_URL")
@@ -101,6 +99,62 @@ struct TunnelResponse {
     is_last_chunk: bool,
 }
 
+fn error_response(request_id: String, status: u16, error: String) -> TunnelResponse {
+    TunnelResponse {
+        request_id,
+        status,
+        headers: None,
+        body: None,
+        error: Some(error),
+        chunk_index: None,
+        total_chunks: None,
+        is_chunked: false,
+        is_streaming: false,
+        is_first_chunk: false,
+        is_last_chunk: false,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum BodyOutcome {
+    Complete(String),
+    TooLarge,
+}
+
+/// Buffers a response body, giving up as soon as it would exceed `limit` rather than
+/// growing an unbounded allocation on behalf of a remote caller.
+async fn collect_body_capped<S, B, E>(
+    stream: S,
+    content_length: Option<u64>,
+    limit: usize,
+) -> Result<BodyOutcome>
+where
+    S: Stream<Item = std::result::Result<B, E>>,
+    B: AsRef<[u8]>,
+    E: Display,
+{
+    if content_length.is_some_and(|len| len > limit as u64) {
+        return Ok(BodyOutcome::TooLarge);
+    }
+
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut stream = std::pin::pin!(stream);
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read response body: {e}"))?;
+        let chunk = chunk.as_ref();
+
+        if buffer.len() + chunk.len() > limit {
+            return Ok(BodyOutcome::TooLarge);
+        }
+        buffer.extend_from_slice(chunk);
+    }
+
+    Ok(BodyOutcome::Complete(
+        String::from_utf8_lossy(&buffer).into_owned(),
+    ))
+}
+
 fn validate_and_build_request(
     client: &reqwest::Client,
     url: &str,
@@ -108,6 +162,10 @@ fn validate_and_build_request(
     tunnel_secret: &str,
     server_secret: &str,
 ) -> Result<reqwest::RequestBuilder> {
+    if tunnel_secret.trim().is_empty() {
+        anyhow::bail!("Tunnel secret is not configured");
+    }
+
     let incoming_secret = message
         .headers
         .as_ref()
@@ -118,7 +176,7 @@ fn validate_and_build_request(
         })
         .ok_or_else(|| anyhow::anyhow!("Missing tunnel secret header"))?;
 
-    if !secure_compare(incoming_secret, tunnel_secret) {
+    if !token_matches(Some(incoming_secret.as_str()), tunnel_secret) {
         anyhow::bail!("Invalid tunnel secret");
     }
 
@@ -281,20 +339,7 @@ async fn handle_request(
         Ok(builder) => builder,
         Err(e) => {
             error!("✗ Authentication error [{}]: {}", request_id, e);
-            let error_response = TunnelResponse {
-                request_id,
-                status: 401,
-                headers: None,
-                body: None,
-                error: Some(e.to_string()),
-                chunk_index: None,
-                total_chunks: None,
-                is_chunked: false,
-                is_streaming: false,
-                is_first_chunk: false,
-                is_last_chunk: false,
-            };
-            send_response(ws_tx, error_response).await?;
+            send_response(ws_tx, error_response(request_id, 401, e.to_string())).await?;
             return Ok(());
         }
     };
@@ -303,20 +348,7 @@ async fn handle_request(
         Ok(resp) => resp,
         Err(e) => {
             error!("✗ Request error [{}]: {}", request_id, e);
-            let error_response = TunnelResponse {
-                request_id,
-                status: 500,
-                headers: None,
-                body: None,
-                error: Some(e.to_string()),
-                chunk_index: None,
-                total_chunks: None,
-                is_chunked: false,
-                is_streaming: false,
-                is_first_chunk: false,
-                is_last_chunk: false,
-            };
-            send_response(ws_tx, error_response).await?;
+            send_response(ws_tx, error_response(request_id, 500, e.to_string())).await?;
             return Ok(());
         }
     };
@@ -350,7 +382,36 @@ async fn handle_request(
         )
         .await?;
     } else {
-        let body = response.text().await.unwrap_or_default();
+        let content_length = response.content_length();
+        let body =
+            match collect_body_capped(response.bytes_stream(), content_length, MAX_RESPONSE_BYTES)
+                .await
+            {
+                Ok(BodyOutcome::Complete(body)) => body,
+                Ok(BodyOutcome::TooLarge) => {
+                    warn!(
+                        "✗ Response body exceeds {} byte cap [{}] {}",
+                        MAX_RESPONSE_BYTES, request_id, message.path
+                    );
+                    send_response(
+                        ws_tx,
+                        error_response(
+                            request_id,
+                            STATUS_PAYLOAD_TOO_LARGE,
+                            format!(
+                                "Response body exceeds the {MAX_RESPONSE_BYTES} byte tunnel cap"
+                            ),
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("✗ Response body error [{}]: {}", request_id, e);
+                    send_response(ws_tx, error_response(request_id, 500, e.to_string())).await?;
+                    return Ok(());
+                }
+            };
 
         if body.len() > MAX_WS_SIZE {
             handle_chunked_response(body, status, headers_map, request_id, message.path, ws_tx)
@@ -405,6 +466,12 @@ fn configure_tcp_keepalive(
     }
 }
 
+/// Claims one of the connection's in-flight request slots, or `None` when saturated. The
+/// permit lives as long as the spawned request task, so aborting that task frees the slot.
+fn acquire_request_slot(limiter: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    limiter.clone().try_acquire_owned().ok()
+}
+
 async fn handle_websocket_messages(
     mut read: futures::stream::SplitStream<
         tokio_tungstenite::WebSocketStream<
@@ -415,6 +482,7 @@ async fn handle_websocket_messages(
     ctx: ProxyContext,
     last_activity: Arc<RwLock<Instant>>,
     active_tasks: Arc<RwLock<Vec<JoinHandle<()>>>>,
+    limiter: Arc<Semaphore>,
     scheme: String,
 ) {
     while let Some(msg) = read.next().await {
@@ -424,10 +492,36 @@ async fn handle_websocket_messages(
 
                 match serde_json::from_str::<TunnelMessage>(&text) {
                     Ok(tunnel_msg) => {
+                        let Some(permit) = acquire_request_slot(&limiter) else {
+                            warn!(
+                                "✗ Overloaded, rejecting request [{}] {} ({} in flight)",
+                                tunnel_msg.request_id, tunnel_msg.path, MAX_CONCURRENT_REQUESTS
+                            );
+                            // Answered inline: the read loop stalls until the rejection is
+                            // written, which is the backpressure signal to the worker.
+                            if let Err(e) = send_response(
+                                ws_tx.clone(),
+                                error_response(
+                                    tunnel_msg.request_id,
+                                    STATUS_SERVICE_UNAVAILABLE,
+                                    format!(
+                                        "Tunnel is at its limit of {MAX_CONCURRENT_REQUESTS} concurrent requests"
+                                    ),
+                                ),
+                            )
+                            .await
+                            {
+                                error!("Error sending overload response: {}", e);
+                                break;
+                            }
+                            continue;
+                        };
+
                         let ws_tx_clone = ws_tx.clone();
                         let ctx_clone = ctx.clone();
                         let scheme_clone = scheme.clone();
                         let task = tokio::spawn(async move {
+                            let _permit = permit;
                             if let Err(e) =
                                 handle_request(tunnel_msg, ctx_clone, ws_tx_clone, &scheme_clone)
                                     .await
@@ -546,6 +640,7 @@ async fn run_single_connection(
     let ws_tx: WebSocketSender = Arc::new(RwLock::new(Some(write)));
     let last_activity = Arc::new(RwLock::new(Instant::now()));
     let active_tasks: Arc<RwLock<Vec<JoinHandle<()>>>> = Arc::new(RwLock::new(Vec::new()));
+    let limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
 
     let last_activity_clone = last_activity.clone();
     let idle_task = async move {
@@ -572,6 +667,7 @@ async fn run_single_connection(
             ctx,
             last_activity,
             active_tasks.clone(),
+            limiter,
             scheme,
         ) => {
             info!("✗ Connection ended");
@@ -631,5 +727,235 @@ pub async fn stop(handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>) {
     if let Some(task) = handle.write().await.take() {
         task.abort();
         info!("Lapstone tunnel stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const TUNNEL_SECRET: &str = "tunnel-secret-abc123";
+    const SERVER_SECRET: &str = "server-secret-xyz789";
+
+    fn message_with_secret(secret: Option<&str>) -> TunnelMessage {
+        let headers = secret.map(|value| {
+            HashMap::from([
+                ("X-Secret-Key".to_string(), value.to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ])
+        });
+
+        TunnelMessage {
+            request_id: "req-1".to_string(),
+            method: "GET".to_string(),
+            path: "/sessions".to_string(),
+            headers,
+            body: None,
+        }
+    }
+
+    fn validate(message: &TunnelMessage, tunnel_secret: &str) -> Result<reqwest::Request> {
+        let client = reqwest::Client::new();
+        validate_and_build_request(
+            &client,
+            "http://127.0.0.1:1/sessions",
+            message,
+            tunnel_secret,
+            SERVER_SECRET,
+        )?
+        .build()
+        .map_err(Into::into)
+    }
+
+    #[test]
+    fn accepts_exact_tunnel_secret_and_swaps_in_server_secret() {
+        let request = validate(&message_with_secret(Some(TUNNEL_SECRET)), TUNNEL_SECRET)
+            .expect("exact secret should authenticate");
+
+        let forwarded = request
+            .headers()
+            .get("X-Secret-Key")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(forwarded, Some(SERVER_SECRET));
+        assert_eq!(
+            request.headers().get_all("X-Secret-Key").iter().count(),
+            1,
+            "caller-supplied tunnel secret must not be forwarded alongside the server secret"
+        );
+    }
+
+    #[test]
+    fn rejects_secrets_that_are_not_byte_identical() {
+        // A digest-based comparison can accept a non-identical secret on collision, and
+        // truncating comparisons accept prefixes. Every one of these differs from the
+        // configured secret by at least one byte, so all must be rejected.
+        for candidate in [
+            "tunnel-secret-abc124",
+            "tunnel-secret-abc12",
+            "tunnel-secret-abc1234",
+            "TUNNEL-SECRET-ABC123",
+            "tunnel-secret-abc123 ",
+            "",
+        ] {
+            assert!(
+                validate(&message_with_secret(Some(candidate)), TUNNEL_SECRET).is_err(),
+                "expected {candidate:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_secret_header() {
+        assert!(validate(&message_with_secret(None), TUNNEL_SECRET).is_err());
+    }
+
+    #[test]
+    fn fails_closed_when_configured_tunnel_secret_is_blank() {
+        for configured in ["", "   "] {
+            assert!(
+                validate(&message_with_secret(Some(configured)), configured).is_err(),
+                "a blank configured secret must never authenticate a request"
+            );
+            assert!(validate(&message_with_secret(None), configured).is_err());
+        }
+    }
+
+    /// Yields `chunks.len()` chunks of the given sizes, counting every chunk actually polled.
+    fn counted_stream(
+        chunks: Vec<usize>,
+        polled: Arc<AtomicUsize>,
+    ) -> impl Stream<Item = std::result::Result<Vec<u8>, std::io::Error>> {
+        futures::stream::iter(chunks).map(
+            move |size| -> std::result::Result<Vec<u8>, std::io::Error> {
+                polled.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![b'x'; size])
+            },
+        )
+    }
+
+    #[test]
+    fn saturated_connection_rejects_extra_requests_and_recovers_when_a_slot_frees() {
+        let limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+
+        let mut held: Vec<OwnedSemaphorePermit> = (0..MAX_CONCURRENT_REQUESTS)
+            .map(|i| {
+                acquire_request_slot(&limiter)
+                    .unwrap_or_else(|| panic!("slot {i} should be available"))
+            })
+            .collect();
+
+        assert!(
+            acquire_request_slot(&limiter).is_none(),
+            "a saturated connection must not spawn another request task"
+        );
+
+        // The permit is owned by the request task, so completing (or aborting) it frees the slot.
+        drop(held.pop().expect("a slot should be held"));
+        assert!(
+            acquire_request_slot(&limiter).is_some(),
+            "finishing an in-flight request must return its slot to the pool"
+        );
+    }
+
+    #[test]
+    fn overload_response_is_an_explicit_503_with_no_body() {
+        let response = error_response(
+            "req-overload".to_string(),
+            STATUS_SERVICE_UNAVAILABLE,
+            "Tunnel is at its limit".to_string(),
+        );
+
+        assert_eq!(response.status, 503);
+        assert!(response.body.is_none());
+        assert!(!response.is_chunked && !response.is_streaming);
+        assert!(response.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn buffers_bodies_up_to_the_cap() {
+        let polled = Arc::new(AtomicUsize::new(0));
+        let outcome = collect_body_capped(
+            counted_stream(vec![4, 4], polled.clone()),
+            Some(8),
+            MAX_RESPONSE_BYTES,
+        )
+        .await
+        .expect("body under the cap should be buffered");
+
+        assert_eq!(outcome, BodyOutcome::Complete("xxxxxxxx".to_string()));
+        assert_eq!(polled.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn accepts_a_body_that_is_exactly_the_cap() {
+        let polled = Arc::new(AtomicUsize::new(0));
+        let outcome = collect_body_capped(counted_stream(vec![4], polled), Some(4), 4)
+            .await
+            .expect("a body exactly at the cap is not oversize");
+
+        assert_eq!(outcome, BodyOutcome::Complete("xxxx".to_string()));
+    }
+
+    #[tokio::test]
+    async fn stops_buffering_once_a_streamed_body_grows_past_the_cap() {
+        let polled = Arc::new(AtomicUsize::new(0));
+        // No content-length: the cap has to be enforced while draining the stream.
+        let outcome =
+            collect_body_capped(counted_stream(vec![3, 3, 3, 3], polled.clone()), None, 8)
+                .await
+                .expect("an oversize body is reported, not an error");
+
+        assert_eq!(outcome, BodyOutcome::TooLarge);
+        assert_eq!(
+            polled.load(Ordering::SeqCst),
+            3,
+            "buffering must stop at the chunk that breaches the cap, not drain the whole body"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_an_oversize_content_length_without_reading_the_body() {
+        let polled = Arc::new(AtomicUsize::new(0));
+        let outcome = collect_body_capped(
+            counted_stream(vec![64], polled.clone()),
+            Some(MAX_RESPONSE_BYTES as u64 + 1),
+            MAX_RESPONSE_BYTES,
+        )
+        .await
+        .expect("an oversize body is reported, not an error");
+
+        assert_eq!(outcome, BodyOutcome::TooLarge);
+        assert_eq!(
+            polled.load(Ordering::SeqCst),
+            0,
+            "a declared-oversize body must never be buffered"
+        );
+    }
+
+    #[tokio::test]
+    async fn surfaces_body_read_errors() {
+        let stream = futures::stream::iter(vec![
+            Ok(vec![b'x'; 2]),
+            Err(std::io::Error::other("connection reset")),
+        ]);
+
+        let error = collect_body_capped(stream, None, MAX_RESPONSE_BYTES)
+            .await
+            .expect_err("a mid-body read failure must not be reported as a complete body");
+        assert!(error.to_string().contains("connection reset"));
+    }
+
+    #[test]
+    fn oversize_response_is_an_explicit_413_with_no_body() {
+        let response = error_response(
+            "req-oversize".to_string(),
+            STATUS_PAYLOAD_TOO_LARGE,
+            "Response body exceeds the cap".to_string(),
+        );
+
+        assert_eq!(response.status, 413);
+        assert!(response.body.is_none());
+        assert!(!response.is_chunked && !response.is_streaming);
     }
 }

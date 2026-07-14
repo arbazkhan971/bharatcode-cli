@@ -9,13 +9,14 @@
 
 use std::collections::BTreeSet;
 
-use console::style;
 use bharatcode_core::config::Config;
 use bharatcode_core::model_registry::{self, ModelInfo};
 use bharatcode_core::session::SessionManager;
 use bharatcode_core::utils::safe_truncate;
+use console::style;
 
 use crate::commands::cost_ledger::{self, format_inr, format_inr_compact, SessionCost};
+use crate::commands::{analytics_local, indic_format, usage_analytics};
 
 // Apply-patch hunk stats, declared inline so the helper lives next to its only
 // caller without widening the `commands` module surface. Used below to render a
@@ -48,36 +49,12 @@ mod release_profile;
 #[path = "ci_report.rs"]
 mod ci_report;
 
-// Strictly-local, opt-in, aggregated usage counters (BharatCode v92). Declared
-// inline next to its only call site (the `cost` footer). Renders ONE muted line
-// of monotonic counts (turns, tool calls, sessions, tokens, days active) read
-// from a single rolling JSON aggregate under the config dir — no network, no
-// per-event detail. Opt-in via `BHARATCODE_ANALYTICS_LOCAL`; default OFF => the
-// cost output is byte-identical and there is zero I/O.
-#[path = "analytics_local.rs"]
-mod analytics_local;
-
-// Privacy-preserving, strictly-local usage analytics, declared inline next to
-// its only call site (the `cost` footer). Renders a compact "Usage (local,
-// aggregated)" block of counts only. Opt-in via the env gate
-// `BHARATCODE_ANALYTICS`; default OFF => the cost output is byte-identical.
-#[path = "usage_analytics.rs"]
-mod usage_analytics;
-
 // Compact ₹ cost dashboard, declared inline next to its only call site (the
 // early dashboard branch in `handle_cost`). Mirrors the `patch_stats` pattern so
 // wiring it does not widen the `commands` module surface. Opt-in via the env
 // gate `BHARATCODE_COST_DASHBOARD`; default OFF => existing cost output.
 #[path = "cost_dashboard.rs"]
 mod cost_dashboard;
-
-// Locale-aware (Indian lakh / crore) number + currency grouping, declared
-// inline next to its only call site (the headline ₹ totals below). Mirrors the
-// `cost_dashboard` pattern so wiring it does not widen the `commands` module
-// surface. Opt-in via the env gate `BHARATCODE_NUMFMT=indian`; default OFF =>
-// existing ₹ formatting, byte-identical to before.
-#[path = "indic_format.rs"]
-mod indic_format;
 
 /// Render an INR amount for the headline totals, honouring the
 /// `BHARATCODE_NUMFMT=indian` grouping switch.

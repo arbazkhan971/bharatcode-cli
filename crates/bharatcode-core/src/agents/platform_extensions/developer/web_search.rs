@@ -162,7 +162,7 @@ fn parse_results(html: &str, limit: usize) -> Vec<SearchResult> {
         let Some(anchor_start) = rest.find("result__a") else {
             break;
         };
-        rest = &rest[anchor_start..];
+        rest = rest.get(anchor_start..).unwrap_or_default();
 
         let Some(href) = extract_attr(rest, "href=\"") else {
             break;
@@ -172,11 +172,12 @@ fn parse_results(html: &str, limit: usize) -> Vec<SearchResult> {
         let title = extract_anchor_text(rest).unwrap_or_default();
         let snippet = rest
             .find("result__snippet")
-            .and_then(|idx| extract_anchor_text(&rest[idx..]))
+            .and_then(|idx| rest.get(idx..))
+            .and_then(extract_anchor_text)
             .unwrap_or_default();
 
         // Advance past this anchor so the next iteration finds a fresh result.
-        rest = &rest[1..];
+        rest = rest.get(1..).unwrap_or_default();
 
         if url.is_empty() || title.is_empty() {
             continue;
@@ -195,17 +196,17 @@ fn parse_results(html: &str, limit: usize) -> Vec<SearchResult> {
 /// Extract the value of an attribute (e.g. `href="`) starting from `slice`.
 fn extract_attr(slice: &str, attr: &str) -> Option<String> {
     let start = slice.find(attr)? + attr.len();
-    let tail = &slice[start..];
+    let tail = slice.get(start..)?;
     let end = tail.find('"')?;
-    Some(tail[..end].to_string())
+    Some(tail.get(..end)?.to_string())
 }
 
 /// Extract the visible text of the next anchor (`>text</a>`) in `slice`.
 fn extract_anchor_text(slice: &str) -> Option<String> {
     let gt = slice.find('>')? + 1;
-    let tail = &slice[gt..];
+    let tail = slice.get(gt..)?;
     let end = tail.find("</a>")?;
-    let text = strip_tags(&tail[..end]);
+    let text = strip_tags(tail.get(..end)?);
     let text = decode_entities(&text);
     let trimmed = text.trim().to_string();
     (!trimmed.is_empty()).then_some(trimmed)
@@ -216,7 +217,7 @@ fn extract_anchor_text(slice: &str) -> Option<String> {
 /// otherwise normalize a protocol-relative link to https.
 fn decode_ddg_link(raw: &str) -> String {
     if let Some(idx) = raw.find("uddg=") {
-        let after = &raw[idx + "uddg=".len()..];
+        let after = raw.get(idx + "uddg=".len()..).unwrap_or_default();
         let encoded = after.split('&').next().unwrap_or(after);
         if let Ok(decoded) = urlencoding::decode(encoded) {
             return decoded.into_owned();

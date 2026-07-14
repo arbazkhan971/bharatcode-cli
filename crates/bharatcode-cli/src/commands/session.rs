@@ -1,14 +1,14 @@
 use crate::session::message_to_markdown;
 use anyhow::{Context, Result};
 
-use cliclack::{confirm, multiselect, select};
-use etcetera::home_dir;
 #[cfg(feature = "nostr")]
 use bharatcode_core::config::Config;
 #[cfg(feature = "nostr")]
 use bharatcode_core::session::nostr_share;
 use bharatcode_core::session::{generate_diagnostics, Session, SessionManager, SessionType};
 use bharatcode_core::utils::safe_truncate;
+use cliclack::{confirm, multiselect, select};
+use etcetera::home_dir;
 use regex::Regex;
 use std::fs;
 use std::io::{self, Write};

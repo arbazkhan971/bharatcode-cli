@@ -54,9 +54,7 @@ pub fn group_indian(n: u64) -> String {
     let head_len = len - 3;
     let mut out = String::with_capacity(len + len / 2);
     for (idx, ch) in digits.iter().enumerate() {
-        if idx == head_len {
-            out.push(',');
-        } else if idx > 0 && idx < head_len && (head_len - idx) % 2 == 0 {
+        if idx == head_len || (idx > 0 && idx < head_len && (head_len - idx).is_multiple_of(2)) {
             out.push(',');
         }
         out.push(*ch as char);
@@ -75,7 +73,7 @@ pub fn group_western(n: u64) -> String {
     }
     let mut out = String::with_capacity(len + len / 3);
     for (idx, ch) in digits.iter().enumerate() {
-        if idx > 0 && (len - idx) % 3 == 0 {
+        if idx > 0 && (len - idx).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*ch as char);

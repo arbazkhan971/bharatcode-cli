@@ -161,7 +161,10 @@ impl AppState {
         buses.get(session_id).cloned()
     }
 
-    pub async fn get_agent(&self, session_id: String) -> anyhow::Result<Arc<bharatcode_core::agents::Agent>> {
+    pub async fn get_agent(
+        &self,
+        session_id: String,
+    ) -> anyhow::Result<Arc<bharatcode_core::agents::Agent>> {
         self.agent_manager.get_or_create_agent(session_id).await
     }
 

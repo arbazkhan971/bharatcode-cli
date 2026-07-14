@@ -321,24 +321,22 @@ mod tests {
 
     #[tokio::test]
     async fn gate_off_writes_no_file_and_passes_through() {
+        let counter = TokenCounter::new()
+            .await
+            .expect("token counter should initialize");
         // With the gate off (default, no env set), the wrapper must not touch the
         // disk store at all — it is a pure pass-through to the in-memory counter.
         // That pass-through mutates the process-global in-memory `TOKEN_CACHE`, so
         // hold the shared cache-test guard for the duration to stay independent of
         // the `token_cache` size-asserting tests running in the same process.
+        let _env_guard = env_lock::lock_env([(ENABLE_KEY, None::<&str>)]);
         let _guard = crate::context_mgmt::token_cache::lock_cache_tests();
-        let key = "BHARATCODE_TOKEN_CACHE";
-        let saved = std::env::var(key).ok();
-        std::env::remove_var(key);
 
         assert!(!is_enabled(), "feature must be off without the env toggle");
 
         let path = store_path();
         let existed_before = path.exists();
 
-        let counter = TokenCounter::new()
-            .await
-            .expect("token counter should initialize");
         let msg = Message::user().with_text("gate-off pass-through message");
 
         let direct = counter.count_chat_tokens("", std::slice::from_ref(&msg), &[]);
@@ -354,11 +352,6 @@ mod tests {
                 !path.exists(),
                 "gate-off must not write the persistent store file"
             );
-        }
-
-        match saved {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
         }
 
         // Leave the shared in-memory cache empty for any sibling test that runs

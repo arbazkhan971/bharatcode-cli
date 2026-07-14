@@ -35,14 +35,15 @@ impl SubprocessExt for std::process::Command {
 /// a minimal PATH like `/usr/bin:/bin`. This function spawns a login shell to
 /// source the user's profile and recover the full PATH.
 ///
-/// Ported from `crates/goose/src/agents/platform_extensions/developer/shell.rs`
+/// Shared with `crates/bharatcode-core/src/agents/platform_extensions/developer/shell.rs`.
 /// where it was introduced in #5774 for the developer extension. This makes the
 /// same fix available to all MCP extensions in goose-mcp.
 #[cfg(not(windows))]
+const LOGIN_SHELL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(not(windows))]
 fn resolve_login_shell_path() -> Option<String> {
-    use process_wrap::std::{CommandWrap, ProcessSession};
     use std::path::PathBuf;
-    use std::process::Stdio;
 
     // Prefer the user's configured shell so we source the right profile files.
     // Fall back to /bin/bash (common default) then sh as last resort.
@@ -57,7 +58,22 @@ fn resolve_login_shell_path() -> Option<String> {
             }
         });
 
-    let mut cmd = CommandWrap::from(std::process::Command::new(&shell));
+    probe_login_shell_path(&shell, LOGIN_SHELL_PROBE_TIMEOUT)
+}
+
+/// Run `<shell> -l -i -c 'echo $PATH'` and return the resolved PATH.
+///
+/// A user profile can hang (a prompt hook waiting on a slow network mount, say).
+/// This probe runs behind the `OnceLock` below, so a hang would wedge every
+/// caller forever — hence the timeout, after which the shell is killed and
+/// reaped and we fall back to the inherited PATH.
+#[cfg(not(windows))]
+fn probe_login_shell_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
+    use process_wrap::std::{CommandWrap, ProcessSession};
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let mut cmd = CommandWrap::from(std::process::Command::new(shell));
     cmd.command_mut()
         .args(["-l", "-i", "-c", "echo $PATH"])
         .stdin(Stdio::null())
@@ -68,20 +84,34 @@ fn resolve_login_shell_path() -> Option<String> {
     // cannot steal the terminal foreground from the parent goose process.
     cmd.wrap(ProcessSession);
 
-    let child = cmd.spawn().ok()?;
-    let output = child.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout().take()?;
 
-    // Take the last non-empty line — interactive shells may emit
-    // extra output from profile scripts before our echo.
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_string())
-        .filter(|path| !path.is_empty())
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if stdout.read_to_end(&mut buf).is_ok() {
+            let _ = tx.send(buf);
+        }
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(buf) if child.wait().is_ok_and(|status| status.success()) => {
+            // Take the last non-empty line — interactive shells may emit
+            // extra output from profile scripts before our echo.
+            String::from_utf8_lossy(&buf)
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_string())
+                .filter(|path| !path.is_empty())
+        }
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
 }
 
 /// Returns the user's full login shell PATH, resolved once and cached.
@@ -116,4 +146,55 @@ pub fn merged_path() -> Option<String> {
         }
     }
     Some(merged.join(":"))
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    fn shell_script(dir: &std::path::Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn probe_takes_the_last_non_empty_line_of_shell_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_script(
+            dir.path(),
+            "noisy-shell",
+            "echo 'profile banner'\necho\necho /opt/bin:/usr/bin",
+        );
+
+        let resolved = probe_login_shell_path(&shell, Duration::from_secs(5));
+
+        assert_eq!(resolved.as_deref(), Some("/opt/bin:/usr/bin"));
+    }
+
+    #[test]
+    fn probe_gives_up_instead_of_blocking_on_a_hanging_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_script(dir.path(), "hanging-shell", "exec sleep 30");
+
+        let start = Instant::now();
+        let resolved = probe_login_shell_path(&shell, Duration::from_millis(200));
+
+        assert!(resolved.is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "a hanging profile must not wedge the PATH probe"
+        );
+    }
+
+    #[test]
+    fn probe_returns_none_when_the_shell_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = shell_script(dir.path(), "failing-shell", "exit 1");
+
+        assert!(probe_login_shell_path(&shell, Duration::from_secs(5)).is_none());
+    }
 }

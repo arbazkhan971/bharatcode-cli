@@ -8,7 +8,6 @@ on:
       - 'v*.*.*'
       - 'v*.*.*-*'  # For pre-releases like v1.2.3-beta
     paths-ignore:
-      - 'documentation/**'
       - '*.md'
   workflow_dispatch:
 
@@ -24,6 +23,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3.7.0
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0

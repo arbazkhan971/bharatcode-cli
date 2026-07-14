@@ -16,7 +16,7 @@ SKIP_CONFIRM=false
 CLEAN_GENERATE=false
 
 MIGRATIONS_DIR="${HOME}/.local/share/goose/migrations"
-RUST_SESSION_MANAGER="crates/goose/src/session/session_manager.rs"
+RUST_SESSION_MANAGER="crates/bharatcode-core/src/session/session_manager.rs"
 
 get_latest_version() {
     if [[ ! -d "${MIGRATIONS_DIR}" ]]; then
@@ -97,8 +97,8 @@ list_available_migrations() {
 }
 
 get_goose_db_path() {
-    if [[ -n "${GOOSE_PATH_ROOT:-}" ]]; then
-        echo "${GOOSE_PATH_ROOT}/data/sessions/sessions.db"
+    if [[ -n "${BHARATCODE_PATH_ROOT:-}" ]]; then
+        echo "${BHARATCODE_PATH_ROOT}/data/sessions/sessions.db"
     else
         local possible_paths=(
             "${HOME}/.local/share/goose/sessions/sessions.db"

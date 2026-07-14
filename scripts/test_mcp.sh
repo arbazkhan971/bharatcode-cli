@@ -13,8 +13,8 @@ fi
 SCRIPT_DIR=$(pwd)
 GOOSE_BIN="$SCRIPT_DIR/target/debug/goose"
 
-TEST_PROVIDER=${GOOSE_PROVIDER:-anthropic}
-TEST_MODEL=${GOOSE_MODEL:-claude-haiku-4-5-20251001}
+TEST_PROVIDER=${BHARATCODE_PROVIDER:-anthropic}
+TEST_MODEL=${BHARATCODE_MODEL:-claude-haiku-4-5-20251001}
 MCP_SAMPLING_TOOL="trigger-sampling-request"
 
 RESULTS=()
@@ -54,7 +54,7 @@ extensions:
 EOF
 
 TMPFILE=$(mktemp)
-(cd "$TESTDIR" && GOOSE_PROVIDER="$TEST_PROVIDER" GOOSE_MODEL="$TEST_MODEL" \
+(cd "$TESTDIR" && BHARATCODE_PROVIDER="$TEST_PROVIDER" BHARATCODE_MODEL="$TEST_MODEL" \
     "$GOOSE_BIN" run --recipe recipe.yaml 2>&1) | tee "$TMPFILE"
 
 if grep -qE "(add \| test_mcp)|(▸.*add.*test_mcp)" "$TMPFILE" && grep -q "100" "$TMPFILE"; then
@@ -72,7 +72,7 @@ echo ""
 TESTDIR=$(mktemp -d)
 TMPFILE=$(mktemp)
 
-(cd "$TESTDIR" && GOOSE_PROVIDER="$TEST_PROVIDER" GOOSE_MODEL="$TEST_MODEL" \
+(cd "$TESTDIR" && BHARATCODE_PROVIDER="$TEST_PROVIDER" BHARATCODE_MODEL="$TEST_MODEL" \
     "$GOOSE_BIN" run --text "Use the sampleLLM tool to ask for an original short poem about the ocean" \
     --with-extension "npx -y @modelcontextprotocol/server-everything@2026.1.14" 2>&1) | tee "$TMPFILE"
 
@@ -100,7 +100,7 @@ $(cat "$TMPFILE")
 ----- END TRANSCRIPT -----
 EOF
 )
-    JUDGE_OUT=$(GOOSE_PROVIDER="$TEST_PROVIDER" GOOSE_MODEL="$TEST_MODEL" \
+    JUDGE_OUT=$(BHARATCODE_PROVIDER="$TEST_PROVIDER" BHARATCODE_MODEL="$TEST_MODEL" \
         "$GOOSE_BIN" run --text "$JUDGE_PROMPT" 2>&1)
 
     if echo "$JUDGE_OUT" | tr -d '\r' | grep -Eq '^[[:space:]]*PASS[[:space:]]*$'; then

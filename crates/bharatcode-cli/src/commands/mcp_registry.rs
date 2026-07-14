@@ -11,11 +11,11 @@
 //! in the binary, so the listing renders identically on a fresh install.
 //!
 //! Subcommands:
-//!   * `list`        — print the whole registry as a compact table.
-//!   * `search <q>`  — filter entries by id, name, or category (case-insensitive).
-//!   * `show <id>`   — print one entry's full details plus a ready-to-paste
-//!                     extension-config snippet (the `mcpServers` document shape
-//!                     validated by `bharatcode_core::plugins::mcp_servers`).
+//! * `list` — print the whole registry as a compact table.
+//! * `search <q>` — filter entries by id, name, or category (case-insensitive).
+//! * `show <id>` — print one entry's full details plus a ready-to-paste
+//!   extension-config snippet (the `mcpServers` document shape validated by
+//!   `bharatcode_core::plugins::mcp_servers`).
 //!
 //! User-facing labels route through the i18n layer via [`label`], which falls
 //! back to the English default when the active locale has no entry for the key
@@ -24,6 +24,7 @@
 //! Original BharatCode work; not ported from any third party.
 
 use anyhow::Result;
+use clap::Subcommand;
 use console::style;
 use serde_json::{json, Value};
 
@@ -233,13 +234,26 @@ static REGISTRY: &[McpServerEntry] = &[
 ];
 
 /// Action selected on the command line for `bharatcode mcp-registry`.
+#[derive(Subcommand)]
 pub enum McpRegistryAction {
     /// Print the whole registry.
+    #[command(about = "List every MCP server in the registry")]
     List,
     /// Filter by id, name, or category.
-    Search { query: String },
+    #[command(about = "Filter the registry by id, name, or category (case-insensitive)")]
+    Search {
+        #[arg(
+            value_name = "QUERY",
+            help = "Substring matched against id, name, or category"
+        )]
+        query: String,
+    },
     /// Show one entry's details plus its config snippet.
-    Show { id: String },
+    #[command(about = "Show one server's details and a ready-to-paste extension-config snippet")]
+    Show {
+        #[arg(value_name = "ID", help = "Id of the MCP server to show")]
+        id: String,
+    },
 }
 
 /// Return every entry in the registry.
@@ -511,9 +525,10 @@ mod tests {
     fn snippet_round_trips_to_valid_document() {
         for entry in all() {
             let snippet = to_extension_snippet(entry);
-            bharatcode_core::plugins::mcp_servers::validate_mcp_server_document(&snippet).unwrap_or_else(
-                |err| panic!("entry '{}' produced an invalid snippet: {}", entry.id, err),
-            );
+            bharatcode_core::plugins::mcp_servers::validate_mcp_server_document(&snippet)
+                .unwrap_or_else(|err| {
+                    panic!("entry '{}' produced an invalid snippet: {}", entry.id, err)
+                });
         }
     }
 

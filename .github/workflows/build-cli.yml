@@ -98,8 +98,14 @@ jobs:
       - name: Update version in Cargo.toml
         if: ${{ inputs.version != '' }}
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          sed -i.bak 's/^version = ".*"/version = "'${{ inputs.version }}'"/' Cargo.toml
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Invalid release version: $RELEASE_VERSION" >&2
+            exit 1
+          fi
+          sed -i.bak -E 's/^(version = )"[^"]+"/\1"'"$RELEASE_VERSION"'"/' Cargo.toml
           rm -f Cargo.toml.bak
 
       - name: Install Linux build dependencies (host runner)
@@ -209,7 +215,7 @@ jobs:
 
       - name: Install CUDA toolkit (Windows CUDA)
         if: ${{ matrix.platform == 'windows' && matrix.variant == 'cuda' }}
-        uses: Jimver/cuda-toolkit@v0.2.35
+        uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76  # v0.2.35
         with:
           cuda: '12.9.1'
           method: 'local'

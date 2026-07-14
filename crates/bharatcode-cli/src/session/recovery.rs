@@ -33,8 +33,8 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, FixedOffset, Utc};
 use bharatcode_core::config::paths::Paths;
+use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Environment key that turns crash/resume recovery on. Absent / falsey =>

@@ -1,11 +1,13 @@
-use dotenvy::dotenv;
-use futures::StreamExt;
 use bharatcode_core::agents::{Agent, AgentEvent, ExtensionConfig, SessionConfig};
-use bharatcode_core::config::{GooseMode, DEFAULT_EXTENSION_DESCRIPTION, DEFAULT_EXTENSION_TIMEOUT};
+use bharatcode_core::config::{
+    GooseMode, DEFAULT_EXTENSION_DESCRIPTION, DEFAULT_EXTENSION_TIMEOUT,
+};
 use bharatcode_core::conversation::message::Message;
 use bharatcode_core::providers::create_with_named_model;
 use bharatcode_core::providers::databricks::DATABRICKS_DEFAULT_MODEL;
 use bharatcode_core::session::session_manager::SessionType;
+use dotenvy::dotenv;
+use futures::StreamExt;
 use std::path::PathBuf;
 
 #[tokio::main]

@@ -5,7 +5,7 @@ BharatCode is licensed under the **Apache License, Version 2.0** (see [`LICENSE`
 This file aggregates the licenses of the third-party Rust crates that the `bharatcode` CLI links against. The dependency set is scoped to the actual release build:
 
 ```
-cargo tree -e no-dev -p goose-cli --no-default-features --features portable-default
+cargo tree -e no-dev -p bharatcode-cli --no-default-features --features portable-default
 ```
 
 Licenses and repository URLs are taken from each crate's published Cargo metadata (the SPDX `license` field). First-party BharatCode workspace crates are excluded. Crates pulled in only by the desktop UI, optional code-mode, or other non-portable-default features are **not** listed here, since they are not part of this build.
@@ -886,4 +886,3 @@ Generated from `cargo metadata --format-version 1`.
 |---|---|---|
 | `bytemuck` | 1.25.0 | [link](https://github.com/Lokathor/bytemuck) |
 | `tinyvec` | 1.11.0 | [link](https://github.com/Lokathor/tinyvec) |
-

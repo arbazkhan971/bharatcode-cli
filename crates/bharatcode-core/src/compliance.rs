@@ -53,6 +53,7 @@ required attribution.";
 /// matching them flags real leakage while leaving internal Rust identifiers
 /// (`GooseMode`, `goose_mode`, `goose_*` symbols) untouched. Matching is
 /// case-insensitive on the whole phrase.
+#[cfg(test)]
 const USER_FACING_DENYLIST: &[&str] = &[
     "created by Block",
     "goose configure",
@@ -89,7 +90,8 @@ pub fn attribution_block() -> String {
 /// result is empty for clean strings and non-empty when a curated phrase such
 /// as `created by Block` appears. Internal Rust identifiers (e.g. `GooseMode`)
 /// are intentionally *not* in the denylist and therefore never flagged.
-pub fn scan_user_facing(s: &str) -> Vec<&'static str> {
+#[cfg(test)]
+fn scan_user_facing(s: &str) -> Vec<&'static str> {
     let haystack = s.to_ascii_lowercase();
     USER_FACING_DENYLIST
         .iter()

@@ -6,11 +6,11 @@
 //! policy is disabled and every command runs exactly as before — this is the
 //! default, so existing behaviour is unchanged.
 //!
-//! This is an intentionally small, dependency-free gate (whitespace tokenisation
-//! + quote-aware operator splitting), not a full shell parser. It is an
-//! independent reimplementation of the general "allow/deny command prefixes"
-//! idea; it does not use a policy-as-code engine and shares no code with any
-//! external project.
+//! This is an intentionally small, dependency-free gate based on whitespace
+//! tokenisation and quote-aware operator splitting, not a full shell parser. It
+//! is an independent reimplementation of the general "allow/deny command
+//! prefixes" idea; it does not use a policy-as-code engine and shares no code
+//! with any external project.
 //!
 //! ## Policy file format
 //!

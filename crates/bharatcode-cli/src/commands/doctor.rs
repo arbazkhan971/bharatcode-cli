@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::{catalog, repo_profile, tutorials};
 use crate::session::build_session;
 use crate::session::SessionBuilderConfig;
 
@@ -8,11 +9,6 @@ use crate::session::SessionBuilderConfig;
 // in commands/mod.rs.
 #[path = "index_check.rs"]
 mod index_check;
-
-// Large-repo readiness deep check (BharatCode v67). Declared inline alongside
-// the other doctor checks, same posture as `index_check` above.
-#[path = "repo_profile.rs"]
-mod repo_profile;
 
 // Session-DB integrity & fragmentation deep check (BharatCode v65). Declared
 // inline alongside the other doctor checks, same posture as `index_check` above.
@@ -24,14 +20,6 @@ mod db_integrity;
 // alongside the other doctor checks, same posture as `index_check` above.
 #[path = "ecosystem_check.rs"]
 mod ecosystem_check;
-
-// Extension catalog readiness deep check (BharatCode v74). Surfaces how many
-// curated catalog entries are present and how many are currently active. The
-// catalog module is shared with the `catalog` subcommand (wired in cli.rs);
-// declared inline here, same posture as `index_check` above, so the doctor row
-// reuses the same embedded catalog without a separate `pub mod`.
-#[path = "catalog.rs"]
-mod catalog;
 
 // CI-integration readiness deep check (BharatCode v77). A read-only probe that
 // detects a CI provider in the repo (GitHub Actions / GitLab CI / Jenkins) and
@@ -57,16 +45,6 @@ mod i18n_check;
 // `index_check` above; never mutates config or files.
 #[path = "security_check.rs"]
 mod security_check;
-
-// Embedded quick-start tutorials (BharatCode v88). Read-only: the doctor surfaces
-// the single most relevant next walkthrough for the current state (no provider
-// configured, configured-but-audit-off, etc.) as one localized line, so
-// onboarding guidance is discoverable without leaving the terminal. The same
-// file backs the `tutorials` re-exports and the session-builder nudge; declared
-// inline here, same posture as `index_check` above, so the doctor row reuses the
-// embedded catalog without a separate `pub mod`.
-#[path = "tutorials.rs"]
-mod tutorials;
 
 // Release packaging readiness deep check (BharatCode v94). A read-only,
 // always-visible row that confirms the release asset names the packaging matrix

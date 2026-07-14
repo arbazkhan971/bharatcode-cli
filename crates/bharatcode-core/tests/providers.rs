@@ -1,8 +1,8 @@
 use anyhow::Result;
-use dotenvy::dotenv;
-use futures::StreamExt;
 use bharatcode_core::acp::ACP_CURRENT_MODEL;
-use bharatcode_core::agents::{Agent, AgentConfig, AgentEvent, GoosePlatform, PromptManager, SessionConfig};
+use bharatcode_core::agents::{
+    Agent, AgentConfig, AgentEvent, GoosePlatform, PromptManager, SessionConfig,
+};
 use bharatcode_core::config::{ExtensionConfig, GooseMode, PermissionManager};
 use bharatcode_core::conversation::message::{ActionRequiredData, Message, MessageContent};
 use bharatcode_core::permission::permission_confirmation::PrincipalType;
@@ -28,6 +28,8 @@ use bharatcode_providers::errors::ProviderError;
 use bharatcode_test_support::{
     EnforceSessionId, ExpectedSessionId, IgnoreSessionId, McpFixture, FAKE_CODE,
 };
+use dotenvy::dotenv;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -445,7 +447,8 @@ impl ProviderFixture {
     async fn test_image_content_support(&self) -> Result<()> {
         let image_config = match &self.image_model {
             Some(model) => Some(
-                bharatcode_providers::model::ModelConfig::new(model)?.with_canonical_limits(&self.name),
+                bharatcode_providers::model::ModelConfig::new(model)?
+                    .with_canonical_limits(&self.name),
             ),
             None => None,
         };
@@ -457,7 +460,7 @@ impl ProviderFixture {
             .await?;
         let text = response.as_concat_text().to_lowercase();
         assert!(
-            text.contains("hello goose") || text.contains("test image"),
+            text.contains("hello bharatcode") || text.contains("test image"),
             "{text}"
         );
         println!("=== {}::image_content === {}", self.name, text);
@@ -632,6 +635,22 @@ async fn test_provider(config: ProviderTestConfig) -> Result<()> {
     let name = config.name;
 
     if config.skip {
+        TEST_REPORT.record_skip(name);
+        return Ok(());
+    }
+
+    let live_tests_enabled = std::env::var("BHARATCODE_LIVE_PROVIDER_TESTS")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
+    if !live_tests_enabled {
+        println!(
+            "Skipping {name} tests - set BHARATCODE_LIVE_PROVIDER_TESTS=1 to enable live calls"
+        );
         TEST_REPORT.record_skip(name);
         return Ok(());
     }

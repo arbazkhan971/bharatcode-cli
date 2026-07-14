@@ -133,7 +133,11 @@ impl ReadLinesTool {
                         while take > 0 && !chunk.is_char_boundary(take) {
                             take -= 1;
                         }
-                        collected.push_str(&chunk[..take]);
+                        collected.push_str(
+                            chunk
+                                .get(..take)
+                                .expect("take is adjusted to a UTF-8 character boundary"),
+                        );
                     }
                     byte_capped = true;
                     window_full = true;

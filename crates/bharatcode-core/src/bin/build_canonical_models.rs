@@ -8,12 +8,12 @@
 ///   cargo run --bin build_canonical_models --no-check   # Build only, skip checker
 ///
 use anyhow::{Context, Result};
-use clap::Parser;
 use bharatcode_core::providers::create_with_named_model;
 use bharatcode_providers::canonical::{
     canonical_name, CanonicalModel, CanonicalModelRegistry, Limit, Modalities, Modality,
     ModelMapping, Pricing, ThinkingMode,
 };
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

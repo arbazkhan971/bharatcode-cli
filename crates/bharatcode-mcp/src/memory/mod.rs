@@ -15,10 +15,12 @@ use std::{
     collections::HashMap,
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 const WORKING_DIR_HEADER: &str = "agent-working-dir";
+
+const MAX_CATEGORY_LEN: usize = 64;
 
 fn extract_working_dir_from_meta(meta: &Meta) -> Option<PathBuf> {
     meta.0
@@ -26,6 +28,98 @@ fn extract_working_dir_from_meta(meta: &Meta) -> Option<PathBuf> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
+}
+
+/// A category becomes a file name inside the memory directory, so it must be a single
+/// flat component: no path syntax, no separators, no drive letters, ASCII only.
+fn validate_category(category: &str) -> io::Result<()> {
+    let is_valid = !category.is_empty()
+        && category.len() <= MAX_CATEGORY_LEN
+        && category
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+
+    if is_valid {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "Invalid memory category {category:?}: expected 1-{MAX_CATEGORY_LEN} characters from [A-Za-z0-9_-]"
+        ),
+    ))
+}
+
+fn containment_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "Refusing to follow a symlink in the memory directory: {}",
+            path.display()
+        ),
+    )
+}
+
+/// The memory directory and its entries are created by this server; a symlink means
+/// something else planted it to redirect reads and writes elsewhere.
+fn reject_symlink(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(containment_error(path)),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Real, symlink-resolved location of `path`. Only the deepest existing ancestor can be
+/// canonicalized; the remaining components are validated to be plain names (no `..`), so
+/// appending them lexically cannot climb back out. Any symlink hop along the existing
+/// prefix is resolved here, which is exactly what the containment check must see.
+fn resolved_boundary(path: &Path) -> io::Result<PathBuf> {
+    for ancestor in path.ancestors() {
+        if ancestor.exists() {
+            let real = fs::canonicalize(ancestor)?;
+            if let Ok(tail) = path.strip_prefix(ancestor) {
+                return Ok(real.join(tail));
+            }
+            return Ok(real);
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Rejects any `path` whose real location escapes the intended `root`, even when every
+/// individual component of `path` is itself a plain entry and only an ancestor directory
+/// (e.g. `.bharatcode`) is the symlink that redirects the whole tree outside `root`.
+fn assert_within_root(root: &Path, path: &Path) -> io::Result<()> {
+    if resolved_boundary(path)?.starts_with(resolved_boundary(root)?) {
+        Ok(())
+    } else {
+        Err(containment_error(path))
+    }
+}
+
+/// Resolves `category` to a file that is guaranteed to sit directly inside `base_dir`,
+/// with the whole memory tree confined to `root` (the working dir for local storage, or
+/// the global memory dir itself).
+fn memory_file_in(root: &Path, base_dir: &Path, category: &str) -> io::Result<PathBuf> {
+    validate_category(category)?;
+    reject_symlink(base_dir)?;
+
+    let file_path = base_dir.join(format!("{}.txt", category));
+    reject_symlink(&file_path)?;
+    assert_within_root(root, &file_path)?;
+
+    Ok(file_path)
+}
+
+fn to_error_data(e: io::Error) -> ErrorData {
+    let code = match e.kind() {
+        io::ErrorKind::InvalidInput | io::ErrorKind::PermissionDenied => ErrorCode::INVALID_PARAMS,
+        _ => ErrorCode::INTERNAL_ERROR,
+    };
+    ErrorData::new(code, e.to_string(), None)
 }
 
 /// Parameters for the remember_memory tool
@@ -99,6 +193,8 @@ impl MemoryServer {
              or recurring commands. Always confirm with the user before saving. Suggest relevant
              categories and tags, and clarify storage scope (local vs global).
 
+             Categories may only contain letters, digits, underscores and hyphens (max 64 characters).
+
              Use category "*" with retrieve_memories or remove_memory_category to access all entries.
             "#};
 
@@ -153,22 +249,39 @@ impl MemoryServer {
         &self.instructions
     }
 
+    /// The directory the memory tree must never escape: the working dir for local storage,
+    /// or the global memory dir itself for global storage.
+    fn containment_root(&self, is_global: bool, working_dir: Option<&PathBuf>) -> PathBuf {
+        if is_global {
+            self.global_memory_dir.clone()
+        } else {
+            working_dir
+                .cloned()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."))
+        }
+    }
+
+    fn base_dir(&self, is_global: bool, working_dir: Option<&PathBuf>) -> PathBuf {
+        let root = self.containment_root(is_global, working_dir);
+        if is_global {
+            root
+        } else {
+            root.join(".bharatcode").join("memory")
+        }
+    }
+
     fn get_memory_file(
         &self,
         category: &str,
         is_global: bool,
         working_dir: Option<&PathBuf>,
-    ) -> PathBuf {
-        let base_dir = if is_global {
-            self.global_memory_dir.clone()
-        } else {
-            let local_base = working_dir
-                .cloned()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| PathBuf::from("."));
-            local_base.join(".bharatcode").join("memory")
-        };
-        base_dir.join(format!("{}.txt", category))
+    ) -> io::Result<PathBuf> {
+        memory_file_in(
+            &self.containment_root(is_global, working_dir),
+            &self.base_dir(is_global, working_dir),
+            category,
+        )
     }
 
     pub fn retrieve_all(
@@ -176,28 +289,38 @@ impl MemoryServer {
         is_global: bool,
         working_dir: Option<&PathBuf>,
     ) -> io::Result<HashMap<String, Vec<String>>> {
-        let base_dir = if is_global {
-            self.global_memory_dir.clone()
-        } else {
-            let local_base = working_dir
-                .cloned()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| PathBuf::from("."));
-            local_base.join(".bharatcode").join("memory")
-        };
+        let base_dir = self.base_dir(is_global, working_dir);
         let mut memories = HashMap::new();
-        if base_dir.exists() {
-            for entry in fs::read_dir(&base_dir)? {
-                let entry = entry?;
-                if entry.file_type()?.is_file() {
-                    let category = entry.file_name().to_string_lossy().replace(".txt", "");
-                    let category_memories = self.retrieve(&category, is_global, working_dir)?;
-                    memories.insert(
-                        category,
-                        category_memories.into_iter().flat_map(|(_, v)| v).collect(),
-                    );
-                }
+        if !base_dir.exists() {
+            return Ok(memories);
+        }
+
+        reject_symlink(&base_dir)?;
+        assert_within_root(&self.containment_root(is_global, working_dir), &base_dir)?;
+
+        for entry in fs::read_dir(&base_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
             }
+
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+                continue;
+            }
+
+            let Some(category) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if validate_category(category).is_err() {
+                continue;
+            }
+
+            let category_memories = self.retrieve(category, is_global, working_dir)?;
+            memories.insert(
+                category.to_string(),
+                category_memories.into_iter().flat_map(|(_, v)| v).collect(),
+            );
         }
         Ok(memories)
     }
@@ -211,7 +334,7 @@ impl MemoryServer {
         is_global: bool,
         working_dir: Option<&PathBuf>,
     ) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global, working_dir);
+        let memory_file_path = self.get_memory_file(category, is_global, working_dir)?;
 
         if let Some(parent) = memory_file_path.parent() {
             fs::create_dir_all(parent)?;
@@ -235,7 +358,7 @@ impl MemoryServer {
         is_global: bool,
         working_dir: Option<&PathBuf>,
     ) -> io::Result<HashMap<String, Vec<String>>> {
-        let memory_file_path = self.get_memory_file(category, is_global, working_dir);
+        let memory_file_path = self.get_memory_file(category, is_global, working_dir)?;
         if !memory_file_path.exists() {
             return Ok(HashMap::new());
         }
@@ -276,7 +399,7 @@ impl MemoryServer {
         is_global: bool,
         working_dir: Option<&PathBuf>,
     ) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global, working_dir);
+        let memory_file_path = self.get_memory_file(category, is_global, working_dir)?;
         if !memory_file_path.exists() {
             return Ok(());
         }
@@ -303,7 +426,7 @@ impl MemoryServer {
         is_global: bool,
         working_dir: Option<&PathBuf>,
     ) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global, working_dir);
+        let memory_file_path = self.get_memory_file(category, is_global, working_dir)?;
         if memory_file_path.exists() {
             fs::remove_file(memory_file_path)?;
         }
@@ -316,16 +439,10 @@ impl MemoryServer {
         is_global: bool,
         working_dir: Option<&PathBuf>,
     ) -> io::Result<()> {
-        let base_dir = if is_global {
-            self.global_memory_dir.clone()
-        } else {
-            let local_base = working_dir
-                .cloned()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| PathBuf::from("."));
-            local_base.join(".bharatcode").join("memory")
-        };
+        let base_dir = self.base_dir(is_global, working_dir);
         if base_dir.exists() {
+            reject_symlink(&base_dir)?;
+            assert_within_root(&self.containment_root(is_global, working_dir), &base_dir)?;
             fs::remove_dir_all(&base_dir)?;
         }
         Ok(())
@@ -361,7 +478,7 @@ impl MemoryServer {
             params.is_global,
             working_dir.as_ref(),
         )
-        .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        .map_err(to_error_data)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Stored memory in category: {}",
@@ -387,7 +504,7 @@ impl MemoryServer {
         } else {
             self.retrieve(&params.category, params.is_global, working_dir.as_ref())
         }
-        .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        .map_err(to_error_data)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Retrieved memories: {:?}",
@@ -410,14 +527,14 @@ impl MemoryServer {
 
         let message = if params.category == "*" {
             self.clear_all_global_or_local_memories(params.is_global, working_dir.as_ref())
-                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                .map_err(to_error_data)?;
             format!(
                 "Cleared all memory {} categories",
                 if params.is_global { "global" } else { "local" }
             )
         } else {
             self.clear_memory(&params.category, params.is_global, working_dir.as_ref())
-                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                .map_err(to_error_data)?;
             format!("Cleared memories in category: {}", params.category)
         };
 
@@ -443,7 +560,7 @@ impl MemoryServer {
             params.is_global,
             working_dir.as_ref(),
         )
-        .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        .map_err(to_error_data)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Removed specific memory from category: {}",
@@ -664,5 +781,321 @@ mod tests {
             .values()
             .any(|v| v.iter().any(|content| content.contains("keep_this")));
         assert!(has_kept);
+    }
+
+    fn test_router(memory_base: &std::path::Path) -> MemoryServer {
+        MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: memory_base.join("global"),
+        }
+    }
+
+    #[test]
+    fn test_valid_categories_are_preserved() {
+        for category in [
+            "notes",
+            "test_category",
+            "kebab-case",
+            "MixedCase",
+            "with123digits",
+            "_leading_underscore",
+            "9",
+            &"a".repeat(MAX_CATEGORY_LEN),
+        ] {
+            assert!(
+                validate_category(category).is_ok(),
+                "expected {category:?} to be a valid category"
+            );
+        }
+    }
+
+    #[test]
+    fn test_traversal_categories_are_rejected() {
+        for category in [
+            "..",
+            ".",
+            "../etc/passwd",
+            "../../../../etc/cron.d/payload",
+            "..\\..\\windows\\system32",
+            "notes/../../../escape",
+            "....//escape",
+            "%2e%2e%2fescape",
+        ] {
+            assert!(
+                validate_category(category).is_err(),
+                "expected traversal category {category:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_absolute_path_categories_are_rejected() {
+        for category in [
+            "/etc/passwd",
+            "/tmp/pwned",
+            "//server/share/file",
+            "C:\\Windows\\System32\\drivers\\etc\\hosts",
+            "~/.ssh/authorized_keys",
+        ] {
+            assert!(
+                validate_category(category).is_err(),
+                "expected absolute category {category:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_separator_and_other_unsafe_categories_are_rejected() {
+        for category in [
+            "",
+            "*",
+            "a/b",
+            "a\\b",
+            "nested/dir/notes",
+            "trailing/",
+            "with space",
+            "with\nnewline",
+            "with\0null",
+            "dotted.name",
+            "unicodé",
+            &"a".repeat(MAX_CATEGORY_LEN + 1),
+        ] {
+            assert!(
+                validate_category(category).is_err(),
+                "expected unsafe category {category:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_traversal_category_cannot_write_outside_memory_dir() {
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("traversal");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        let escaped = temp_dir.path().join("escaped.txt");
+        let relative_escape = format!(
+            "../../../{}",
+            escaped.file_stem().unwrap().to_str().unwrap()
+        );
+
+        let err = router
+            .remember(
+                "context",
+                &relative_escape,
+                "pwned",
+                &[],
+                false,
+                Some(&working_dir),
+            )
+            .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!escaped.exists());
+    }
+
+    #[test]
+    fn test_absolute_category_cannot_write_outside_memory_dir() {
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("absolute");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        let target = temp_dir.path().join("absolute_escape");
+        let category = target.to_str().unwrap().to_string();
+
+        let err = router
+            .remember(
+                "context",
+                &category,
+                "pwned",
+                &[],
+                false,
+                Some(&working_dir),
+            )
+            .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!target.with_extension("txt").exists());
+        assert!(!working_dir.join(".bharatcode").join("memory").exists());
+    }
+
+    #[test]
+    fn test_invalid_category_rejected_on_every_operation() {
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("all_ops");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        let category = "../../escape";
+
+        assert!(router
+            .remember("context", category, "data", &[], false, Some(&working_dir))
+            .is_err());
+        assert!(router
+            .retrieve(category, false, Some(&working_dir))
+            .is_err());
+        assert!(router
+            .clear_memory(category, false, Some(&working_dir))
+            .is_err());
+        assert!(router
+            .remove_specific_memory_internal(category, "data", false, Some(&working_dir))
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_memory_file_is_not_followed() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("symlink_file");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        let memory_dir = working_dir.join(".bharatcode").join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        let secret = temp_dir.path().join("secret.txt");
+        fs::write(&secret, "original secret\n").unwrap();
+        symlink(&secret, memory_dir.join("notes.txt")).unwrap();
+
+        let write_err = router
+            .remember("context", "notes", "pwned", &[], false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(write_err.kind(), io::ErrorKind::PermissionDenied);
+
+        let read_err = router
+            .retrieve("notes", false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(read_err.kind(), io::ErrorKind::PermissionDenied);
+
+        let clear_err = router
+            .clear_memory("notes", false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(clear_err.kind(), io::ErrorKind::PermissionDenied);
+
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "original secret\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_memory_dir_is_not_followed() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("symlink_dir");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        let outside = temp_dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(working_dir.join(".bharatcode")).unwrap();
+        symlink(&outside, working_dir.join(".bharatcode").join("memory")).unwrap();
+
+        let err = router
+            .remember("context", "notes", "pwned", &[], false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+
+        assert!(!outside.join("notes.txt").exists());
+        assert!(router
+            .clear_all_global_or_local_memories(false, Some(&working_dir))
+            .is_err());
+        assert!(outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_bharatcode_parent_cannot_escape_working_dir() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("symlink_parent");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        // The outside tree the attacker wants to reach. `.bharatcode/memory/notes.txt`
+        // below are all ordinary entries; only `.bharatcode` itself is the symlink that
+        // redirects the whole memory tree outside `working_dir`.
+        let outside = temp_dir.path().join("outside");
+        let outside_memory = outside.join("memory");
+        fs::create_dir_all(&outside_memory).unwrap();
+        fs::write(outside_memory.join("notes.txt"), "outside secret\n").unwrap();
+
+        fs::create_dir_all(&working_dir).unwrap();
+        symlink(&outside, working_dir.join(".bharatcode")).unwrap();
+
+        let write_err = router
+            .remember("context", "notes", "pwned", &[], false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(write_err.kind(), io::ErrorKind::PermissionDenied);
+
+        let read_err = router
+            .retrieve("notes", false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(read_err.kind(), io::ErrorKind::PermissionDenied);
+
+        let remove_err = router
+            .remove_specific_memory_internal("notes", "secret", false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(remove_err.kind(), io::ErrorKind::PermissionDenied);
+
+        let clear_err = router
+            .clear_memory("notes", false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(clear_err.kind(), io::ErrorKind::PermissionDenied);
+
+        assert!(router.retrieve_all(false, Some(&working_dir)).is_err());
+
+        let clear_all_err = router
+            .clear_all_global_or_local_memories(false, Some(&working_dir))
+            .unwrap_err();
+        assert_eq!(clear_all_err.kind(), io::ErrorKind::PermissionDenied);
+
+        // The outside target is neither exposed, modified, nor deleted.
+        assert_eq!(
+            fs::read_to_string(outside_memory.join("notes.txt")).unwrap(),
+            "outside secret\n"
+        );
+        assert!(outside_memory.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_retrieve_all_skips_symlinked_and_invalid_entries() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempdir().unwrap();
+        let memory_base = temp_dir.path().join("retrieve_all");
+        let working_dir = memory_base.join("working");
+        let router = test_router(&memory_base);
+
+        router
+            .remember(
+                "context",
+                "notes",
+                "real_memory",
+                &[],
+                false,
+                Some(&working_dir),
+            )
+            .unwrap();
+
+        let memory_dir = working_dir.join(".bharatcode").join("memory");
+        let secret = temp_dir.path().join("secret.txt");
+        fs::write(&secret, "secret contents\n").unwrap();
+        symlink(&secret, memory_dir.join("linked.txt")).unwrap();
+        fs::write(memory_dir.join("not a category.txt"), "ignored\n").unwrap();
+
+        let memories = router.retrieve_all(false, Some(&working_dir)).unwrap();
+
+        assert_eq!(memories.len(), 1);
+        assert!(memories.contains_key("notes"));
+        let flattened = format!("{:?}", memories);
+        assert!(flattened.contains("real_memory"));
+        assert!(!flattened.contains("secret contents"));
     }
 }

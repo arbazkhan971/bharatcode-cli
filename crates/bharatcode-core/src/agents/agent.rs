@@ -43,6 +43,7 @@ use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::PermissionConfirmation;
 use crate::providers::base::{PermissionRouting, Provider};
+use crate::providers::deadline::{self, StreamGuard};
 use crate::recipe::{Author, Recipe, Response, Settings};
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::adversary_inspector::AdversaryInspector;
@@ -65,26 +66,26 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-// Verify-before-done lives in a standalone module under crates/goose/src/verify.rs.
+// Verify-before-done lives in a standalone module under crates/bharatcode-core/src/verify.rs.
 // It is registered here (rather than in lib.rs) to keep this feature's footprint
 // confined to the agent finalization path and its own file.
 #[path = "../verify.rs"]
 pub mod verify;
 
-// Post-edit test-generation nudge lives in crates/goose/src/testgen.rs. It shares
+// Post-edit test-generation nudge lives in crates/bharatcode-core/src/testgen.rs. It shares
 // the same finalization point as the verify hook below; registering it here keeps
 // the feature self-contained.
 #[path = "../testgen.rs"]
 pub mod testgen;
 
-// Post-finalization CI / quality hook lives in crates/goose/src/ci_integration.rs.
+// Post-finalization CI / quality hook lives in crates/bharatcode-core/src/ci_integration.rs.
 // It shares the same finalization point as the testgen nudge above and reuses the
 // already-computed set of changed files; off by default behind BHARATCODE_CI.
 #[path = "../ci_integration.rs"]
 pub mod ci_integration;
 
 // Opt-in desktop notification on long-turn completion lives in
-// crates/goose/src/desktop_notify.rs. It shares the same finalization point as
+// crates/bharatcode-core/src/desktop_notify.rs. It shares the same finalization point as
 // the testgen/ci hooks above: when enabled and the turn ran past a threshold it
 // fires a best-effort OS notification (notify-send / osascript, bell fallback).
 // Off by default behind BHARATCODE_NOTIFY.
@@ -92,7 +93,7 @@ pub mod ci_integration;
 pub mod desktop_notify;
 
 // Post-turn editor/IDE changed-files manifest sidecar lives in
-// crates/goose/src/editor_bridge.rs. It shares the same finalization point as
+// crates/bharatcode-core/src/editor_bridge.rs. It shares the same finalization point as
 // the testgen nudge above and reuses the already-computed set of changed files
 // to write a small JSON manifest an editor/IDE/watcher can poll. Off by default
 // behind BHARATCODE_EDITOR_BRIDGE.
@@ -100,7 +101,7 @@ pub mod desktop_notify;
 mod editor_bridge;
 
 // Finalization-time trademark / compliance self-scan lives in
-// crates/goose/src/compliance_gate.rs. It shares the same finalization point as
+// crates/bharatcode-core/src/compliance_gate.rs. It shares the same finalization point as
 // the testgen/ci/editor_bridge hooks below: when enabled it scans the finalized
 // assistant text for residual third-party marks and emits a single inline
 // compliance advisory. Off by default behind BHARATCODE_COMPLIANCE_GATE => the
@@ -109,7 +110,7 @@ mod editor_bridge;
 mod compliance_gate;
 
 // Parallel tool-execution governor (concurrency cap + per-tool timeout) lives in
-// crates/goose/src/tool_governor.rs. It wraps the concurrent tool fan-out built
+// crates/bharatcode-core/src/tool_governor.rs. It wraps the concurrent tool fan-out built
 // just before `stream::select_all`; registering it here keeps it next to its
 // single shared call site. Off by default (see BHARATCODE_TOOL_* env vars).
 #[path = "../tool_governor.rs"]
@@ -121,7 +122,7 @@ pub mod tool_governor;
 static TOOL_GOVERNOR: std::sync::LazyLock<tool_governor::ToolGovernor> =
     std::sync::LazyLock::new(tool_governor::ToolGovernor::from_env);
 
-// Transient tool-failure auto-retry lives in crates/goose/src/tool_retry.rs.
+// Transient tool-failure auto-retry lives in crates/bharatcode-core/src/tool_retry.rs.
 // It wraps the single per-request `dispatch_tool_call` await below so a tool
 // that fails transiently (internal/transport error, not a policy denial or
 // schema error) is retried with bounded backoff. Off by default; opt in via
@@ -131,14 +132,14 @@ static TOOL_GOVERNOR: std::sync::LazyLock<tool_governor::ToolGovernor> =
 pub mod tool_retry;
 
 // End-of-session plugin summary side-channel lives in
-// crates/goose/src/plugin_summary.rs. It shares the same finalization point as
+// crates/bharatcode-core/src/plugin_summary.rs. It shares the same finalization point as
 // the verify/testgen hooks below: when enabled it builds a compact JSON session
 // summary and dispatches it to plugins via the existing SessionEnd hook plus a
 // sidecar file. Off by default behind BHARATCODE_PLUGIN_SUMMARY.
 #[path = "../plugin_summary.rs"]
 pub mod plugin_summary;
 
-// Final release-gate aggregator lives in crates/goose/src/release_gate.rs. It
+// Final release-gate aggregator lives in crates/bharatcode-core/src/release_gate.rs. It
 // shares the same finalization point as the testgen/ci hooks below: when enabled
 // it composes the live posture signals (telemetry-off, offline/residency,
 // compliance files present, identity leak-free) into one readiness verdict and
@@ -300,6 +301,7 @@ pub struct AgentConfig {
     pub mcp_host_info: Option<GooseMcpHostInfo>,
     pub session_name_update_tx: Option<mpsc::UnboundedSender<SessionNameUpdate>>,
     pub use_login_shell_path: Option<bool>,
+    pub unattended: bool,
 }
 
 impl AgentConfig {
@@ -321,6 +323,7 @@ impl AgentConfig {
             mcp_host_info: None,
             session_name_update_tx: None,
             use_login_shell_path: None,
+            unattended: false,
         }
     }
 
@@ -342,9 +345,20 @@ impl AgentConfig {
         self
     }
 
+    pub fn with_unattended(mut self, unattended: bool) -> Self {
+        self.unattended = unattended;
+        self
+    }
+
     fn resolve_use_login_shell_path(&self) -> bool {
         resolve_use_login_shell_path(self.use_login_shell_path, &self.goose_platform)
     }
+}
+
+fn deny_unattended_approvals(result: &mut PermissionCheckResult) {
+    result
+        .denied
+        .extend(std::mem::take(&mut result.needs_approval));
 }
 
 fn resolve_use_login_shell_path(explicit: Option<bool>, platform: &GoosePlatform) -> bool {
@@ -1892,27 +1906,14 @@ impl Agent {
             });
         let session_manager = self.config.session_manager.clone();
         let session_id = session_config.id.clone();
-        if !self.config.disable_session_naming {
-            let provider = provider.clone();
-            let manager_for_spawn = session_manager.clone();
-            let session_name_update_tx = self.config.session_name_update_tx.clone();
-            tokio::spawn(async move {
-                match manager_for_spawn
-                    .maybe_update_name(&session_id, provider)
-                    .await
-                {
-                    Ok(Some(update)) => {
-                        if let Some(tx) = session_name_update_tx {
-                            if tx.send(update).is_err() {
-                                warn!("Failed to publish generated session name");
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => warn!("Failed to generate session description: {}", e),
-                }
-            });
-        }
+        let session_name_request = (!self.config.disable_session_naming).then(|| {
+            (
+                provider.clone(),
+                session_manager.clone(),
+                self.config.session_name_update_tx.clone(),
+                session_id,
+            )
+        });
 
         // Count tool calls present before this reply — everything added during
         // the reply loop is part of the current turn and should not be summarized.
@@ -2042,6 +2043,11 @@ impl Agent {
                     max_turns,
                 ).await;
 
+                // Carries this turn's cancellation token and stall budget into the
+                // provider path, so stream creation and every stream poll can be
+                // interrupted — the checks in this loop only run between items.
+                let stream_guard = StreamGuard::from_env(cancel_token.clone());
+
                 let mut stream = Self::stream_response_from_provider(
                     self.provider().await?,
                     &session_config.id,
@@ -2049,6 +2055,7 @@ impl Agent {
                     conversation_with_moim.messages(),
                     &tools,
                     &toolshim_tools,
+                    &stream_guard,
                 ).await?;
 
                 let current_turn_tool_count = conversation.messages().iter()
@@ -2182,7 +2189,7 @@ impl Agent {
                                         )
                                         .await?;
 
-                                    let permission_check_result = self.tool_inspection_manager
+                                    let mut permission_check_result = self.tool_inspection_manager
                                         .process_inspection_results_with_permission_inspector(
                                             &remaining_requests,
                                             &inspection_results,
@@ -2196,6 +2203,10 @@ impl Agent {
                                             result.needs_approval.extend(remaining_requests.iter().cloned());
                                             result
                                         });
+
+                                    if self.config.unattended {
+                                        deny_unattended_approvals(&mut permission_check_result);
+                                    }
 
                                     // Track extension requests
                                     let mut enable_extension_request_ids = vec![];
@@ -2382,6 +2393,26 @@ impl Agent {
                                 // Agent is actively working — re-check goal when it next finishes
                                 goal_check_pending = false;
                             }
+                        }
+                        // Guard aborts are terminal for the turn and must be matched
+                        // before the generic arms below: a cancelled turn exits
+                        // quietly, and a stalled provider is not retried into
+                        // another hang by goal nudges or recipe retry_config.
+                        Err(ref provider_err) if deadline::is_cancelled(provider_err) => {
+                            break;
+                        }
+                        Err(ref provider_err) if deadline::is_deadline(provider_err) => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            error!("Provider stalled: {}", provider_err);
+                            yield AgentEvent::Message(
+                                Message::assistant().with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    "The provider stopped responding and the request was aborted. Please resend your message to try again.",
+                                )
+                            );
+                            exit_chat = true;
+                            break;
                         }
                         #[allow(unused_variables)]
                         Err(ref provider_err @ ProviderError::ContextLengthExceeded(_)) => {
@@ -2707,6 +2738,26 @@ impl Agent {
                 }
 
                 tokio::task::yield_now().await;
+            }
+
+            if !is_token_cancelled(&cancel_token) {
+                if let Some((provider, manager, update_tx, session_id)) = session_name_request {
+                    tokio::spawn(async move {
+                        match manager.maybe_update_name(&session_id, provider).await {
+                            Ok(Some(update)) => {
+                                if let Some(tx) = update_tx {
+                                    if tx.send(update).is_err() {
+                                        warn!("Failed to publish generated session name");
+                                    }
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                warn!("Failed to generate session description: {}", error)
+                            }
+                        }
+                    });
+                }
             }
 
             if !last_assistant_text.is_empty() {
@@ -3392,7 +3443,8 @@ mod tests {
     use crate::recipe::Response;
     use crate::session::session_manager::SessionType;
     use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
-    use rmcp::model::Tool;
+    use rmcp::model::{CallToolRequestParams, Tool};
+    use rmcp::object;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -3419,6 +3471,35 @@ mod tests {
             Some(false),
             &GoosePlatform::GooseDesktop
         ));
+    }
+
+    #[test]
+    fn unattended_policy_denies_only_calls_that_need_confirmation() {
+        let request = |id: &str| ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(CallToolRequestParams::new("developer__shell")
+                .with_arguments(object!({"command": "touch file"}))),
+            metadata: None,
+            tool_meta: None,
+        };
+        let mut result = PermissionCheckResult {
+            approved: vec![request("approved")],
+            needs_approval: vec![request("pending")],
+            denied: vec![request("denied")],
+        };
+
+        deny_unattended_approvals(&mut result);
+
+        assert_eq!(result.approved[0].id, "approved");
+        assert!(result.needs_approval.is_empty());
+        assert_eq!(
+            result
+                .denied
+                .iter()
+                .map(|request| request.id.as_str())
+                .collect::<Vec<_>>(),
+            ["denied", "pending"]
+        );
     }
 
     struct ActionRequiredProvider {

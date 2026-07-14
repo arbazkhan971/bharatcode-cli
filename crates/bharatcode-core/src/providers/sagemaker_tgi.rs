@@ -5,6 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use aws_config;
 use aws_sdk_bedrockruntime::config::ProvideCredentials;
+use aws_sdk_sagemakerruntime::operation::invoke_endpoint::InvokeEndpointError;
 use aws_sdk_sagemakerruntime::Client as SageMakerClient;
 use rmcp::model::Tool;
 use serde_json::{json, Value};
@@ -16,11 +17,11 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::session_context::SESSION_ID_HEADER;
 use bharatcode_providers::errors::ProviderError;
 
-use chrono::Utc;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use chrono::Utc;
+use futures::future::BoxFuture;
 use rmcp::model::Role;
 
 const SAGEMAKER_TGI_PROVIDER_NAME: &str = "sagemaker_tgi";
@@ -188,7 +189,32 @@ impl SageMakerTgiProvider {
         let response = request
             .send()
             .await
-            .map_err(|e| ProviderError::RequestFailed(format!("SageMaker invoke failed: {}", e)))?;
+            .map_err(|error| match error.as_service_error() {
+                Some(
+                    service_error @ (InvokeEndpointError::InternalDependencyException(_)
+                    | InvokeEndpointError::InternalFailure(_)
+                    | InvokeEndpointError::ModelNotReadyException(_)
+                    | InvokeEndpointError::ServiceUnavailable(_)),
+                ) => ProviderError::ServerError(format!(
+                    "SageMaker invoke failed: {}",
+                    service_error
+                )),
+                Some(InvokeEndpointError::ModelError(model_error))
+                    if model_error
+                        .original_status_code()
+                        .is_some_and(|code| code >= 500) =>
+                {
+                    ProviderError::ServerError(format!(
+                        "SageMaker model invoke failed: {}",
+                        model_error
+                    ))
+                }
+                Some(service_error) => ProviderError::RequestFailed(format!(
+                    "SageMaker invoke failed: {}",
+                    service_error
+                )),
+                None => ProviderError::NetworkError(format!("SageMaker invoke failed: {}", error)),
+            })?;
 
         let response_body = response
             .body

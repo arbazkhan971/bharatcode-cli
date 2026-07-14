@@ -3,16 +3,15 @@
 //! Pure, offline helpers that turn a built BharatCode release binary into the
 //! packaging artifacts a release pipeline needs:
 //!
-//!   * [`nfpm_config`]   — an nfpm-style YAML descriptor that produces both a
-//!                         `.deb` and an `.rpm` for a given version + arch.
-//!   * [`homebrew_formula`] — a minimal Homebrew formula stub embedding the
-//!                         release version and the tarball's SHA-256.
-//!   * [`sha256sums`]    — a GNU-coreutils-style `SHA256SUMS` manifest from a
-//!                         list of `(name, hex)` pairs.
-//!   * [`expected_asset_names`] — the exact `bharatcode-<triple>.tar.bz2` / `.zip`
-//!                         asset names that the self-updater in
-//!                         `commands/update.rs` `asset_name()` expects, kept in
-//!                         lockstep so a rename in either place fails CI.
+//! * [`nfpm_config`] — an nfpm-style YAML descriptor that produces both a `.deb`
+//!   and an `.rpm` for a given version + arch.
+//! * [`homebrew_formula`] — a minimal Homebrew formula stub embedding the release
+//!   version and the tarball's SHA-256.
+//! * [`sha256sums`] — a GNU-coreutils-style `SHA256SUMS` manifest from a list of
+//!   `(name, hex)` pairs.
+//! * [`expected_asset_names`] — the exact `bharatcode-<triple>.tar.bz2` / `.zip`
+//!   asset names that the self-updater in `commands/update.rs` `asset_name()`
+//!   expects, kept in lockstep so a rename in either place fails CI.
 //!
 //! Everything here is a pure function over its inputs: no network, no
 //! filesystem writes, no new dependencies. The actual artifacts are emitted by

@@ -1,10 +1,11 @@
+use crate::release_info;
 use anyhow::{anyhow, Result};
-use console::style;
 use bharatcode_core::config::paths::Paths;
 use bharatcode_core::config::Config;
 use bharatcode_core::conversation::message::Message;
 use bharatcode_core::session::session_manager::{DB_NAME, SESSIONS_FOLDER};
 use bharatcode_providers::errors::ProviderError;
+use console::style;
 use serde_yaml;
 use std::time::Duration;
 
@@ -15,15 +16,6 @@ fn print_aligned(label: &str, value: &str, width: usize) {
 use bharatcode_core::config::base::CONFIG_YAML_NAME;
 use std::fs;
 use std::path::Path;
-
-// Canonical GA release-info source (single source of truth for the GA version,
-// channel, build metadata, and the brand-clean Apache-2.0 attribution line).
-// The module lives at the crate root; `lib.rs` is owned by a sibling in this
-// wave, so it is brought in here — the version-surface call site — via an
-// explicit `#[path]`, exactly as `session/builder.rs` does for the startup
-// banner. Both include the same file, so they share one canonical definition.
-#[path = "../release_info.rs"]
-mod release_info;
 
 fn check_path_status(path: &Path) -> String {
     if path.exists() {
@@ -85,8 +77,9 @@ async fn check_provider(
         }
     };
 
-    let model_config = bharatcode_core::model_config::model_config_from_user_config(&provider, &model)
-        .map_err(|e| ProviderCheckError::InvalidModel(e.to_string()))?;
+    let model_config =
+        bharatcode_core::model_config::model_config_from_user_config(&provider, &model)
+            .map_err(|e| ProviderCheckError::InvalidModel(e.to_string()))?;
 
     let provider_client = bharatcode_core::providers::create(&provider, model_config, Vec::new())
         .await
@@ -175,7 +168,10 @@ pub async fn handle_info(verbose: bool, check: bool) -> Result<()> {
     }
 
     if verbose {
-        println!("\n{}", style("bharatcode Configuration:").color256(208).bold());
+        println!(
+            "\n{}",
+            style("bharatcode Configuration:").color256(208).bold()
+        );
         let values = config.all_values()?;
         if values.is_empty() {
             println!("  No configuration values set");

@@ -1,5 +1,5 @@
-use dotenvy::dotenv;
 use bharatcode_core::conversation::Conversation;
+use dotenvy::dotenv;
 
 use crate::scenario_tests::message_generator::MessageGenerator;
 use crate::scenario_tests::mock_client::weather_client;
@@ -187,7 +187,10 @@ where
 
         let inner_provider = create(
             &factory_name,
-            bharatcode_core::model_config::model_config_from_user_config(&factory_name, config.model_name)?,
+            bharatcode_core::model_config::model_config_from_user_config(
+                &factory_name,
+                config.model_name,
+            )?,
             Vec::new(),
         )
         .await?;

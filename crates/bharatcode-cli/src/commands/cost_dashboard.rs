@@ -93,9 +93,22 @@ fn label(key: &str, default: &str) -> String {
 /// The fill / track glyphs route through [`crate::a11y::glyph_or_word`] so a
 /// screen-reader session gets a spelled-out, still-aligned representation.
 pub fn bar(value: f64, max: f64, width: usize) -> String {
-    let fill_glyph = crate::a11y::glyph_or_word("#", "=");
-    let track_glyph = crate::a11y::glyph_or_word(".", "-");
+    let screen_reader = crate::a11y::is_enabled();
+    let (fill_glyph, track_glyph) = if screen_reader {
+        ('=', '-')
+    } else {
+        ('#', '.')
+    };
+    bar_with_glyphs(value, max, width, fill_glyph, track_glyph)
+}
 
+fn bar_with_glyphs(
+    value: f64,
+    max: f64,
+    width: usize,
+    fill_glyph: char,
+    track_glyph: char,
+) -> String {
     if width == 0 {
         return String::new();
     }
@@ -106,7 +119,11 @@ pub fn bar(value: f64, max: f64, width: usize) -> String {
         0
     };
     let empty = width - filled;
-    format!("{}{}", fill_glyph.repeat(filled), track_glyph.repeat(empty))
+    format!(
+        "{}{}",
+        fill_glyph.to_string().repeat(filled),
+        track_glyph.to_string().repeat(empty)
+    )
 }
 
 /// Display width of `s` ignoring any ANSI styling, so padding maths stay correct
@@ -506,34 +523,30 @@ mod tests {
 
     #[test]
     fn bar_clamps_width_and_survives_zero_max() {
-        // The fill / track glyphs depend on the (process-global) a11y mode, which
-        // a concurrent env-touching test may toggle; derive them here so the
-        // assertions hold regardless of that state.
-        let fill = crate::a11y::glyph_or_word("#", "=");
-        let track = crate::a11y::glyph_or_word(".", "-");
+        let render = |value, max, width| bar_with_glyphs(value, max, width, '#', '.');
 
         // Never wider than the requested width, even when value exceeds max.
-        assert_eq!(visible_width(&bar(10.0, 5.0, 8)), 8);
-        assert_eq!(visible_width(&bar(3.0, 6.0, 12)), 12);
+        assert_eq!(visible_width(&render(10.0, 5.0, 8)), 8);
+        assert_eq!(visible_width(&render(3.0, 6.0, 12)), 12);
 
         // Zero / negative / non-finite max must not panic and must yield an
         // empty (all-track) bar of the requested width.
-        let z = bar(5.0, 0.0, 10);
+        let z = render(5.0, 0.0, 10);
         assert_eq!(visible_width(&z), 10);
         assert!(
-            !z.contains(fill.as_str()),
+            !z.contains('#'),
             "zero-max bar must have no fill, got {z:?}"
         );
-        assert_eq!(z, track.repeat(10));
-        assert_eq!(visible_width(&bar(5.0, -1.0, 10)), 10);
-        assert_eq!(visible_width(&bar(5.0, f64::NAN, 10)), 10);
-        assert_eq!(visible_width(&bar(f64::NAN, 5.0, 10)), 10);
+        assert_eq!(z, ".".repeat(10));
+        assert_eq!(visible_width(&render(5.0, -1.0, 10)), 10);
+        assert_eq!(visible_width(&render(5.0, f64::NAN, 10)), 10);
+        assert_eq!(visible_width(&render(f64::NAN, 5.0, 10)), 10);
 
         // Zero width is a no-op (empty string), never a panic.
-        assert_eq!(bar(5.0, 5.0, 0), "");
+        assert_eq!(render(5.0, 5.0, 0), "");
 
         // A full bar fills the whole track.
-        assert_eq!(bar(5.0, 5.0, 6), fill.repeat(6));
+        assert_eq!(render(5.0, 5.0, 6), "#".repeat(6));
     }
 
     #[test]

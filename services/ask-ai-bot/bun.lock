@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "discraft-bot",
+      "name": "bharatcode-ask-ai-bot",
       "dependencies": {
         "@ai-sdk/anthropic": "^3.0.58",
         "ai": "^6.0.116",

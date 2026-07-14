@@ -159,7 +159,7 @@ pub struct SteerSessionRequest {
 pub struct SteerSessionResponse {
     pub run_id: String,
     /// Stable id of the queued steer message. The same id later appears as
-    /// `messageId` on the streamed `UserMessageChunk` (with `_meta.goose.steer`),
+    /// `messageId` on the streamed `UserMessageChunk` (with `_meta.bharatcode.steer`),
     /// letting clients correlate a queued steer with its pickup.
     pub message_id: String,
 }

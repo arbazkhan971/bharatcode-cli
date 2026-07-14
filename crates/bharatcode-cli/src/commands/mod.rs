@@ -1,6 +1,8 @@
+pub mod analytics_local;
 pub mod audit;
 pub mod bench;
 pub mod budget;
+pub mod catalog;
 pub mod configure;
 pub mod cost;
 pub mod cost_ledger;
@@ -12,6 +14,7 @@ pub mod gateway;
 pub mod gen_docs;
 pub mod git_helper;
 pub mod help_index;
+pub mod indic_format;
 pub mod info;
 pub mod mcp_registry;
 pub mod plugin;
@@ -21,9 +24,11 @@ pub mod project;
 pub mod recipe;
 pub mod recipe_share;
 pub mod recipes_library;
+pub mod repo_profile;
 pub mod review;
 pub mod review_cmd;
 pub mod schedule;
+pub mod serve_sessions;
 pub mod session;
 pub mod skills;
 pub mod term;
@@ -32,6 +37,7 @@ pub mod tui;
 pub mod tutorials;
 #[cfg(feature = "update")]
 pub mod update;
+pub mod usage_analytics;
 
 // Re-export the `gen-docs` entry point so the documentation-draft command is
 // reachable as crate API. The CLI dispatch lives in `cli.rs` (owned by a

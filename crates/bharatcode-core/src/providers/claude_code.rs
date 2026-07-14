@@ -1,9 +1,9 @@
 use anyhow::Result;
 use async_stream::try_stream;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::errors::ProviderError;
+use futures::future::BoxFuture;
 use rmcp::model::{Role, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -350,18 +350,22 @@ impl ClaudeCodeProvider {
     /// Returns true when the control protocol is enabled.
     fn apply_permission_flags(cmd: &mut Command) -> Result<bool, ProviderError> {
         let config = Config::global();
-        let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
+        let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
 
+        Ok(Self::apply_permission_flags_for_mode(cmd, goose_mode))
+    }
+
+    fn apply_permission_flags_for_mode(cmd: &mut Command, goose_mode: GooseMode) -> bool {
         match goose_mode {
             GooseMode::Auto => {
                 cmd.arg("--dangerously-skip-permissions");
-                Ok(false)
+                false
             }
             GooseMode::SmartApprove | GooseMode::Approve => {
                 cmd.arg("--permission-prompt-tool").arg("stdio");
-                Ok(true)
+                true
             }
-            GooseMode::Chat => Ok(false),
+            GooseMode::Chat => false,
         }
     }
 
@@ -970,8 +974,8 @@ impl Provider for ClaudeCodeProvider {
 mod tests {
     use super::*;
     use crate::agents::extension::Envs;
-    use chrono::Utc;
     use bharatcode_test_support::session::TEST_SESSION_ID;
+    use chrono::Utc;
     use serde_json::json;
     use std::collections::HashMap;
     use std::fs;
@@ -1534,5 +1538,44 @@ mod tests {
         let stdin_str = capture_stdin(&provider, stdin_reader).await;
         let response_data = extract_permission_response(&stdin_str, "stale_1");
         assert_eq!(response_data["behavior"], "deny");
+    }
+
+    fn permission_flags(mode: GooseMode) -> (Vec<String>, bool) {
+        let mut cmd = Command::new("claude");
+        let control_protocol = ClaudeCodeProvider::apply_permission_flags_for_mode(&mut cmd, mode);
+        let args = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        (args, control_protocol)
+    }
+
+    #[test_case(GooseMode::Auto, vec!["--dangerously-skip-permissions"], false ; "auto skips permissions")]
+    #[test_case(GooseMode::SmartApprove, vec!["--permission-prompt-tool", "stdio"], true ; "smart_approve prompts")]
+    #[test_case(GooseMode::Approve, vec!["--permission-prompt-tool", "stdio"], true ; "approve prompts")]
+    #[test_case(GooseMode::Chat, vec![], false ; "chat has no permission flags")]
+    fn test_apply_permission_flags_for_mode(
+        mode: GooseMode,
+        expected_args: Vec<&str>,
+        expected_control_protocol: bool,
+    ) {
+        let (args, control_protocol) = permission_flags(mode);
+
+        assert_eq!(args, expected_args);
+        assert_eq!(control_protocol, expected_control_protocol);
+    }
+
+    /// An absent BHARATCODE_MODE must never reach `--dangerously-skip-permissions`;
+    /// full access stays opt-in via an explicit Auto mode.
+    #[test]
+    fn test_default_mode_does_not_skip_permissions() {
+        let (args, control_protocol) = permission_flags(GooseMode::default());
+
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"));
+        assert_eq!(args, vec!["--permission-prompt-tool", "stdio"]);
+        assert!(control_protocol);
     }
 }

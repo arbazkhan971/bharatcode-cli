@@ -1,11 +1,11 @@
 use axum::{
-    extract::Query,
+    extract::{Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,9 +35,12 @@ struct ProxyQuery {
     script_domains: Option<String>,
 }
 
+/// The guest iframe is untrusted MCP app code, so its URL must not carry the server
+/// secret: guest scripts can read their own `window.location`. The nonce is the only
+/// credential here - an unguessable, single-use, TTL-bounded capability that is handed
+/// out solely in response to a secret-authenticated `store_guest_html` call.
 #[derive(Deserialize)]
 struct GuestQuery {
-    secret: String,
     nonce: String,
 }
 
@@ -49,6 +52,11 @@ struct StoreGuestBody {
     csp: Option<String>,
 }
 
+#[derive(Serialize)]
+struct StoreGuestResponse {
+    nonce: String,
+}
+
 const MCP_APP_PROXY_HTML: &str = include_str!("templates/mcp_app_proxy.html");
 
 /// Build the outer sandbox CSP based on declared domains.
@@ -56,6 +64,8 @@ const MCP_APP_PROXY_HTML: &str = include_str!("templates/mcp_app_proxy.html");
 /// This CSP acts as a ceiling - the inner guest UI iframe cannot exceed these
 /// permissions, even if it tried. This is the single source of truth for
 /// security policy enforcement.
+///
+/// Every interpolated domain must already have passed [`normalize_csp_source`].
 ///
 /// Based on the MCP Apps specification (ext-apps SEP):
 /// <https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/draft/apps.mdx>
@@ -113,15 +123,119 @@ fn build_outer_csp(
     )
 }
 
-/// Parse comma-separated domains, filtering out empty strings
+/// Validate a single CSP source expression and normalize it to an origin.
+///
+/// Domains originate in MCP app metadata, which is attacker-controlled. A raw value
+/// reaching the policy could end the directive (`;`), append itself to a directive it
+/// was never meant for (whitespace), smuggle in a keyword such as `'unsafe-eval'`, or
+/// close the `content="..."` attribute of the meta tag the policy is serialized into.
+/// Only scheme-qualified origins and bare host sources survive; everything else is
+/// dropped, which can only ever tighten the resulting policy.
+///
+/// Mirrors the validation in `bharatcode_core::acp::mcp_app_proxy`.
+fn normalize_csp_source(source: &str) -> Option<String> {
+    let source = source.trim();
+    if source.is_empty()
+        || source
+            .chars()
+            .any(|c| c.is_ascii_whitespace() || matches!(c, ';' | ',' | '"' | '\'' | '<' | '>'))
+    {
+        return None;
+    }
+
+    if let Some((scheme, rest)) = source.split_once("://") {
+        let scheme = scheme.to_ascii_lowercase();
+        if !matches!(scheme.as_str(), "http" | "https" | "ws" | "wss") {
+            return None;
+        }
+
+        let authority = rest.split(['/', '?', '#']).next()?;
+        if !is_valid_csp_host_source(authority) {
+            return None;
+        }
+
+        return Some(format!("{scheme}://{}", authority.to_ascii_lowercase()));
+    }
+
+    if is_valid_csp_host_source(source) {
+        return Some(source.to_ascii_lowercase());
+    }
+
+    None
+}
+
+/// A bare `*` is rejected: it would let an app opt out of the ceiling entirely.
+fn is_valid_csp_host_source(source: &str) -> bool {
+    if source.is_empty() || source == "*" || source.contains('@') {
+        return false;
+    }
+
+    let (host, port) = split_host_and_port(source);
+    if host.is_empty() {
+        return false;
+    }
+    if port.is_some_and(|port| port.is_empty() || port.parse::<u16>().is_err()) {
+        return false;
+    }
+
+    let host = host.strip_prefix("*.").unwrap_or(host);
+    if host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::Ipv4Addr>().is_ok()
+        || host.parse::<std::net::Ipv6Addr>().is_ok()
+    {
+        return true;
+    }
+
+    host.contains('.')
+        && host
+            .split('.')
+            .all(|label| is_valid_dns_label(label) && label != "*")
+}
+
+fn split_host_and_port(source: &str) -> (&str, Option<&str>) {
+    if let Some(remainder) = source.strip_prefix('[') {
+        if let Some((host, tail)) = remainder.split_once(']') {
+            let port = tail.strip_prefix(':');
+            return (host, port);
+        }
+    }
+
+    match source.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => (host, Some(port)),
+        _ => (source, None),
+    }
+}
+
+fn is_valid_dns_label(label: &str) -> bool {
+    !label.is_empty()
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Escape a value for interpolation into a double-quoted HTML attribute.
+///
+/// The policy is already source-validated, so this is a second, structural barrier
+/// against attribute breakout rather than the primary defense. Single quotes are left
+/// alone: they delimit every CSP keyword and cannot terminate a double-quoted attribute.
+fn escape_html_attribute(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+/// Parse comma-separated domains, dropping any that are not valid CSP sources
 fn parse_domains(domains: Option<&String>) -> Vec<String> {
     domains
-        .map(|d| {
-            d.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
+        .map(|d| d.split(',').filter_map(normalize_csp_source).collect())
         .unwrap_or_default()
 }
 
@@ -148,21 +262,19 @@ struct AppState {
     )
 )]
 async fn mcp_app_proxy(
-    axum::extract::State(state): axum::extract::State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<ProxyQuery>,
 ) -> Response {
     if params.secret != state.secret_key {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    // Parse domains from query params
     let connect_domains = parse_domains(params.connect_domains.as_ref());
     let resource_domains = parse_domains(params.resource_domains.as_ref());
     let frame_domains = parse_domains(params.frame_domains.as_ref());
     let base_uri_domains = parse_domains(params.base_uri_domains.as_ref());
     let script_domains = parse_domains(params.script_domains.as_ref());
 
-    // Build the outer CSP based on declared domains
     let csp = build_outer_csp(
         &connect_domains,
         &resource_domains,
@@ -171,8 +283,7 @@ async fn mcp_app_proxy(
         &script_domains,
     );
 
-    // Replace the CSP placeholder in the HTML template
-    let html = MCP_APP_PROXY_HTML.replace("{{OUTER_CSP}}", &csp);
+    let html = MCP_APP_PROXY_HTML.replace("{{OUTER_CSP}}", &escape_html_attribute(&csp));
 
     (
         [
@@ -190,7 +301,7 @@ async fn mcp_app_proxy(
 /// Store guest HTML and return a nonce for retrieval.
 /// The proxy page calls this via fetch, then sets the guest iframe src to /mcp-app-guest?nonce=...
 async fn store_guest_html(
-    axum::extract::State(state): axum::extract::State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<StoreGuestBody>,
 ) -> Response {
     if body.secret != state.secret_key {
@@ -221,28 +332,23 @@ async fn store_guest_html(
         store.insert(nonce.clone(), (body.html, csp, Instant::now()));
     }
 
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        format!(r#"{{"nonce":"{}"}}"#, nonce),
-    )
-        .into_response()
+    (StatusCode::OK, Json(StoreGuestResponse { nonce })).into_response()
 }
 
 /// Serve stored guest HTML with a real HTTPS URL.
 /// This gives the guest iframe `window.location.protocol === "https:"`,
 /// which is required by SDKs like Square Web Payments that check for secure context.
+///
+/// Authenticated by the single-use nonce alone - see [`GuestQuery`].
 async fn serve_guest_html(
-    axum::extract::State(state): axum::extract::State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<GuestQuery>,
 ) -> Response {
-    if params.secret != state.secret_key {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
     // Consume the entry (one-time use)
     let entry = {
         let mut store = state.guest_store.write().await;
+        let cutoff = Instant::now() - std::time::Duration::from_secs(GUEST_HTML_TTL_SECS);
+        store.retain(|_, (_, _, created)| *created > cutoff);
         store.remove(&params.nonce)
     };
 
@@ -292,4 +398,286 @@ pub fn routes(secret_key: String) -> Router {
         .route("/mcp-app-guest", get(serve_guest_html))
         .route("/mcp-app-guest", post(store_guest_html))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &str = "super-secret-key";
+
+    fn test_state() -> AppState {
+        AppState {
+            secret_key: SECRET.to_string(),
+            guest_store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    async fn body_string(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    async fn store(state: &AppState, html: &str, csp: Option<&str>) -> String {
+        let response = store_guest_html(
+            State(state.clone()),
+            Json(StoreGuestBody {
+                secret: SECRET.to_string(),
+                html: html.to_string(),
+                csp: csp.map(str::to_string),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        json["nonce"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn normalizes_valid_csp_sources_to_origins() {
+        assert_eq!(
+            normalize_csp_source("https://cdn.example.com/assets/app.js"),
+            Some("https://cdn.example.com".to_string())
+        );
+        assert_eq!(
+            normalize_csp_source("wss://api.example.com/socket"),
+            Some("wss://api.example.com".to_string())
+        );
+        assert_eq!(
+            normalize_csp_source("https://*.squarecdn.com"),
+            Some("https://*.squarecdn.com".to_string())
+        );
+        assert_eq!(
+            normalize_csp_source("localhost:3000"),
+            Some("localhost:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_csp_sources_that_could_alter_the_policy() {
+        // Directive termination / injection of a new directive
+        assert_eq!(normalize_csp_source("example.com; script-src *"), None);
+        assert_eq!(normalize_csp_source("example.com;"), None);
+        // Whitespace smuggles an extra source into the current directive
+        assert_eq!(normalize_csp_source("example.com evil.com"), None);
+        // CSP keywords must never come from app metadata
+        assert_eq!(normalize_csp_source("'unsafe-eval'"), None);
+        assert_eq!(normalize_csp_source("'none'"), None);
+        // Wildcards and dangerous schemes defeat the ceiling
+        assert_eq!(normalize_csp_source("*"), None);
+        assert_eq!(normalize_csp_source("javascript:alert(1)"), None);
+        assert_eq!(normalize_csp_source("data:"), None);
+        // Attribute breakout attempts
+        assert_eq!(normalize_csp_source("evil.com\" onload=\"alert(1)"), None);
+        assert_eq!(normalize_csp_source("evil.com\"><script>"), None);
+        // Malformed hosts
+        assert_eq!(normalize_csp_source("https://user@example.com"), None);
+        assert_eq!(normalize_csp_source("example.com:notaport"), None);
+        assert_eq!(normalize_csp_source(""), None);
+    }
+
+    #[test]
+    fn parse_domains_drops_invalid_sources() {
+        let domains =
+            "https://cdn.example.com/app.js, *, evil.com\" onload=\"x, api.example.com".to_string();
+
+        assert_eq!(
+            parse_domains(Some(&domains)),
+            vec![
+                "https://cdn.example.com".to_string(),
+                "api.example.com".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn escapes_html_attribute_delimiters() {
+        assert_eq!(
+            escape_html_attribute("a\"b<c>d&e"),
+            "a&quot;b&lt;c&gt;d&amp;e"
+        );
+        // CSP keywords must survive verbatim
+        assert_eq!(
+            escape_html_attribute("script-src 'self'"),
+            "script-src 'self'"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_html_cannot_be_injected_through_domain_params() {
+        let response = mcp_app_proxy(
+            State(test_state()),
+            Query(ProxyQuery {
+                secret: SECRET.to_string(),
+                connect_domains: Some("evil.com\" onload=\"alert(1)".to_string()),
+                resource_domains: Some("x; script-src 'unsafe-eval'".to_string()),
+                frame_domains: Some("*".to_string()),
+                base_uri_domains: Some("javascript:alert(1)".to_string()),
+                script_domains: Some("'unsafe-eval'".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_string(response).await;
+        assert!(!body.contains("onload"));
+        assert!(!body.contains("unsafe-eval"));
+        assert!(!body.contains("javascript:"));
+        // Hostile sources are dropped, leaving the default ceiling intact
+        assert!(body.contains("content=\"default-src 'none'; "));
+        assert!(body.contains("frame-src 'self'; "));
+    }
+
+    #[tokio::test]
+    async fn proxy_html_keeps_valid_domains() {
+        let response = mcp_app_proxy(
+            State(test_state()),
+            Query(ProxyQuery {
+                secret: SECRET.to_string(),
+                connect_domains: Some("https://connect.squareup.com".to_string()),
+                resource_domains: None,
+                frame_domains: None,
+                base_uri_domains: None,
+                script_domains: Some("https://*.squarecdn.com".to_string()),
+            }),
+        )
+        .await;
+
+        let body = body_string(response).await;
+        assert!(body.contains("connect-src 'self' https://connect.squareup.com;"));
+        assert!(body.contains("script-src 'self' 'unsafe-inline' https://*.squarecdn.com;"));
+    }
+
+    #[tokio::test]
+    async fn proxy_rejects_wrong_secret() {
+        let response = mcp_app_proxy(
+            State(test_state()),
+            Query(ProxyQuery {
+                secret: "wrong".to_string(),
+                connect_domains: None,
+                resource_domains: None,
+                frame_domains: None,
+                base_uri_domains: None,
+                script_domains: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn guest_html_is_served_by_nonce_alone_and_consumed() {
+        let state = test_state();
+        let nonce = store(&state, "<p>guest</p>", Some("default-src 'none'")).await;
+
+        let response = serve_guest_html(
+            State(state.clone()),
+            Query(GuestQuery {
+                nonce: nonce.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .unwrap(),
+            "default-src 'none'"
+        );
+        assert_eq!(body_string(response).await, "<p>guest</p>");
+
+        let response = serve_guest_html(State(state), Query(GuestQuery { nonce })).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn guest_html_rejects_unknown_nonce() {
+        let response = serve_guest_html(
+            State(test_state()),
+            Query(GuestQuery {
+                nonce: Uuid::new_v4().to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn store_guest_html_rejects_wrong_secret() {
+        let response = store_guest_html(
+            State(test_state()),
+            Json(StoreGuestBody {
+                secret: "wrong".to_string(),
+                html: "<p>guest</p>".to_string(),
+                csp: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn guest_csp_with_control_characters_is_rejected() {
+        let state = test_state();
+        let nonce = store(
+            &state,
+            "<p>guest</p>",
+            Some("default-src 'none'\r\nX-Evil: 1"),
+        )
+        .await;
+
+        let response = serve_guest_html(State(state), Query(GuestQuery { nonce })).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Every sandbox token list the template applies to the guest iframe.
+    fn guest_sandbox_attributes() -> Vec<&'static str> {
+        MCP_APP_PROXY_HTML
+            .split("setAttribute('sandbox', '")
+            .skip(1)
+            .map(|value| {
+                value
+                    .split('\'')
+                    .next()
+                    .expect("unterminated sandbox attribute")
+            })
+            .collect()
+    }
+
+    /// The guest document is untrusted app code. These template invariants keep the server
+    /// secret out of its reach; both are trivial to regress with a one-line edit.
+    #[test]
+    fn guest_iframe_is_isolated_from_the_proxy_origin() {
+        let sandboxes = guest_sandbox_attributes();
+        assert_eq!(sandboxes, vec!["allow-scripts allow-forms"]);
+        assert!(
+            !sandboxes
+                .iter()
+                .any(|sandbox| sandbox.contains("allow-same-origin")),
+            "guest iframe must not be same-origin with the proxy: it could read the \
+             secret from the proxy URL and drive the authenticated REST API"
+        );
+    }
+
+    #[test]
+    fn guest_iframe_url_never_carries_the_secret() {
+        assert!(MCP_APP_PROXY_HTML.contains("'/mcp-app-guest?nonce='"));
+        assert!(
+            !MCP_APP_PROXY_HTML.contains("mcp-app-guest?secret="),
+            "the guest URL is readable by guest scripts and must stay secret-free"
+        );
+        assert!(
+            !MCP_APP_PROXY_HTML.contains(".srcdoc"),
+            "an about:srcdoc guest inherits the proxy URL (which carries the secret) as \
+             its document.referrer; the guest must always load from the nonce URL"
+        );
+    }
 }

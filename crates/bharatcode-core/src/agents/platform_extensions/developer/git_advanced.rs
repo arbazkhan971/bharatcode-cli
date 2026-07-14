@@ -109,7 +109,7 @@ pub fn parse_worktree_porcelain(stdout: &str) -> Vec<WorktreeEntry> {
     let mut entries = Vec::new();
     let mut current: Option<WorktreeEntry> = None;
 
-    let mut flush = |current: &mut Option<WorktreeEntry>, out: &mut Vec<WorktreeEntry>| {
+    let flush = |current: &mut Option<WorktreeEntry>, out: &mut Vec<WorktreeEntry>| {
         if let Some(entry) = current.take() {
             out.push(entry);
         }
@@ -299,7 +299,7 @@ fn op_worktree_list(dir: &Path) -> Result<CallToolResult, String> {
         let head = if e.head.is_empty() {
             "-"
         } else {
-            &e.head[..e.head.len().min(12)]
+            e.head.get(..12).unwrap_or(&e.head)
         };
         let suffix = if flags.is_empty() {
             String::new()
@@ -355,7 +355,7 @@ fn op_blame(
     let mut summary = format!("blame for {resolved_str} ({} line(s)):", lines.len());
     const MAX_PREVIEW: usize = 40;
     for bl in lines.iter().take(MAX_PREVIEW) {
-        let short = &bl.commit[..bl.commit.len().min(8)];
+        let short = bl.commit.get(..8).unwrap_or(&bl.commit);
         summary.push_str(&format!("\n  {short} {:>5}  {}", bl.line, bl.content));
     }
     if lines.len() > MAX_PREVIEW {

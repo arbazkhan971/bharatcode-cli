@@ -184,7 +184,7 @@ pub fn shared_provider_client() -> reqwest::Client {
 /// hardwired), so without a reachable reference it would be a leaf module that
 /// link-time dead-code elimination could discard. This anchor is invoked from
 /// the real provider-construction path (`create_entrypoints`), exercising the
-/// public [`EvalSuite::from_str`] entry point on a trivial in-memory suite so
+/// public [`EvalSuite::parse`] entry point on a trivial in-memory suite so
 /// the parser and its types are genuinely reachable in the running binary.
 ///
 /// It runs no scenarios, performs no I/O, mutates no state, and discards its
@@ -192,8 +192,8 @@ pub fn shared_provider_client() -> reqwest::Client {
 #[inline]
 fn eval_harness_anchor() {
     const ANCHOR_SUITE: &str = r#"{"name":"_anchor","scenarios":[]}"#;
-    debug_assert!(eval_harness::EvalSuite::from_str(ANCHOR_SUITE).is_ok());
-    let _ = eval_harness::EvalSuite::from_str(ANCHOR_SUITE);
+    debug_assert!(eval_harness::EvalSuite::parse(ANCHOR_SUITE).is_ok());
+    let _ = eval_harness::EvalSuite::parse(ANCHOR_SUITE);
 }
 
 /// Thin wrappers around the registry creation entry points that ensure the

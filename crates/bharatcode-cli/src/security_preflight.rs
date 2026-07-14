@@ -549,7 +549,8 @@ mod tests {
         let mut f = std::fs::File::create(&loose).unwrap();
         // Build a fake secret from fragments so push-protection never sees a
         // contiguous token literal.
-        writeln!(f, "openai_api_key: {}{}", "sk-", "FAKEFAKEFAKE0000").unwrap();
+        let fake_suffix = "FAKEFAKEFAKE0000";
+        writeln!(f, "openai_api_key: sk-{fake_suffix}").unwrap();
         std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(
             file_loose_perms(&loose),

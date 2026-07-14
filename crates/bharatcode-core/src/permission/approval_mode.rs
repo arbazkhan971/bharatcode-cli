@@ -199,7 +199,7 @@ impl ApprovalMode {
 /// TODO(approval-mode wiring): make this the single source of truth for the
 /// runtime posture by routing the existing mode readers through it, e.g. wrap
 /// the `Config::get_bharatcode_mode()` consumers in
-/// `crates/goose/src/execution/manager.rs`, `crates/goose/src/gateway/handler.rs`
+/// the execution manager and gateway handler.
 /// and the `providers/*_acp.rs` modules as
 /// `resolve_mode(config.get_bharatcode_mode().unwrap_or(GooseMode::Auto))`.
 /// That integration spans several crates/call sites and changes global behaviour,
@@ -210,6 +210,16 @@ pub fn resolve_mode(fallback: GooseMode) -> GooseMode {
         Some(mode) => mode.to_goose_mode(),
         None => fallback,
     }
+}
+
+/// The [`GooseMode`] a subagent spawned from a parent in `parent_mode` may run in.
+///
+/// A subagent inherits its parent's posture exactly. Subagents run unattended,
+/// so calls that would need a user confirmation are denied instead of waiting.
+/// SmartApprove subagents can still use read-only calls without gaining wider
+/// permissions than their parent.
+pub fn subagent_mode(parent_mode: GooseMode) -> GooseMode {
+    parent_mode
 }
 
 #[cfg(test)]
@@ -304,5 +314,17 @@ mod tests {
         // tests; resolve must return the fallback unchanged in that case.
         std::env::remove_var(APPROVAL_CONFIG_KEY);
         assert_eq!(resolve_mode(GooseMode::Approve), GooseMode::Approve);
+    }
+
+    #[test]
+    fn subagent_mode_is_exact_inheritance() {
+        for parent in [
+            GooseMode::Chat,
+            GooseMode::Approve,
+            GooseMode::SmartApprove,
+            GooseMode::Auto,
+        ] {
+            assert_eq!(subagent_mode(parent), parent);
+        }
     }
 }

@@ -19,7 +19,7 @@ use once_cell::sync::Lazy;
 
 pub use ext_manager::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
 
-// These are used by integration tests in crates/goose/tests/
+// These are used by integration tests in crates/bharatcode-core/tests/.
 #[allow(unused_imports)]
 pub use ext_manager::MANAGE_EXTENSIONS_TOOL_NAME;
 #[allow(unused_imports)]

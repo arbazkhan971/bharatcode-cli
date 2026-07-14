@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use chrono;
 use bharatcode_core::config::Config;
 use bharatcode_core::conversation::message::{Message, MessageContent, MessageMetadata};
 use bharatcode_core::session::{SessionManager, SessionType};
+use chrono;
 use rmcp::model::Role;
 
 use crate::session::{build_session, SessionBuilderConfig};
@@ -351,8 +351,11 @@ pub async fn handle_term_info() -> Result<()> {
                 .get_bharatcode_provider()
                 .ok()
                 .and_then(|provider_name| {
-                    bharatcode_core::model_config::model_config_from_user_config(&provider_name, &model_name)
-                        .ok()
+                    bharatcode_core::model_config::model_config_from_user_config(
+                        &provider_name,
+                        &model_name,
+                    )
+                    .ok()
                 })
         })
         .map(|mc| mc.context_limit())

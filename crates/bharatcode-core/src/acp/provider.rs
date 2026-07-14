@@ -13,8 +13,8 @@ use agent_client_protocol_schema::Usage as AcpUsage;
 use agent_client_protocol_schema::AGENT_METHOD_NAMES;
 use anyhow::{Context, Result};
 use async_stream::try_stream;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
+use futures::future::BoxFuture;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content as RmcpContent, Role, Tool};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -1808,6 +1808,17 @@ mod tests {
     #[test_case(GooseMode::SmartApprove => None ; "smart_approve defers")]
     fn test_permission_decision_from_mode(mode: GooseMode) -> Option<PermissionDecision> {
         permission_decision_from_mode(mode)
+    }
+
+    /// The default mode must defer to a permission prompt rather than auto-allowing;
+    /// only an explicitly selected Auto grants AllowOnce.
+    #[test]
+    fn test_default_mode_does_not_auto_allow() {
+        assert_eq!(permission_decision_from_mode(GooseMode::default()), None);
+        assert_eq!(
+            permission_decision_from_mode(GooseMode::Auto),
+            Some(PermissionDecision::AllowOnce)
+        );
     }
 
     #[test_case(

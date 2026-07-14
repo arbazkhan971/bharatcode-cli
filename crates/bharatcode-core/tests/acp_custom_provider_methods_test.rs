@@ -2,13 +2,13 @@
 #[path = "acp_common_tests/mod.rs"]
 mod common_tests;
 
-use common_tests::fixtures::server::AcpServerConnection;
-use common_tests::fixtures::{run_test, send_custom, Connection, TestConnectionConfig};
 use bharatcode_core::config::base::CONFIG_YAML_NAME;
 use bharatcode_core::config::declarative_providers::load_provider;
 use bharatcode_core::config::paths::Paths;
 use bharatcode_core::config::{Config, ConfigError, DeclarativeProviderConfig};
 use bharatcode_test_support::EnforceSessionId;
+use common_tests::fixtures::server::AcpServerConnection;
+use common_tests::fixtures::{run_test, send_custom, Connection, TestConnectionConfig};
 use serial_test::serial;
 use std::sync::Arc;
 
@@ -84,7 +84,7 @@ fn acp_catalog_and_custom_provider_methods_use_core_provider_store() {
             .and_then(|providers| providers.as_array())
             .expect("setup catalog response should include providers");
         for provider_id in [
-            "goose",
+            "bharatcode",
             "anthropic",
             "openai",
             "claude-acp",
@@ -530,7 +530,8 @@ fn acp_catalog_and_custom_provider_methods_use_core_provider_store() {
 
         for valid_id in ["custom_openai", "openai-compat", "a1"] {
             assert!(
-                bharatcode_core::config::declarative_providers::validate_provider_id(valid_id).is_ok(),
+                bharatcode_core::config::declarative_providers::validate_provider_id(valid_id)
+                    .is_ok(),
                 "provider id should be valid: {valid_id}"
             );
         }

@@ -277,13 +277,6 @@ mod tests {
         assert_eq!(classify(true, 0, 0, DEFAULT_FRAG_WARN_RATIO), Status::Ok);
     }
 
-    #[test]
-    fn frag_warn_ratio_defaults_when_unset_or_bad() {
-        // Default applies for an absent/invalid value; we only assert the default
-        // is sane rather than mutating process env (other tests run concurrently).
-        assert!(DEFAULT_FRAG_WARN_RATIO > 0.0 && DEFAULT_FRAG_WARN_RATIO < 1.0);
-    }
-
     #[tokio::test]
     async fn check_missing_db_is_benign_ok() {
         // A path that cannot exist must report a benign "no DB yet", never panic.

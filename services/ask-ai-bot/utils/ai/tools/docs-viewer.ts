@@ -6,10 +6,7 @@ function getDocsDir(): string {
 }
 
 function generateWebUrl(filePath: string): string {
-  const baseUrl = "https://goose-docs.ai/docs";
-  // Remove file extension for the URL path
-  const urlPath = filePath.replace(/\.[^/.]+$/, "");
-  return `${baseUrl}/${urlPath}`;
+  return `https://github.com/arbazkhan971/bharatcode-cli/blob/main/${filePath}`;
 }
 
 function findDocFile(partialPath: string): string | null {

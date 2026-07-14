@@ -3,7 +3,7 @@ use super::{CompletionCache, HintStatus};
 use anyhow::Result;
 
 // BharatCode v82: right-prompt language indicator + quick `/lang` locale switch.
-// The module lives at crates/goose-cli/src/session/locale_badge.rs and is
+// The module lives at crates/bharatcode-cli/src/session/locale_badge.rs and is
 // CLI-local; it is pulled in here via `#[path]` (the same out-of-tree-module
 // precedent as `plan_file`/`status_line`/`desktop_notify` in `session/mod.rs`)
 // so the only call sites — the prompt label and the slash-command dispatcher in

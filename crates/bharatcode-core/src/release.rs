@@ -99,20 +99,15 @@ pub fn is_ga() -> bool {
 /// The 1.0 GA wave ships on [`Channel::Stable`]; the other variants let a
 /// pre-release build self-identify (selected via [`CHANNEL_ENV`]) without a
 /// code change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Channel {
     /// The stable, supported GA line. Default.
+    #[default]
     Stable,
     /// Pre-release beta.
     Beta,
     /// Bleeding-edge nightly.
     Nightly,
-}
-
-impl Default for Channel {
-    fn default() -> Self {
-        Channel::Stable
-    }
 }
 
 impl Channel {

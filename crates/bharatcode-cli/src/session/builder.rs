@@ -2,7 +2,6 @@ use crate::cli::StreamableHttpOptions;
 
 use super::output;
 use super::CliSession;
-use console::style;
 use bharatcode_core::agents::{Agent, Container, ExtensionError};
 use bharatcode_core::config::resolve_extensions_for_new_session;
 use bharatcode_core::config::{Config, ExtensionConfig, GooseMode};
@@ -11,6 +10,7 @@ use bharatcode_core::providers::create;
 use bharatcode_core::recipe::Recipe;
 use bharatcode_core::session::session_manager::SessionType;
 use bharatcode_core::session::EnabledExtensionsState;
+use console::style;
 use rustyline::EditMode;
 use std::collections::BTreeSet;
 use std::process;
@@ -24,7 +24,7 @@ use tokio::task::JoinSet;
 // second, type-incompatible `A11yProfile`) so the profile we resolve below is
 // the exact type `crate::session::output::set_a11y` consumes. Default (unset)
 // leaves `build_session` output byte-identical.
-use crate::a11y;
+use crate::{a11y, commands::tutorials, release_info, ui_box};
 
 // `session/mod.rs` is a contended shared file in this wave, so the opt-in
 // framework-migration advisory module is declared here, from builder.rs (the
@@ -47,15 +47,6 @@ mod db_preflight;
 #[path = "../security_preflight.rs"]
 mod security_preflight;
 
-// Canonical GA release-info source (semantic GA version, channel, Apache-2.0
-// attribution) and the brand-clean one-line startup banner. Lives at the crate
-// root, but `lib.rs` is owned by a sibling in this wave, so it is declared here
-// (the file that wires the one-time banner into the session build path) via an
-// explicit `#[path]`. The banner is interactive-only and default-quiet under
-// `--quiet`; `BHARATCODE_NO_BANNER` suppresses it.
-#[path = "../release_info.rs"]
-mod release_info;
-
 // Opt-in recipe import/export round-trip hardening lives in an owned crate-root
 // module. It is wired in from builder.rs (the session-build path) via an
 // explicit `#[path]`, avoiding edits to `cli.rs`/`lib.rs`.
@@ -68,21 +59,6 @@ mod recipe_lock;
 // build path) via an explicit `#[path]`.
 #[path = "../commands/git_context.rs"]
 mod git_context;
-
-// Embedded quick-start tutorials and the first-run nudge. Lives under
-// `commands/`, but `commands/mod.rs` is owned by a sibling in this wave, so it
-// is declared here (the file that wires the nudge into the session build path)
-// via an explicit `#[path]`.
-#[path = "../commands/tutorials.rs"]
-mod tutorials;
-
-// Themed boxed-banner / divider drawing helper. Lives at the crate root, but
-// `lib.rs` is owned by a sibling in this wave, so it is declared here (the file
-// that wires the framed welcome banner into the session build path) via an
-// explicit `#[path]`. NO_COLOR- and width-aware; default behaviour is unchanged
-// (the extra frame is opt-in via `BHARATCODE_BANNER_BOX`).
-#[path = "../ui_box.rs"]
-mod ui_box;
 
 // Opt-in, grouped in-app command index (BHARATCODE_HELP_INDEX). Lives under
 // `commands/`, but `commands/mod.rs` is owned by a sibling in this wave, so it
@@ -223,6 +199,10 @@ pub struct SessionBuilderConfig {
     pub container: Option<Container>,
     /// Print generation statistics after headless runs.
     pub stats: bool,
+    /// Mode explicitly requested for this run (e.g. `--yolo`). When set it wins
+    /// over both the resumed session's mode and the configured default; when
+    /// unset the session's own mode, then the configured default, applies.
+    pub goose_mode: Option<GooseMode>,
 }
 
 /// Manual implementation of Default to ensure proper initialization of output_format
@@ -251,8 +231,31 @@ impl Default for SessionBuilderConfig {
             output_format: "text".to_string(),
             container: None,
             stats: false,
+            goose_mode: None,
         }
     }
+}
+
+/// The mode this session actually runs in.
+///
+/// Precedence, strictest source of truth first:
+/// 1. `explicit` — what the user asked for on this run (`--yolo`). Nothing may
+///    override it, in either direction.
+/// 2. `stored` — the mode the session was left in, when resuming or forking.
+///    Without this a resumed session silently reverts to the configured default.
+/// 3. `configured` — the mode from config, which itself defaults to the safe
+///    [`GooseMode::SmartApprove`] when unset.
+///
+/// The bug this replaces: the agent's config-derived mode was written back over
+/// the session unconditionally, so a `--yolo` run (whose mode lives on the
+/// session record) and a resumed approval-gated session were both silently reset
+/// to whatever config said.
+fn effective_goose_mode(
+    explicit: Option<GooseMode>,
+    stored: Option<GooseMode>,
+    configured: GooseMode,
+) -> GooseMode {
+    explicit.or(stored).unwrap_or(configured)
 }
 
 async fn load_extensions(
@@ -382,12 +385,14 @@ fn resolve_provider_and_model(
         }
         config
     } else {
-        let mut config =
-            bharatcode_core::model_config::model_config_from_user_config(&provider_name, &model_name)
-                .unwrap_or_else(|e| {
-                    output::render_error(&format!("Failed to create model configuration: {}", e));
-                    process::exit(1);
-                });
+        let mut config = bharatcode_core::model_config::model_config_from_user_config(
+            &provider_name,
+            &model_name,
+        )
+        .unwrap_or_else(|e| {
+            output::render_error(&format!("Failed to create model configuration: {}", e));
+            process::exit(1);
+        });
         if let Some(temp) = recipe_settings.and_then(|s| s.temperature) {
             config = config.with_temperature(Some(temp));
         }
@@ -541,9 +546,11 @@ async fn collect_extension_configs(
     let mut all: Vec<ExtensionConfig> = configured_extensions;
     if !session_config.no_profile && !session_config.resume && recipe_extensions.is_none() {
         let project_root = std::env::current_dir().ok();
-        all.extend(bharatcode_core::plugins::mcp_servers::enabled_plugin_mcp_servers(
-            project_root.as_deref(),
-        ));
+        all.extend(
+            bharatcode_core::plugins::mcp_servers::enabled_plugin_mcp_servers(
+                project_root.as_deref(),
+            ),
+        );
     }
     all.extend(cli_flag_extensions.into_iter().map(|(_, cfg)| cfg));
 
@@ -689,8 +696,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         .apply_recipe_components(recipe.and_then(|r| r.response.clone()), true)
         .await;
 
-    let session_id =
-        resolve_session_id(&session_config, &session_manager, agent.config.goose_mode).await;
+    // The mode a session this builder creates itself (`--no-session`) is born
+    // with: an explicit `--yolo` must survive that path too.
+    let creation_mode =
+        effective_goose_mode(session_config.goose_mode, None, agent.config.goose_mode);
+    let session_id = resolve_session_id(&session_config, &session_manager, creation_mode).await;
 
     if session_config.resume {
         handle_resumed_session_workdir(&agent, &session_id, session_config.interactive).await;
@@ -789,8 +799,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             process::exit(1);
         });
 
+    let stored_mode = session_manager
+        .get_session(&session_id, false)
+        .await
+        .ok()
+        .map(|session| session.goose_mode);
+
     agent
-        .update_goose_mode(agent.config.goose_mode, &session_id)
+        .update_goose_mode(
+            effective_goose_mode(
+                session_config.goose_mode,
+                stored_mode,
+                agent.config.goose_mode,
+            ),
+            &session_id,
+        )
         .await
         .unwrap_or_else(|e| {
             output::render_error(&format!("Failed to set session mode: {}", e));
@@ -962,6 +985,7 @@ mod tests {
             output_format: "text".to_string(),
             container: None,
             stats: false,
+            goose_mode: None,
         };
 
         assert_eq!(config.extensions.len(), 1);
@@ -995,6 +1019,44 @@ mod tests {
         assert!(!config.interactive);
         assert!(!config.quiet);
         assert!(!config.fork);
+    }
+
+    /// `--yolo` sets the session's mode at creation, so the builder must not write
+    /// the configured default back over it — which is exactly what it used to do.
+    #[test]
+    fn explicit_mode_survives_the_configured_default() {
+        assert_eq!(
+            effective_goose_mode(
+                Some(GooseMode::Auto),
+                Some(GooseMode::SmartApprove),
+                GooseMode::SmartApprove
+            ),
+            GooseMode::Auto
+        );
+    }
+
+    /// Resuming a session keeps the mode it was left in.
+    #[test]
+    fn resumed_mode_survives_the_configured_default() {
+        assert_eq!(
+            effective_goose_mode(None, Some(GooseMode::Approve), GooseMode::SmartApprove),
+            GooseMode::Approve
+        );
+    }
+
+    /// With nothing explicit and no session to inherit from, the configured mode
+    /// applies — and with no config, that is the safe default rather than Auto.
+    #[test]
+    fn absent_config_falls_back_to_a_safe_default() {
+        assert_eq!(
+            effective_goose_mode(None, None, GooseMode::default()),
+            GooseMode::SmartApprove
+        );
+    }
+
+    #[test]
+    fn default_builder_config_requests_no_explicit_mode() {
+        assert_eq!(SessionBuilderConfig::default().goose_mode, None);
     }
 
     #[test]

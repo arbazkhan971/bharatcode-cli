@@ -252,7 +252,7 @@ pub fn render(filter: Option<&str>) -> String {
 
     let mut out = String::new();
 
-    let mut render_group = |label: &str, kind: Kind, out: &mut String| {
+    let render_group = |label: &str, kind: Kind, out: &mut String| {
         let group: Vec<&HelpEntry> = entries.iter().copied().filter(|e| e.kind == kind).collect();
         if group.is_empty() {
             return;

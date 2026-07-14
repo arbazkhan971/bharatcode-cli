@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use sha2::Digest;
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::pin;
@@ -153,6 +153,39 @@ fn get_cache_path() -> PathBuf {
     Paths::in_config_dir("gemini_oauth/tokens.json")
 }
 
+/// Persist OAuth token JSON so only the owner can read it (0600 on Unix).
+///
+/// Goes through a sibling temp file and a rename rather than writing in place:
+/// a mode passed at open time only applies when the file is *created*, so
+/// rewriting an existing cache would otherwise preserve whatever mode it
+/// already carried (0644 from an older build, or a permissive umask). Renaming
+/// swaps in a fresh 0600 inode on every save, and stops a crash mid-write from
+/// leaving a truncated token file behind.
+fn write_token_cache(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("token cache path has no parent: {}", path.display()))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        tmp.write_all(contents.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
+}
+
 impl TokenCache {
     fn new() -> Self {
         let cache_path = get_cache_path();
@@ -173,8 +206,7 @@ impl TokenCache {
             std::fs::create_dir_all(parent)?;
         }
         let contents = serde_json::to_string(data)?;
-        std::fs::write(&self.cache_path, contents)?;
-        Ok(())
+        write_token_cache(&self.cache_path, &contents)
     }
 
     fn clear(&self) {
@@ -1133,5 +1165,70 @@ mod tests {
         assert_eq!(loaded.token.refresh_token, "test-refresh");
         cache.clear();
         assert!(cache.load().is_none());
+    }
+
+    #[cfg(unix)]
+    fn setup_data_fixture(access_token: &str) -> SetupData {
+        SetupData {
+            project_id: "test-project".to_string(),
+            token: TokenData {
+                access_token: access_token.to_string(),
+                refresh_token: "refresh-secret".to_string(),
+                expires_at: Utc::now() + chrono::Duration::hours(1),
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_token_cache_is_not_world_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = TokenCache {
+            cache_path: dir.path().join("tokens.json"),
+        };
+
+        cache.save(&setup_data_fixture("access-secret")).unwrap();
+
+        assert_eq!(
+            mode_of(&cache.cache_path),
+            0o600,
+            "a freshly created token cache must be owner-only"
+        );
+        assert_eq!(
+            cache.load().unwrap().token.access_token,
+            "access-secret",
+            "tightening permissions must not corrupt the payload"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resaving_tightens_a_world_readable_token_cache() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = TokenCache {
+            cache_path: dir.path().join("tokens.json"),
+        };
+
+        // A cache left behind by a build that wrote tokens with std::fs::write.
+        std::fs::write(&cache.cache_path, "{}").unwrap();
+        std::fs::set_permissions(&cache.cache_path, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+
+        cache.save(&setup_data_fixture("rotated-secret")).unwrap();
+
+        assert_eq!(
+            mode_of(&cache.cache_path),
+            0o600,
+            "replacing an existing 0644 cache must not inherit its mode"
+        );
+        assert_eq!(cache.load().unwrap().token.access_token, "rotated-secret");
     }
 }

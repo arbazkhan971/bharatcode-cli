@@ -9,9 +9,9 @@ use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::config::{Config, ConfigError};
 use crate::conversation::message::Message;
 use anyhow::{anyhow, Result};
-use futures::future::BoxFuture;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
+use futures::future::BoxFuture;
 use rmcp::model::Tool;
 
 pub const HUGGINGFACE_API_HOST: &str = "https://router.huggingface.co/v1";

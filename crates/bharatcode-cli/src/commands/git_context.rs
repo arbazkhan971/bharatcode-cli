@@ -220,7 +220,7 @@ fn collect_changed_files(cwd: &Path) -> Vec<String> {
         .filter_map(|line| {
             // Porcelain v1: two status columns, a space, then the path. For
             // renames the path is "old -> new"; we keep the new (right) path.
-            let path = line[3..].trim();
+            let path = line.get(3..).unwrap_or_default().trim();
             let path = path.rsplit(" -> ").next().unwrap_or(path);
             // Skip deletions: there is nothing to blame.
             if line.starts_with(" D") || line.starts_with("D ") {

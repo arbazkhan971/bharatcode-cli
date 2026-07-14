@@ -28,9 +28,9 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
-use chrono::{DateTime, FixedOffset, Utc};
 use bharatcode_core::config::paths::Paths;
 use bharatcode_core::config::Config;
+use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::cost_ledger::{format_inr, format_inr_compact, usd_to_inr};

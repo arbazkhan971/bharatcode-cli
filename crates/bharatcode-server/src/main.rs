@@ -11,12 +11,12 @@ mod tunnel;
 use std::path::PathBuf;
 use std::{backtrace::Backtrace, panic::PanicHookInfo};
 
-use clap::{Parser, Subcommand};
 use bharatcode_core::agents::validate_extensions;
 use bharatcode_mcp::{
     mcp_server_runner::{serve, McpCommand},
     AutoVisualiserRouter, ComputerControllerServer, MemoryServer, TutorialServer,
 };
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]

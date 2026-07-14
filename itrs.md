@@ -27,7 +27,7 @@ Primary references used for this benchmark:
 - OpenCode permissions: https://opencode.ai/docs/permissions/
 - OpenCode TUI: https://opencode.ai/docs/tui/
 - Goose docs: https://goose-docs.ai/
-- Goose CLI commands: https://goose-docs.ai/docs/guides/goose-cli-commands/
+- BharatCode CLI commands: run `bharatcode --help` and `bharatcode <command> --help`.
 - Goose recipes: https://goose-docs.ai/docs/guides/recipes/
 - Goose extensions: https://goose-docs.ai/docs/getting-started/using-extensions/
 - Goose subagents: https://goose-docs.ai/docs/guides/context-engineering/subagents/

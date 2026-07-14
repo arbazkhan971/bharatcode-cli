@@ -15,6 +15,7 @@ use crate::config::Config;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
 use crate::providers::base::{stream_from_single_message, MessageStream, Provider};
+use crate::providers::deadline::{self, StreamGuard};
 use crate::providers::toolshim::{
     augment_message_with_selected_tool_interpreter, convert_tool_messages_to_text,
     modify_system_prompt_for_tool_json, sanitize_residual_markers,
@@ -116,7 +117,11 @@ fn store_completion_on_complete(inner: MessageStream, key: String) -> MessageStr
     })
 }
 
-async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>) -> ProviderError {
+async fn enhance_model_error(
+    error: ProviderError,
+    provider: &Arc<dyn Provider>,
+    guard: &StreamGuard,
+) -> ProviderError {
     let ProviderError::RequestFailed(ref msg) = error else {
         return error;
     };
@@ -126,7 +131,9 @@ async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>)
         return error;
     }
 
-    let Ok(models) = provider.fetch_recommended_models().await else {
+    // The lookup is itself a provider call, so it is guarded too: enriching an
+    // error must never be what parks the turn forever.
+    let Ok(models) = guard.guard(provider.fetch_recommended_models()).await else {
         return error;
     };
     if models.is_empty() {
@@ -154,6 +161,13 @@ async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>)
 ///
 /// This is a thin wrapper called on the real streaming path, so the fallback
 /// feature is genuinely reachable in the running binary.
+///
+/// Every attempt to create a stream is raced by `guard` against the turn's
+/// cancellation token and the stall budget, because `Provider::stream()` can
+/// hang before it ever produces a stream to poll. A guard abort (cancelled /
+/// stalled) is terminal: it is returned as-is rather than being treated as a
+/// fallback-worthy failure, so fallback cannot mask a cancelled turn by
+/// resending the request to another model.
 async fn stream_with_fallback(
     provider: &Arc<dyn Provider>,
     model_config: &bharatcode_providers::model::ModelConfig,
@@ -161,9 +175,10 @@ async fn stream_with_fallback(
     system_prompt: &str,
     messages: &[Message],
     tools: &[Tool],
+    guard: &StreamGuard,
 ) -> Result<MessageStream, ProviderError> {
-    let primary = provider
-        .stream(model_config, session_id, system_prompt, messages, tools)
+    let primary = guard
+        .guard(provider.stream(model_config, session_id, system_prompt, messages, tools))
         .await;
 
     let mut last_err = match primary {
@@ -172,7 +187,10 @@ async fn stream_with_fallback(
     };
 
     let chain = crate::providers::fallback::fallback_chain_from_env();
-    if chain.is_empty() || !crate::providers::fallback::is_fallback_worthy(&last_err) {
+    if chain.is_empty()
+        || deadline::is_abort(&last_err)
+        || !crate::providers::fallback::is_fallback_worthy(&last_err)
+    {
         return Err(last_err);
     }
 
@@ -182,6 +200,7 @@ async fn stream_with_fallback(
         if !crate::providers::fallback::is_fallback_worthy(&last_err) {
             break;
         }
+        guard.check()?;
 
         let provider_name = target
             .provider
@@ -213,11 +232,18 @@ async fn stream_with_fallback(
             "model fallback: retrying request against provider '{}' model '{}'",
             provider_name, target.model
         );
-        match fallback_provider
-            .stream(&fallback_config, session_id, system_prompt, messages, tools)
+        match guard
+            .guard(fallback_provider.stream(
+                &fallback_config,
+                session_id,
+                system_prompt,
+                messages,
+                tools,
+            ))
             .await
         {
             Ok(stream) => return Ok(stream),
+            Err(e) if deadline::is_abort(&e) => return Err(e),
             Err(e) => last_err = e,
         }
     }
@@ -422,8 +448,14 @@ impl Agent {
         Ok((tools, toolshim_tools, system_prompt))
     }
 
+    /// Stream one provider turn.
+    ///
+    /// `guard` carries the turn's cancellation token and stall budget. Both the
+    /// stream-creation await and every `next()` poll of the resulting stream are
+    /// raced against it, so neither can park the agent loop past a cancellation
+    /// or a silent provider.
     #[tracing::instrument(
-        skip(provider, session_id, system_prompt, messages, tools, toolshim_tools),
+        skip(provider, session_id, system_prompt, messages, tools, toolshim_tools, guard),
         fields(session.id = %session_id)
     )]
     pub(crate) async fn stream_response_from_provider(
@@ -433,6 +465,7 @@ impl Agent {
         messages: &[Message],
         tools: &[Tool],
         toolshim_tools: &[Tool],
+        guard: &StreamGuard,
     ) -> Result<MessageStream, ProviderError> {
         let config = provider.get_model_config();
 
@@ -535,22 +568,37 @@ impl Agent {
             system_prompt.as_str(),
             messages_for_provider.messages(),
             &tools,
+            guard,
         )
         .await;
         debug!("WAITING_LLM_STREAM_END");
 
         // If there was an error creating the stream, return a stream that yields that error
-        let mut stream = match stream_result {
+        let stream = match stream_result {
             Ok(s) => s,
             Err(e) => {
-                let enhanced_error = enhance_model_error(e, &provider).await;
+                // Guard aborts are surfaced verbatim: they are terminal, and
+                // enriching them would mean another provider call on a turn the
+                // user already cancelled (or a provider already proven silent).
+                let error = if deadline::is_abort(&e) {
+                    e
+                } else {
+                    enhance_model_error(e, &provider, guard).await
+                };
                 // Return a stream that immediately yields the error
                 // This allows the error to be caught by existing error handling in agent.rs
                 return Ok(Box::pin(try_stream! {
-                    yield Err(enhanced_error)?;
+                    yield Err(error)?;
                 }));
             }
         };
+
+        // Race every poll of the provider stream against cancellation and the
+        // stall budget. Without this, a provider that stops yielding parks the
+        // agent loop inside `stream.next().await`, where its cancellation checks
+        // (which only run between items) can never be reached.
+        let mut stream = guard.guard_stream(stream);
+        let guard = guard.clone();
 
         // Lightweight per-turn streaming throughput meter. Built before the
         // stream is consumed so it captures the full wall time; each yielded
@@ -635,7 +683,7 @@ impl Agent {
                 }
 
                 if let Some(msg) = accumulated_message {
-                    let processed = toolshim_postprocess(msg, &toolshim_tools).await?;
+                    let processed = guard.guard(toolshim_postprocess(msg, &toolshim_tools)).await?;
                     yield (Some(processed), final_usage);
                 } else if final_usage.is_some() {
                     // Preserve usage-only responses (no message content)
@@ -972,6 +1020,184 @@ mod tests {
             let message = Message::assistant().with_text("ok");
             let usage = ProviderUsage::new("mock".to_string(), Usage::default());
             Ok(stream_from_single_message(message, usage))
+        }
+    }
+
+    /// A provider whose `stream()` never returns — the handshake/subprocess hang.
+    struct HangingProvider;
+
+    #[async_trait]
+    impl Provider for HangingProvider {
+        fn get_name(&self) -> &str {
+            "hanging"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("test-model").unwrap()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            std::future::pending().await
+        }
+    }
+
+    /// A provider that opens a stream, yields one chunk, then goes silent forever.
+    struct StallingProvider;
+
+    #[async_trait]
+    impl Provider for StallingProvider {
+        fn get_name(&self) -> &str {
+            "stalling"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("test-model").unwrap()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            Ok(Box::pin(async_stream::stream! {
+                yield Ok((Some(Message::assistant().with_text("hello")), None));
+                let never: Result<(Option<Message>, Option<ProviderUsage>), ProviderError> =
+                    std::future::pending().await;
+                yield never;
+            }))
+        }
+    }
+
+    /// Small enough to keep the test fast; the provider futures it races can
+    /// never complete, so the outcome does not depend on timing.
+    const TEST_BUDGET: std::time::Duration = std::time::Duration::from_millis(20);
+
+    async fn stream_from(
+        provider: Arc<dyn Provider>,
+        guard: &StreamGuard,
+    ) -> Result<MessageStream, ProviderError> {
+        Agent::stream_response_from_provider(provider, "test-session", "sys", &[], &[], &[], guard)
+            .await
+    }
+
+    #[tokio::test]
+    async fn never_returning_stream_creation_aborts_on_the_stall_budget() {
+        use futures::StreamExt;
+
+        let guard = StreamGuard::new(Some(TEST_BUDGET), None);
+        let mut stream = stream_from(Arc::new(HangingProvider), &guard)
+            .await
+            .expect("errors are surfaced through the stream, not the Result");
+
+        let err = stream
+            .next()
+            .await
+            .expect("a hung provider must yield an abort, not park forever")
+            .expect_err("abort must surface as an error");
+        assert!(deadline::is_deadline(&err), "{err}");
+    }
+
+    #[tokio::test]
+    async fn never_returning_stream_creation_aborts_on_cancellation() {
+        use futures::StreamExt;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let guard = StreamGuard::new(None, Some(token));
+
+        let mut stream = stream_from(Arc::new(HangingProvider), &guard)
+            .await
+            .expect("errors are surfaced through the stream, not the Result");
+
+        let err = stream
+            .next()
+            .await
+            .expect("a cancelled turn must yield an abort, not park forever")
+            .expect_err("abort must surface as an error");
+        assert!(deadline::is_cancelled(&err), "{err}");
+    }
+
+    #[tokio::test]
+    async fn never_yielding_stream_poll_aborts_on_the_stall_budget() {
+        use futures::StreamExt;
+
+        let guard = StreamGuard::new(Some(TEST_BUDGET), None);
+        let mut stream = stream_from(Arc::new(StallingProvider), &guard)
+            .await
+            .expect("stream creation succeeds");
+
+        let first = stream
+            .next()
+            .await
+            .expect("first chunk")
+            .expect("first chunk is not an error");
+        assert_eq!(first.0.unwrap().as_concat_text(), "hello");
+
+        let err = stream
+            .next()
+            .await
+            .expect("a silent stream must yield an abort, not park forever")
+            .expect_err("abort must surface as an error");
+        assert!(deadline::is_deadline(&err), "{err}");
+    }
+
+    #[tokio::test]
+    async fn never_yielding_stream_poll_aborts_on_cancellation() {
+        use futures::StreamExt;
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let guard = StreamGuard::new(None, Some(token.clone()));
+        let mut stream = stream_from(Arc::new(StallingProvider), &guard)
+            .await
+            .expect("stream creation succeeds");
+
+        stream
+            .next()
+            .await
+            .expect("first chunk")
+            .expect("first chunk is not an error");
+        token.cancel();
+
+        let err = stream
+            .next()
+            .await
+            .expect("a cancelled turn must yield an abort, not park forever")
+            .expect_err("abort must surface as an error");
+        assert!(deadline::is_cancelled(&err), "{err}");
+    }
+
+    #[tokio::test]
+    async fn guard_aborts_are_never_fallback_worthy() {
+        // Fallback must not mask an abort by resending a cancelled or stalled
+        // request to another model, so aborts must classify as non-retryable.
+        let stalled = StreamGuard::new(Some(TEST_BUDGET), None)
+            .guard(std::future::pending::<Result<(), ProviderError>>())
+            .await
+            .expect_err("stall budget must abort");
+
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let cancelled = StreamGuard::new(None, Some(token))
+            .guard(std::future::pending::<Result<(), ProviderError>>())
+            .await
+            .expect_err("cancellation must abort");
+
+        for err in [stalled, cancelled] {
+            assert!(deadline::is_abort(&err), "{err}");
+            assert!(
+                !crate::providers::fallback::is_fallback_worthy(&err),
+                "{err}"
+            );
         }
     }
 

@@ -11,11 +11,11 @@ use async_stream::try_stream;
 use async_trait::async_trait;
 use axum::{extract::Query, response::Html, routing::get, Router};
 use base64::Engine;
+use bharatcode_providers::errors::ProviderError;
+use bharatcode_providers::model::ModelConfig;
 use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use futures::{StreamExt, TryStreamExt};
-use bharatcode_providers::errors::ProviderError;
-use bharatcode_providers::model::ModelConfig;
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{decode, decode_header, DecodingKey, Validation};
 use reqwest::header::{HeaderName, HeaderValue};
@@ -26,7 +26,7 @@ use sha2::Digest;
 use std::io;
 use std::net::SocketAddr;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use tokio::pin;
 use tokio::sync::{oneshot, Mutex as TokioMutex};
@@ -327,6 +327,39 @@ fn get_cache_path() -> PathBuf {
     Paths::in_config_dir("chatgpt_codex/tokens.json")
 }
 
+/// Persist OAuth token JSON so only the owner can read it (0600 on Unix).
+///
+/// Goes through a sibling temp file and a rename rather than writing in place:
+/// a mode passed at open time only applies when the file is *created*, so
+/// rewriting an existing cache would otherwise preserve whatever mode it
+/// already carried (0644 from an older build, or a permissive umask). Renaming
+/// swaps in a fresh 0600 inode on every save, and stops a crash mid-write from
+/// leaving a truncated token file behind.
+fn write_token_cache(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("token cache path has no parent: {}", path.display()))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        tmp.write_all(contents.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
+}
+
 impl TokenCache {
     pub(crate) fn new() -> Self {
         let cache_path = get_cache_path();
@@ -352,8 +385,7 @@ impl TokenCache {
             std::fs::create_dir_all(parent)?;
         }
         let contents = serde_json::to_string(token_data)?;
-        std::fs::write(&self.cache_path, contents)?;
-        Ok(())
+        write_token_cache(&self.cache_path, &contents)
     }
 
     fn clear(&self) {
@@ -1421,5 +1453,69 @@ mod tests {
         let payload = create_codex_request(&model, "system prompt", &[], &[]).unwrap();
         let instructions = payload["instructions"].as_str().unwrap();
         assert_eq!(instructions, "system prompt");
+    }
+
+    #[cfg(unix)]
+    fn token_data_fixture(access_token: &str) -> TokenData {
+        TokenData {
+            access_token: access_token.to_string(),
+            refresh_token: "refresh-secret".to_string(),
+            id_token: None,
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            account_id: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_token_cache_is_not_world_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = TokenCache {
+            cache_path: dir.path().join("tokens.json"),
+        };
+
+        cache.save(&token_data_fixture("access-secret")).unwrap();
+
+        assert_eq!(
+            mode_of(&cache.cache_path),
+            0o600,
+            "a freshly created token cache must be owner-only"
+        );
+        assert_eq!(
+            cache.load().unwrap().access_token,
+            "access-secret",
+            "tightening permissions must not corrupt the payload"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resaving_tightens_a_world_readable_token_cache() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = TokenCache {
+            cache_path: dir.path().join("tokens.json"),
+        };
+
+        // A cache left behind by a build that wrote tokens with std::fs::write.
+        std::fs::write(&cache.cache_path, "{}").unwrap();
+        std::fs::set_permissions(&cache.cache_path, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+
+        cache.save(&token_data_fixture("rotated-secret")).unwrap();
+
+        assert_eq!(
+            mode_of(&cache.cache_path),
+            0o600,
+            "replacing an existing 0644 cache must not inherit its mode"
+        );
+        assert_eq!(cache.load().unwrap().access_token, "rotated-secret");
     }
 }

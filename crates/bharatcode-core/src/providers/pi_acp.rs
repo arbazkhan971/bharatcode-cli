@@ -56,14 +56,8 @@ impl ProviderDef for PiAcpProvider {
         Box::pin(async move {
             let config = Config::global();
             let resolved_command = SearchPaths::builder().with_npm().resolve(PI_ACP_BINARY)?;
-            let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
-
-            let mode_mapping = HashMap::from([
-                (GooseMode::Auto, "auto".to_string()),
-                (GooseMode::Approve, "approve".to_string()),
-                (GooseMode::SmartApprove, "smart-approve".to_string()),
-                (GooseMode::Chat, "chat".to_string()),
-            ]);
+            let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
+            let mode_mapping = mode_mapping();
 
             let provider_config = AcpProviderConfig {
                 command: resolved_command,
@@ -80,5 +74,31 @@ impl ProviderDef for PiAcpProvider {
             let metadata = Self::metadata();
             AcpProvider::connect(metadata.name, model, goose_mode, provider_config).await
         })
+    }
+}
+
+fn mode_mapping() -> HashMap<GooseMode, String> {
+    HashMap::from([
+        (GooseMode::Auto, "auto".to_string()),
+        (GooseMode::Approve, "approve".to_string()),
+        (GooseMode::SmartApprove, "smart-approve".to_string()),
+        (GooseMode::Chat, "chat".to_string()),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An absent BHARATCODE_MODE must not open the session in "auto".
+    #[test]
+    fn test_default_mode_is_not_auto() {
+        assert_eq!(mode_mapping()[&GooseMode::default()], "smart-approve");
+    }
+
+    /// Explicitly requesting Auto still maps to the agent's "auto" mode.
+    #[test]
+    fn test_auto_mode_remains_auto() {
+        assert_eq!(mode_mapping()[&GooseMode::Auto], "auto");
     }
 }

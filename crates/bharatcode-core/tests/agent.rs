@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures::StreamExt;
 use bharatcode_core::agents::{Agent, AgentEvent, GoosePlatform};
 use bharatcode_core::config::extensions::{set_extension, ExtensionEntry};
+use futures::StreamExt;
 
 #[cfg(test)]
 mod tests {
@@ -13,7 +13,6 @@ mod tests {
     mod schedule_tool_tests {
         use super::*;
         use async_trait::async_trait;
-        use chrono::{DateTime, Utc};
         use bharatcode_core::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME;
         use bharatcode_core::agents::AgentConfig;
         use bharatcode_core::config::permission::PermissionManager;
@@ -21,6 +20,7 @@ mod tests {
         use bharatcode_core::scheduler::{ScheduledJob, SchedulerError};
         use bharatcode_core::scheduler_trait::SchedulerTrait;
         use bharatcode_core::session::{Session, SessionManager};
+        use chrono::{DateTime, Utc};
         use std::path::PathBuf;
         use std::sync::Arc;
         use tempfile::TempDir;
@@ -144,7 +144,7 @@ mod tests {
                 .description
                 .clone()
                 .unwrap_or_default()
-                .contains("Manage goose's internal scheduled recipe execution"));
+                .contains("Manage bharatcode's internal scheduled recipe execution"));
         }
 
         #[tokio::test]
@@ -190,7 +190,7 @@ mod tests {
                 .description
                 .clone()
                 .unwrap_or_default()
-                .contains("Manage goose's internal scheduled recipe execution"));
+                .contains("Manage bharatcode's internal scheduled recipe execution"));
 
             // Verify the tool has the expected actions in its schema
             if let Some(properties) = tool.input_schema.get("properties") {
@@ -861,7 +861,9 @@ mod tests {
         use bharatcode_core::config::permission::PermissionManager;
         use bharatcode_core::config::GooseMode;
         use bharatcode_core::conversation::message::Message;
-        use bharatcode_core::providers::base::{MessageStream, Provider, ProviderDef, ProviderMetadata};
+        use bharatcode_core::providers::base::{
+            MessageStream, Provider, ProviderDef, ProviderMetadata,
+        };
         use bharatcode_core::session::session_manager::SessionType;
         use bharatcode_core::session::SessionManager;
         use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
@@ -1501,7 +1503,9 @@ mod tests {
         use bharatcode_core::config::permission::PermissionManager;
         use bharatcode_core::config::GooseMode;
         use bharatcode_core::conversation::message::Message;
-        use bharatcode_core::providers::base::{stream_from_single_message, MessageStream, Provider};
+        use bharatcode_core::providers::base::{
+            stream_from_single_message, MessageStream, Provider,
+        };
         use bharatcode_core::session::session_manager::SessionType;
         use bharatcode_core::session::SessionManager;
         use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};

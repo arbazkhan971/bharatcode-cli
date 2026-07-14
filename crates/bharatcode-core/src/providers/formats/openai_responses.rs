@@ -2,14 +2,14 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::mcp_utils::extract_text_from_resource;
 use anyhow::Error;
 use async_stream::try_stream;
-use chrono;
-use futures::Stream;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::formats::openai::{
     extract_reasoning_effort, is_openai_responses_model, openai_reasoning_effort_for_thinking,
 };
 use bharatcode_providers::model::ModelConfig;
+use chrono;
+use futures::Stream;
 use rmcp::model::{object, CallToolRequestParams, RawContent, Role, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -962,8 +962,8 @@ where
 mod tests {
     use super::*;
     use crate::conversation::message::MessageContent;
-    use futures::StreamExt;
     use bharatcode_providers::model::ModelConfig;
+    use futures::StreamExt;
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;
 

@@ -1,8 +1,8 @@
 //! CLI wrapper for the analyze platform extension.
 //! Usage: cargo run -p goose --bin analyze_cli -- <path> [--focus <symbol>] [--depth <n>] [--follow <n>] [--force]
 
-use clap::Parser;
 use bharatcode_core::agents::platform_extensions::analyze::{format, graph, AnalyzeClient};
+use clap::Parser;
 use rayon::prelude::*;
 use std::path::PathBuf;
 

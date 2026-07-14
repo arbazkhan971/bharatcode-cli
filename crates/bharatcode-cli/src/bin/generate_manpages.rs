@@ -16,9 +16,9 @@
 //!
 //! Output: target/man/bharatcode.1, target/man/bharatcode-session.1, etc.
 
+use bharatcode_cli::Cli;
 use clap::CommandFactory;
 use clap_mangen::Man;
-use bharatcode_cli::Cli;
 use std::env;
 use std::fs;
 use std::io::Result;

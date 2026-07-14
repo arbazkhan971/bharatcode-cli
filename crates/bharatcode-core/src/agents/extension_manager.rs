@@ -1065,6 +1065,7 @@ impl ExtensionManager {
                 dependencies,
                 ..
             } => {
+                extension_malware_check::ensure_extension_config_trusted(&config)?;
                 let dir = tempdir()?;
                 let file_path = dir.path().join(format!("{}.py", name));
                 temp_dir = Some(dir);

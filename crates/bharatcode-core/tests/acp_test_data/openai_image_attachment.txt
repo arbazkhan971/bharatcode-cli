@@ -34,7 +34,7 @@ data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.c
 
 data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.chunk","created":1773121300,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" Hello"},"finish_reason":null}],"usage":null,"obfuscation":"5"}
 
-data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.chunk","created":1773121300,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" Goose"},"finish_reason":null}],"usage":null,"obfuscation":"b"}
+data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.chunk","created":1773121300,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":" BharatCode"},"finish_reason":null}],"usage":null,"obfuscation":"b"}
 
 data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.chunk","created":1773121300,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"!\n"},"finish_reason":null}],"usage":null,"obfuscation":"EsVy"}
 
@@ -235,4 +235,3 @@ data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.c
 data: {"id":"chatcmpl-DHk8aNO2gKKqlrPxXg3cHSzIBitLf","object":"chat.completion.chunk","created":1773121300,"model":"gpt-5-nano-2025-08-07","service_tier":"default","system_fingerprint":null,"choices":[],"usage":{"prompt_tokens":2768,"completion_tokens":572,"total_tokens":3340,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":448,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}},"obfuscation":"EvMBUZOQw2ps4DX"}
 
 data: [DONE]
-

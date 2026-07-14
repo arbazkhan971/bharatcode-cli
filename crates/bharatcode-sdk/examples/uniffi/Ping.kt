@@ -1,6 +1,6 @@
-package aaif.example
+package dev.bharatcode.example
 
-import aaif.goose.Client
+import dev.bharatcode.sdk.Client
 
 fun main() {
     val client = Client()

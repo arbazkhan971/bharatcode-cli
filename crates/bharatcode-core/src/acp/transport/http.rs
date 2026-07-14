@@ -9,9 +9,12 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
-use super::connection::{Connection, ConnectionRegistry, ResponseRoute};
+use super::connection::{
+    ConnectionGuard, ConnectionRegistry, CreateConnectionError, InitializeOutcome, ResponseRoute,
+    INITIALIZE_TIMEOUT,
+};
 use super::*;
 
 pub(crate) async fn handle_post(
@@ -86,7 +89,9 @@ pub(crate) async fn handle_post(
     }
 
     if let Some(sid) = session_id.as_deref() {
-        connection.ensure_session(sid).await;
+        if !connection.ensure_session(sid).await {
+            return session_limit_response(&connection_id);
+        }
     }
     if is_jsonrpc_request_with_id(&json_message) {
         if let Some(id) = json_message.get("id") {
@@ -111,10 +116,22 @@ pub(crate) async fn handle_post(
     StatusCode::ACCEPTED.into_response()
 }
 
+/// Creates the connection, then holds it under a [`ConnectionGuard`] until the
+/// agent has answered initialize. Every exit before the hand-off — send failure,
+/// agent death, deadline, or the client hanging up mid-request — reclaims the
+/// connection instead of leaving it in the registry.
 async fn handle_initialize(registry: Arc<ConnectionRegistry>, json_message: Value) -> Response {
     let (connection_id, connection) = match registry.create_connection().await {
         Ok(pair) => pair,
-        Err(e) => {
+        Err(CreateConnectionError::AtCapacity) => {
+            let live_connections = registry.active_connections().await;
+            warn!(
+                live_connections,
+                "Rejecting initialize: connection limit reached"
+            );
+            return capacity_response();
+        }
+        Err(CreateConnectionError::Agent(e)) => {
             error!("Failed to create connection: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -124,11 +141,12 @@ async fn handle_initialize(registry: Arc<ConnectionRegistry>, json_message: Valu
         }
     };
 
+    let guard = ConnectionGuard::new(registry, connection_id.clone());
+
     let message_str = serde_json::to_string(&json_message).unwrap();
     trace!(connection_id = %connection_id, payload = %message_str, "initialize → agent");
     if connection.to_agent_tx.send(message_str).await.is_err() {
-        registry.remove(&connection_id).await;
-        connection.shutdown().await;
+        guard.close().await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to forward initialize to agent",
@@ -136,34 +154,37 @@ async fn handle_initialize(registry: Arc<ConnectionRegistry>, json_message: Valu
             .into_response();
     }
 
-    let init_response = {
-        let mut guard = connection.init_receiver.lock().await;
-        let Some(rx) = guard.as_mut() else {
-            registry.remove(&connection_id).await;
-            connection.shutdown().await;
+    let init_response = match connection.await_initialize(INITIALIZE_TIMEOUT).await {
+        InitializeOutcome::Response(msg) => msg,
+        InitializeOutcome::TimedOut => {
+            warn!(connection_id = %connection_id, "Agent did not respond to initialize within {:?}", INITIALIZE_TIMEOUT);
+            guard.close().await;
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Initialize receiver already consumed",
+                StatusCode::GATEWAY_TIMEOUT,
+                "Agent did not respond to initialize",
             )
                 .into_response();
-        };
-        rx.recv().await
-    };
-
-    let init_response = match init_response {
-        Some(msg) => msg,
-        None => {
-            registry.remove(&connection_id).await;
-            connection.shutdown().await;
+        }
+        InitializeOutcome::AgentClosed => {
+            guard.close().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Agent closed before initialize response",
             )
                 .into_response();
         }
+        InitializeOutcome::ReceiverConsumed => {
+            guard.close().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Initialize receiver already consumed",
+            )
+                .into_response();
+        }
     };
 
     connection.start_router().await;
+    guard.disarm();
 
     let mut response = (
         StatusCode::OK,
@@ -204,18 +225,21 @@ pub(crate) async fn handle_get(
 
     let session_id = header_value(&request, HEADER_SESSION_ID);
 
-    let (replay, receiver) = match session_id.as_deref() {
+    let subscription = match session_id.as_deref() {
         Some(sid) => {
-            connection.ensure_session(sid).await;
-            connection
-                .subscribe_session_stream(sid)
-                .await
-                .expect("session stream exists after ensure_session")
+            if !connection.ensure_session(sid).await {
+                return session_limit_response(&connection_id);
+            }
+            connection.subscribe_session_stream(sid).await
         }
-        None => connection.subscribe_connection_stream().await,
+        None => Some(connection.subscribe_connection_stream().await),
     };
 
-    let sse = build_sse_stream(connection.clone(), replay, receiver);
+    let Some((replay, receiver)) = subscription else {
+        return (StatusCode::NOT_FOUND, "Unknown Acp-Session-Id").into_response();
+    };
+
+    let sse = build_sse_stream(replay, receiver);
 
     let mut response = sse.into_response();
     if let Ok(v) = HeaderValue::from_str(&connection_id) {
@@ -229,8 +253,24 @@ pub(crate) async fn handle_get(
     response
 }
 
+fn capacity_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Service Unavailable: connection limit reached",
+    )
+        .into_response()
+}
+
+fn session_limit_response(connection_id: &str) -> Response {
+    warn!(connection_id = %connection_id, "Rejecting request: session limit reached for connection");
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Service Unavailable: session limit reached for this connection",
+    )
+        .into_response()
+}
+
 fn build_sse_stream(
-    _connection: Arc<Connection>,
     replay: Vec<String>,
     mut receiver: broadcast::Receiver<String>,
 ) -> Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
@@ -273,10 +313,9 @@ pub(crate) async fn handle_delete(
             .into_response();
     };
 
-    let Some(connection) = registry.remove(&connection_id).await else {
+    if !registry.close(&connection_id).await {
         return (StatusCode::NOT_FOUND, "Unknown Acp-Connection-Id").into_response();
-    };
-    connection.shutdown().await;
+    }
     info!(connection_id = %connection_id, "Connection terminated via DELETE");
     StatusCode::ACCEPTED.into_response()
 }

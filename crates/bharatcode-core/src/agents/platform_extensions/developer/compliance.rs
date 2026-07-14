@@ -205,24 +205,9 @@ fn is_allowed_token(token: &str, mark: &str, allow: &[&str]) -> bool {
 /// allow-list can reason about them, while still isolating a bare `goose` in
 /// `goose configure`.
 fn tokenize(line: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let bytes = line.as_bytes();
-    let mut start = None;
-    for (i, &b) in bytes.iter().enumerate() {
-        let is_word = b.is_ascii_alphanumeric() || b == b'_';
-        match (is_word, start) {
-            (true, None) => start = Some(i),
-            (false, Some(s)) => {
-                tokens.push(&line[s..i]);
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        tokens.push(&line[s..]);
-    }
-    tokens
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|token| !token.is_empty())
+        .collect()
 }
 
 /// Does `token` contain one of the company [`MARKS`] as a substring

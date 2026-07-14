@@ -27,10 +27,10 @@ use super::oauth_device_flow::{
 use super::openai_compatible::handle_status;
 use super::retry::ProviderRetry;
 use crate::conversation::message::Message;
-use futures::future::BoxFuture;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use rmcp::model::Tool;
 
 const KIMI_CODE_PROVIDER_NAME: &str = "kimi_code";

@@ -3,8 +3,8 @@ use super::base::{ConfigKey, ModelInfo, Provider, ProviderDef, ProviderMetadata,
 use super::inventory::{InventoryIdentityInput, InventoryRegistration, InventoryResolvers};
 use crate::config::{DeclarativeProviderConfig, ExtensionConfig};
 use anyhow::Result;
-use futures::future::BoxFuture;
 use bharatcode_providers::model::ModelConfig;
+use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

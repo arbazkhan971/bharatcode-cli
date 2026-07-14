@@ -14,8 +14,37 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+const SECRET_KEY_ENV: &str = "BHARATCODE_SERVER__SECRET_KEY";
+
 fn boot_marker(message: &str) {
     eprintln!("GOOSED_BOOT: {message}");
+}
+
+fn generate_secret_key() -> String {
+    hex::encode(rand::random::<[u8; 32]>())
+}
+
+/// A blank secret authenticates any caller that sends an equally blank
+/// `X-Secret-Key`, so refuse to start rather than falling back to a generated
+/// secret the operator's clients would not know.
+fn validate_configured_secret(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "{SECRET_KEY_ENV} is set but blank; unset it to use a generated secret, or set a non-empty value"
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+fn resolve_secret_key() -> Result<String> {
+    match std::env::var(SECRET_KEY_ENV) {
+        Ok(configured) => validate_configured_secret(&configured),
+        Err(std::env::VarError::NotPresent) => Ok(generate_secret_key()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{SECRET_KEY_ENV} is set to a value that is not valid unicode")
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -49,8 +78,7 @@ pub async fn run() -> Result<()> {
 
     let settings = configuration::Settings::new()?;
 
-    let secret_key = std::env::var("BHARATCODE_SERVER__SECRET_KEY")
-        .unwrap_or_else(|_| hex::encode(rand::random::<[u8; 32]>()));
+    let secret_key = resolve_secret_key()?;
 
     boot_marker("appstate init start");
     let app_state = state::AppState::new(settings.tls).await?;
@@ -161,4 +189,37 @@ pub async fn run() -> Result<()> {
 
     info!("server shutdown complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generate_secret_key, validate_configured_secret};
+
+    #[test]
+    fn rejects_blank_configured_secret() {
+        for raw in ["", " ", "\t", "\n", "   \r\n "] {
+            assert!(
+                validate_configured_secret(raw).is_err(),
+                "expected {raw:?} to be rejected at startup"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_and_trims_a_real_configured_secret() {
+        assert_eq!(validate_configured_secret("s3cret").unwrap(), "s3cret");
+        assert_eq!(validate_configured_secret("  s3cret\n").unwrap(), "s3cret");
+    }
+
+    #[test]
+    fn generated_secret_stays_valid() {
+        let generated = generate_secret_key();
+        assert_eq!(generated.len(), 64);
+        assert!(generated.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            validate_configured_secret(&generated).unwrap(),
+            generated,
+            "the generated-secret path must survive the new validation unchanged"
+        );
+    }
 }

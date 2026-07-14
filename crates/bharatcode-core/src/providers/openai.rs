@@ -13,7 +13,6 @@ use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::ProviderUsage;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::formats::openai::is_openai_responses_model;
@@ -22,6 +21,7 @@ use bharatcode_providers::formats::openai::{
 };
 use bharatcode_providers::images::ImageFormat;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use reqwest::StatusCode;
 use std::collections::HashMap;
 

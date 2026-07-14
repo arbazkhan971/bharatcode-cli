@@ -11,12 +11,12 @@ use crate::providers::formats::ollama::{create_request, response_to_streaming_me
 use anyhow::{Error, Result};
 use async_stream::try_stream;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
-use futures::TryStreamExt;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::images::ImageFormat;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt, RequestLogHandle};
+use futures::future::BoxFuture;
+use futures::TryStreamExt;
 use reqwest::Response;
 use rmcp::model::Tool;
 use serde_json::{json, Value};

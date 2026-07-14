@@ -196,8 +196,7 @@ fn store(agg: &UsageAggregate) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     std::io::Write::write_all(&mut tmp, serialized.as_bytes())?;
-    tmp.persist(&path)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    tmp.persist(&path).map_err(std::io::Error::other)?;
     Ok(())
 }
 
@@ -209,12 +208,6 @@ fn store(agg: &UsageAggregate) -> std::io::Result<()> {
 /// current day active, and writes it back atomically. Any I/O error is swallowed
 /// — analytics must never break a run.
 //
-// `bump` and `record_turn` are the recording surface for future writers in the
-// agent loop, which live outside the `cost` command's owned files; suppress the
-// not-yet-wired-here dead-code warning in non-test builds. The footer entry
-// point ([`usage_footer`]) is the wired call site reached from `bharatcode
-// cost`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn bump(counter: Counter) {
     if !is_enabled() {
         return;
@@ -228,7 +221,6 @@ pub fn bump(counter: Counter) {
 /// Record one completed agent turn — the most common bump, given its own helper
 /// so call sites read cleanly. Same gating and best-effort semantics as
 /// [`bump`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn record_turn() {
     bump(Counter::Turn);
 }

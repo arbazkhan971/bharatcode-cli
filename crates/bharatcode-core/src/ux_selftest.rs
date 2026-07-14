@@ -88,8 +88,11 @@ fn placeholders(template: &str) -> BTreeSet<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'{' {
-            if let Some(end) = template[i + 1..].find('}') {
-                let token = &template[i + 1..i + 1 + end];
+            let Some(after_open) = template.get(i + 1..) else {
+                break;
+            };
+            if let Some(end) = after_open.find('}') {
+                let token = after_open.get(..end).unwrap_or_default();
                 if !token.is_empty() {
                     set.insert(token.to_string());
                 }

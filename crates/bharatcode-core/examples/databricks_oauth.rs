@@ -1,8 +1,8 @@
 use anyhow::Result;
-use dotenvy::dotenv;
 use bharatcode_core::conversation::message::Message;
 use bharatcode_core::providers::create_with_named_model;
 use bharatcode_core::providers::databricks::DATABRICKS_DEFAULT_MODEL;
+use dotenvy::dotenv;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -21,6 +21,7 @@ use std::sync::LazyLock;
 
 /// Environment variable that opts into accessibility mode.
 const ENABLE_KEY: &str = "BHARATCODE_A11Y";
+const SCREEN_READER_KEY: &str = "BHARATCODE_SCREEN_READER";
 
 /// Environment variable that, when present, implies plain-text / a11y output.
 const NO_COLOR_KEY: &str = "NO_COLOR";
@@ -45,7 +46,7 @@ fn locale_is_hindi() -> bool {
         .unwrap_or_default();
     raw.trim()
         .to_ascii_lowercase()
-        .split(|c| c == '_' || c == '-' || c == '.')
+        .split(['_', '-', '.'])
         .next()
         .map(|primary| primary == "hi")
         .unwrap_or(false)
@@ -80,6 +81,9 @@ fn is_truthy(raw: &str) -> bool {
 /// byte-identical.
 pub fn is_enabled() -> bool {
     if let Ok(raw) = std::env::var(ENABLE_KEY) {
+        return is_truthy(&raw);
+    }
+    if let Ok(raw) = std::env::var(SCREEN_READER_KEY) {
         return is_truthy(&raw);
     }
     if bharatcode_core::config::Config::global()
@@ -347,12 +351,14 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             std::env::remove_var(ENABLE_KEY);
+            std::env::remove_var(SCREEN_READER_KEY);
             std::env::remove_var(NO_COLOR_KEY);
         }
     }
 
     fn clean_env() -> EnvGuard {
         std::env::remove_var(ENABLE_KEY);
+        std::env::remove_var(SCREEN_READER_KEY);
         std::env::remove_var(NO_COLOR_KEY);
         EnvGuard
     }
@@ -382,6 +388,14 @@ mod tests {
         std::env::set_var(ENABLE_KEY, "1");
         assert!(is_enabled());
         assert!(suppress_animations());
+    }
+
+    #[test]
+    fn is_enabled_true_on_screen_reader_flag() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = clean_env();
+        std::env::set_var(SCREEN_READER_KEY, "1");
+        assert!(is_enabled());
     }
 
     #[test]

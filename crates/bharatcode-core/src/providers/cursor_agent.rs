@@ -15,11 +15,11 @@ use crate::config::base::CursorAgentCommand;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
 use crate::subprocess::configure_subprocess;
-use futures::future::BoxFuture;
 use bharatcode_providers::conversation::token_usage::{ProviderUsage, Usage};
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_providers::request_log::{start_log, LoggerHandleExt};
+use futures::future::BoxFuture;
 use rmcp::model::Tool;
 
 const CURSOR_AGENT_PROVIDER_NAME: &str = "cursor-agent";
@@ -54,8 +54,10 @@ impl CursorAgentProvider {
 
     /// Get authentication status from cursor-agent
     async fn get_authentication_status(&self) -> bool {
-        Command::new(&self.command)
-            .arg("status")
+        let mut cmd = Command::new(&self.command);
+        configure_subprocess(&mut cmd);
+        cmd.kill_on_drop(true);
+        cmd.arg("status")
             .output()
             .await
             .ok()
@@ -204,6 +206,9 @@ impl CursorAgentProvider {
 
         let mut cmd = Command::new(&self.command);
         configure_subprocess(&mut cmd);
+        // The turn owns this child. Without this, cancelling the turn drops the
+        // stream future and tokio detaches the cursor-agent CLI, leaving it running.
+        cmd.kill_on_drop(true);
 
         if let Ok(path) = SearchPaths::builder().with_npm().path() {
             cmd.env("PATH", path);
@@ -362,5 +367,125 @@ impl Provider for CursorAgentProvider {
 
         let provider_usage = ProviderUsage::new(model_config.model_name.clone(), usage);
         Ok(stream_from_single_message(message, provider_usage))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(command: PathBuf) -> CursorAgentProvider {
+        CursorAgentProvider {
+            command,
+            model: ModelConfig::new(CURSOR_AGENT_DEFAULT_MODEL).unwrap(),
+            name: CURSOR_AGENT_PROVIDER_NAME.to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_response_extracts_result_text() {
+        let provider = provider(PathBuf::from("cursor-agent"));
+        let lines = vec![
+            r#"{"type":"system","subtype":"init"}"#.to_string(),
+            r#"{"type":"result","result":"the answer is 42","is_error":false}"#.to_string(),
+        ];
+
+        let (message, _usage) = provider.parse_cursor_agent_response(&lines).unwrap();
+        match &message.content[0] {
+            MessageContent::Text(text) => assert_eq!(text.text, "the answer is 42"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    /// cursor-agent's `result` event is never inspected for token counts, so every
+    /// turn bills as zero. Pinned so that implementing usage parsing has to come
+    /// here and flip these expectations deliberately.
+    #[test]
+    fn parse_response_reports_no_token_usage() {
+        let provider = provider(PathBuf::from("cursor-agent"));
+        let lines = vec![
+            r#"{"type":"result","result":"done","is_error":false,"duration_ms":12}"#.to_string(),
+        ];
+
+        let (_message, usage) = provider.parse_cursor_agent_response(&lines).unwrap();
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.total_tokens, None);
+    }
+
+    /// A stand-in `cursor-agent` binary that records its pid and then never exits,
+    /// so a turn awaiting it can be cancelled mid-flight.
+    #[cfg(not(windows))]
+    fn hanging_cli(dir: &std::path::Path, pid_file: &std::path::Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = dir.join("fake-cursor-agent");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(not(windows))]
+    fn read_pid(pid_file: &std::path::Path) -> String {
+        for _ in 0..100 {
+            if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                if !pid.trim().is_empty() {
+                    return pid.trim().to_string();
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("stand-in CLI never recorded its pid");
+    }
+
+    /// Gone or reaped. A zombie counts as exited: the kernel keeps the pid around
+    /// until tokio's orphan reaper collects it.
+    #[cfg(not(windows))]
+    fn wait_for_exit(pid: &str) -> bool {
+        for _ in 0..100 {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .expect("ps should run");
+            let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if stat.is_empty() || stat.starts_with('Z') {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn cancelled_turn_kills_the_cursor_agent_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let provider = provider(hanging_cli(dir.path(), &pid_file));
+
+        let messages = vec![Message::user().with_text("hello")];
+        let turn = provider.execute_command("system", &messages, &[]);
+
+        // The CLI never exits, so the turn is parked reading its stdout when the
+        // timeout drops the future — the same drop that turn cancellation causes.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), turn)
+                .await
+                .is_err(),
+            "stand-in CLI should still be running"
+        );
+
+        let pid = read_pid(&pid_file);
+        assert!(
+            wait_for_exit(&pid),
+            "cursor-agent child {pid} must not outlive the cancelled turn"
+        );
     }
 }

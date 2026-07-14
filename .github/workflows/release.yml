@@ -1,10 +1,23 @@
 # This workflow is main release, needs to be manually tagged & pushed.
+#
+# This is the sole publisher for version tags. release-cli.yml is manual-only so
+# the two never create/update the same release concurrently.
+#
+# Artifact contract (consumed by download_cli.sh, download_cli.ps1 and `bharatcode update`):
+#
+#   bharatcode-<target>[-variant].tar.bz2   installers + updater (Linux/macOS)
+#   bharatcode-<target>[-variant].tar.gz    generic
+#   bharatcode-<target>[-variant].zip       installers + updater (Windows)
+#   bharatcode_<Os>_<Arch>.tar.gz           Homebrew/npm shim aliases (see "Stage shim aliases")
+#   checksums.txt                           sha256 manifest covering *every* asset above
+#
+# checksums.txt is published to both the versioned tag and `stable`. Installers and the
+# updater refuse to extract an archive that is missing from it, so any asset added to a
+# release here must also be added to the checksum globs below or it becomes uninstallable.
 on:
   push:
-    paths-ignore:
-      - "documentation/**"
     tags:
-      - "v1.*"
+      - "v*"
 
 name: Release
 
@@ -16,15 +29,47 @@ permissions:
   attestations: write  # Required for SLSA build provenance attestations
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-publish
+  cancel-in-progress: false
 
 jobs:
+  release-metadata:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      stable: ${{ steps.tag.outputs.stable }}
+    steps:
+      - name: Validate semantic version
+        id: tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH with an optional SemVer prerelease suffix." >&2
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # ------------------------------------
   # 1) Build CLI for multiple OS/Arch
   # ------------------------------------
   build-cli:
+    needs: release-metadata
     uses: ./.github/workflows/build-cli.yml
+    with:
+      version: ${{ needs.release-metadata.outputs.version }}
 
   # ------------------------------------
   # 2) Upload Install CLI Script
@@ -37,64 +82,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: download_cli.sh
-          path: download_cli.sh
-
-  # ------------------------------------------------------------
-  # 3) Bundle Desktop App (macOS)
-  # ------------------------------------------------------------
-  bundle-desktop:
-    uses: ./.github/workflows/bundle-desktop.yml
-    permissions:
-      id-token: write
-      contents: read
-    with:
-      signing: true
-      environment: signing
-    secrets: inherit
-
-  # ------------------------------------------------------------
-  # 4) Bundle Desktop App (macOS)
-  # ------------------------------------------------------------
-  bundle-desktop-intel:
-    uses: ./.github/workflows/bundle-desktop-intel.yml
-    permissions:
-      id-token: write
-      contents: read
-    with:
-      signing: true
-      environment: signing
-    secrets: inherit
-
-  # ------------------------------------------------------------
-  # 5) Bundle Desktop App (Linux)
-  # ------------------------------------------------------------
-  bundle-desktop-linux:
-    uses: ./.github/workflows/bundle-desktop-linux.yml
-
-#  # ------------------------------------------------------------
-#  # 6) Bundle Desktop App (Windows)
-#  # ------------------------------------------------------------
-  bundle-desktop-windows:
-    uses: ./.github/workflows/bundle-desktop-windows.yml
-    permissions:
-      id-token: write
-      contents: read
-      actions: read
-    with:
-      signing: true
-    secrets: inherit
-
-  bundle-desktop-windows-cuda:
-    uses: ./.github/workflows/bundle-desktop-windows.yml
-    permissions:
-      id-token: write
-      contents: read
-      actions: read
-    with:
-      signing: true
-      windows_variant: cuda
-    secrets: inherit
+          name: installers
+          path: |
+            download_cli.sh
+            download_cli.ps1
 
   # ------------------------------------
   # 7) Create/Update GitHub Release
@@ -102,7 +93,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build-cli, install-script, bundle-desktop, bundle-desktop-intel, bundle-desktop-linux, bundle-desktop-windows, bundle-desktop-windows-cuda]
+    needs: [release-metadata, build-cli, install-script]
     permissions:
       contents: write
       id-token: write      # Required for Sigstore OIDC signing
@@ -113,6 +104,49 @@ jobs:
         with:
           merge-multiple: true
 
+      # The Homebrew/npm shims fetch `bharatcode_<Os>_<Arch>.tar.gz`. These are copies of the
+      # standard `.tar.gz` that build-cli already produces (bare `bharatcode` at the tar root,
+      # so `tar -xzf <asset> -C <bin-dir>` still lands `<bin-dir>/bharatcode`). Copying rather
+      # than running a second build means one binary per platform per release instead of two
+      # independently built ones, and the alias shares its digest with the asset it copies.
+      - name: Stage shim aliases
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_alias() {
+            if [ ! -f "$1" ]; then
+              echo "Expected CLI artifact missing: $1" >&2
+              exit 1
+            fi
+            cp "$1" "$2"
+            echo "  $2 <- $1"
+          }
+          stage_alias bharatcode-aarch64-apple-darwin.tar.gz      bharatcode_Darwin_arm64.tar.gz
+          stage_alias bharatcode-x86_64-apple-darwin.tar.gz       bharatcode_Darwin_x86_64.tar.gz
+          stage_alias bharatcode-aarch64-unknown-linux-gnu.tar.gz bharatcode_Linux_arm64.tar.gz
+          stage_alias bharatcode-x86_64-unknown-linux-gnu.tar.gz  bharatcode_Linux_x86_64.tar.gz
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rm -f checksums.txt
+          assets=(
+            bharatcode-*.tar.bz2
+            bharatcode-*.tar.gz
+            bharatcode-*.zip
+            bharatcode_*.tar.gz
+            download_cli.sh
+            download_cli.ps1
+          )
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No release assets found to checksum" >&2
+            exit 1
+          fi
+          sha256sum "${assets[@]}" > checksums.txt
+          cat checksums.txt
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
@@ -120,11 +154,10 @@ jobs:
             bharatcode-*.tar.bz2
             bharatcode-*.tar.gz
             bharatcode-*.zip
-            Goose*.zip
-            *.deb
-            *.rpm
-            *.flatpak
+            bharatcode_*.tar.gz
             download_cli.sh
+            download_cli.ps1
+            checksums.txt
 
       # Create/update the versioned release
       - name: Release versioned
@@ -135,17 +168,19 @@ jobs:
             bharatcode-*.tar.bz2
             bharatcode-*.tar.gz
             bharatcode-*.zip
-            Goose*.zip
-            *.deb
-            *.rpm
-            *.flatpak
+            bharatcode_*.tar.gz
             download_cli.sh
+            download_cli.ps1
+            checksums.txt
           allowUpdates: true
           omitBody: true
-          omitPrereleaseDuringUpdate: true
+          prerelease: ${{ needs.release-metadata.outputs.prerelease }}
 
-      # Create/update the stable release
+      # Create/update the stable release. download_cli.sh and checksums.txt are uploaded
+      # together here, so the script a user curls from `stable` always lands in a release
+      # that carries the manifest that script requires.
       - name: Release stable
+        if: needs.release-metadata.outputs.stable == 'true'
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd  # v1.21.0
         with:
           tag: stable
@@ -155,11 +190,11 @@ jobs:
             bharatcode-*.tar.bz2
             bharatcode-*.tar.gz
             bharatcode-*.zip
-            Goose*.zip
-            *.deb
-            *.rpm
-            *.flatpak
+            bharatcode_*.tar.gz
             download_cli.sh
+            download_cli.ps1
+            checksums.txt
           allowUpdates: true
+          removeArtifacts: true
           omitBody: true
           omitPrereleaseDuringUpdate: true

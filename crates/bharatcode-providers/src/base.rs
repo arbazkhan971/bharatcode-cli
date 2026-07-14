@@ -173,6 +173,48 @@ pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> Mes
     Box::pin(stream)
 }
 
+/// Whether a fast-model failure is worth retrying on the regular model.
+///
+/// Only transient conditions and fast-model capability/availability limits qualify: a regular
+/// model can plausibly succeed where a smaller, cheaper one did not. Everything else fails
+/// closed — retrying would double the cost of a request that is already doomed, and for
+/// `Refusal` or `CreditsExhausted` it would also be user-hostile.
+///
+/// `ProviderError` has no cancellation or invalid-request variant of its own. Cancellation
+/// arrives as `ExecutionError` (that is what `From<anyhow::Error>` produces for any untyped
+/// error), and an invalid request arrives as `RequestFailed`. Both are treated as permanent
+/// rather than distinguished by sniffing the message string, so a cancelled fast call stays
+/// cancelled instead of silently spawning a second call.
+///
+/// The match is deliberately exhaustive: a new `ProviderError` variant breaks this build and
+/// forces an explicit fallback decision instead of defaulting into a retry.
+fn is_fallback_worthy(error: &ProviderError) -> bool {
+    match error {
+        // Transient: the fast model's failure says nothing about the regular model's odds.
+        ProviderError::RateLimitExceeded { .. }
+        | ProviderError::ServerError(_)
+        | ProviderError::NetworkError(_) => true,
+
+        // Capability/availability: the fast model is too small or not served here; the regular
+        // model has its own (typically larger) context window and its own deployment.
+        ProviderError::ContextLengthExceeded(_) | ProviderError::EndpointNotFound(_) => true,
+
+        // Permanent, and identical for the regular model: same credentials, same account
+        // balance, same safety policy, same malformed request.
+        ProviderError::Authentication(_)
+        | ProviderError::CreditsExhausted { .. }
+        | ProviderError::Refusal { .. }
+        | ProviderError::RequestFailed(_) => false,
+
+        // Fail closed. `ExecutionError` is the catch-all that cancellation lands in, and
+        // `NotImplemented`/`UsageError` describe the provider or its response shape rather than
+        // the model — a second call would fail the same way.
+        ProviderError::ExecutionError(_)
+        | ProviderError::NotImplemented(_)
+        | ProviderError::UsageError(_) => false,
+    }
+}
+
 /// Base trait for AI providers (OpenAI, Anthropic, etc)
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -212,7 +254,8 @@ pub trait Provider: Send + Sync {
         collect_stream(stream).await
     }
 
-    /// Try fast model first, fall back to regular model on failure.
+    /// Try fast model first, falling back to the regular model only for failures the regular
+    /// model can plausibly recover from. See [`is_fallback_worthy`].
     async fn complete_fast(
         &self,
         session_id: &str,
@@ -230,7 +273,7 @@ pub trait Provider: Send + Sync {
         match result {
             Ok(response) => Ok(response),
             Err(e) => {
-                if fast_config.model_name != model_config.model_name {
+                if fast_config.model_name != model_config.model_name && is_fallback_worthy(&e) {
                     tracing::warn!(
                         "Fast model {} failed with error: {}. Falling back to regular model {}",
                         fast_config.model_name,
@@ -414,6 +457,7 @@ pub trait Provider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use test_case::test_case;
 
     fn content_from_str(s: String) -> MessageContent {
@@ -549,5 +593,129 @@ mod tests {
         assert_eq!(info.input_token_cost, Some(0.0000025));
         assert_eq!(info.output_token_cost, Some(0.00001));
         assert_eq!(info.currency, Some("$".to_string()));
+    }
+
+    const REGULAR_MODEL: &str = "gpt-4o";
+    const FAST_MODEL: &str = "gpt-4o-mini";
+
+    /// Records every model it is asked to stream with, and fails the first call made with
+    /// `FAST_MODEL`. Any other call succeeds, so the recorded models are exactly the fallback
+    /// path complete_fast took.
+    struct CountingProvider {
+        model_config: ModelConfig,
+        fast_model_error: Mutex<Option<ProviderError>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl CountingProvider {
+        fn new(model_config: ModelConfig, fast_model_error: ProviderError) -> Self {
+            Self {
+                model_config,
+                fast_model_error: Mutex::new(Some(fast_model_error)),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn with_fast_model(fast_model_error: ProviderError) -> Self {
+            let config = ModelConfig::new_or_fail(REGULAR_MODEL)
+                .with_fast_model_config(ModelConfig::new_or_fail(FAST_MODEL));
+            Self::new(config, fast_model_error)
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CountingProvider {
+        fn get_name(&self) -> &str {
+            "counting"
+        }
+
+        async fn stream(
+            &self,
+            model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(model_config.model_name.clone());
+
+            if model_config.model_name == FAST_MODEL {
+                let error = self
+                    .fast_model_error
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("fast model called more than once");
+                return Err(error);
+            }
+
+            let message = Message::new(
+                rmcp::model::Role::Assistant,
+                chrono::Utc::now().timestamp(),
+                vec![MessageContent::text("regular model response")],
+            );
+            let usage = ProviderUsage::new(model_config.model_name.clone(), Usage::default());
+            Ok(stream_from_single_message(message, usage))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+    }
+
+    #[test_case(ProviderError::Authentication("invalid api key".to_string()) ; "authentication")]
+    #[test_case(ProviderError::CreditsExhausted { details: "out of credits".to_string(), top_up_url: None } ; "credits exhausted")]
+    #[test_case(ProviderError::Refusal { details: "declined".to_string(), category: None } ; "refusal")]
+    #[test_case(ProviderError::RequestFailed("status: 400 Bad Request".to_string()) ; "invalid request")]
+    #[test_case(ProviderError::ExecutionError("request cancelled".to_string()) ; "cancellation")]
+    #[test_case(ProviderError::NotImplemented("streaming unsupported".to_string()) ; "not implemented")]
+    #[test_case(ProviderError::UsageError("missing usage".to_string()) ; "usage error")]
+    #[tokio::test]
+    async fn test_complete_fast_permanent_error_makes_one_call(error: ProviderError) {
+        let expected = error.to_string();
+        let provider = CountingProvider::with_fast_model(error);
+
+        let result = provider.complete_fast("session", "system", &[], &[]).await;
+
+        assert_eq!(result.unwrap_err().to_string(), expected);
+        assert_eq!(provider.calls(), vec![FAST_MODEL]);
+    }
+
+    #[test_case(ProviderError::RateLimitExceeded { details: "slow down".to_string(), retry_delay: None } ; "rate limit")]
+    #[test_case(ProviderError::ServerError("500".to_string()) ; "server error")]
+    #[test_case(ProviderError::NetworkError("connection reset".to_string()) ; "network error")]
+    #[test_case(ProviderError::ContextLengthExceeded("too many tokens".to_string()) ; "context length exceeded")]
+    #[test_case(ProviderError::EndpointNotFound("unknown model".to_string()) ; "endpoint not found")]
+    #[tokio::test]
+    async fn test_complete_fast_transient_error_falls_back_to_regular(error: ProviderError) {
+        let provider = CountingProvider::with_fast_model(error);
+
+        let (_, usage) = provider
+            .complete_fast("session", "system", &[], &[])
+            .await
+            .unwrap();
+
+        assert_eq!(usage.model, REGULAR_MODEL);
+        assert_eq!(provider.calls(), vec![FAST_MODEL, REGULAR_MODEL]);
+    }
+
+    #[tokio::test]
+    async fn test_complete_fast_without_fast_model_does_not_retry() {
+        let provider = CountingProvider::new(
+            ModelConfig::new_or_fail(FAST_MODEL),
+            ProviderError::ServerError("500".to_string()),
+        );
+
+        let result = provider.complete_fast("session", "system", &[], &[]).await;
+
+        assert!(matches!(result, Err(ProviderError::ServerError(_))));
+        assert_eq!(provider.calls(), vec![FAST_MODEL]);
     }
 }

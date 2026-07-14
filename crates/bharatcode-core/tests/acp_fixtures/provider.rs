@@ -8,7 +8,6 @@ use agent_client_protocol::schema::{
 };
 use agent_client_protocol::{Channel, Client, ConnectTo, DynConnectTo};
 use async_trait::async_trait;
-use futures::StreamExt;
 use bharatcode_core::acp::{AcpProvider, AcpProviderConfig};
 use bharatcode_core::config::{GooseMode, PermissionManager};
 use bharatcode_core::conversation::message::{ActionRequiredData, Message, MessageContent};
@@ -17,6 +16,7 @@ use bharatcode_core::permission::{Permission, PermissionConfirmation};
 use bharatcode_core::providers::base::Provider;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_test_support::{ExpectedSessionId, IgnoreSessionId, TEST_MODEL};
+use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;

@@ -261,7 +261,8 @@ async fn share_session_nostr(
             .await
             .map_err(|_| StatusCode::NOT_FOUND)?;
 
-        let relays = nostr_share::resolve_relays(request.relays, bharatcode_core::config::Config::global());
+        let relays =
+            nostr_share::resolve_relays(request.relays, bharatcode_core::config::Config::global());
         let share = nostr_share::publish_session_json(&exported, relays)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

@@ -259,10 +259,7 @@ fn label(which: Label) -> String {
 
 fn normalize_locale(raw: &str) -> Locale {
     let lowered = raw.trim().to_ascii_lowercase();
-    let primary = lowered
-        .split(|c| c == '_' || c == '-' || c == '.')
-        .next()
-        .unwrap_or("");
+    let primary = lowered.split(['_', '-', '.']).next().unwrap_or("");
     match primary {
         "hi" => Locale::Hi,
         _ => Locale::En,
@@ -371,8 +368,7 @@ mod tests {
 
     #[test]
     fn suggest_none_when_disabled() {
-        // The default (no env override here) must be off.
-        std::env::remove_var(ENABLE_KEY);
+        let _guard = env_lock::lock_env([(ENABLE_KEY, Some("false"))]);
         let changed = vec![PathBuf::from("src/lib.rs")];
         assert_eq!(suggest_testgen(&changed), None);
     }
@@ -383,7 +379,7 @@ mod tests {
         let lib = dir.join("lib.rs");
         std::fs::write(&lib, "pub fn add() {}\n").unwrap();
 
-        let _guard = EnvGuard::set(ENABLE_KEY, "1");
+        let _guard = env_lock::lock_env([(ENABLE_KEY, Some("1"))]);
         let changed = vec![lib.clone()];
         let out = suggest_testgen(&changed).expect("advisory expected when enabled");
         assert!(
@@ -404,7 +400,7 @@ mod tests {
         )
         .unwrap();
 
-        let _guard = EnvGuard::set(ENABLE_KEY, "true");
+        let _guard = env_lock::lock_env([(ENABLE_KEY, Some("true"))]);
         let changed = vec![src.clone()];
         assert_eq!(suggest_testgen(&changed), None);
 
@@ -421,7 +417,7 @@ mod tests {
             changed.push(f);
         }
 
-        let _guard = EnvGuard::set(ENABLE_KEY, "yes");
+        let _guard = env_lock::lock_env([(ENABLE_KEY, Some("yes"))]);
         let out = suggest_testgen(&changed).expect("advisory expected");
         let listed = out.matches(".rs").count();
         assert_eq!(listed, MAX_LISTED, "should cap the listed files: {out}");
@@ -435,23 +431,5 @@ mod tests {
         assert!(matches!(normalize_locale("hi_IN.UTF-8"), Locale::Hi));
         assert!(matches!(normalize_locale("en_US"), Locale::En));
         assert!(matches!(normalize_locale("fr"), Locale::En));
-    }
-
-    /// Minimal scoped env setter so enable/disable tests don't leak state.
-    struct EnvGuard {
-        key: &'static str,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> EnvGuard {
-            std::env::set_var(key, value);
-            EnvGuard { key }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            std::env::remove_var(self.key);
-        }
     }
 }

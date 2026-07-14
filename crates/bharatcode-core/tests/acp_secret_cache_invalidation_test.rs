@@ -2,8 +2,6 @@
 #[path = "acp_common_tests/mod.rs"]
 mod common_tests;
 
-use common_tests::fixtures::server::AcpServerConnection;
-use common_tests::fixtures::{run_test, send_custom, Connection, TestConnectionConfig};
 use bharatcode_core::config::paths::Paths;
 use bharatcode_core::config::{Config, ConfigError};
 use bharatcode_core::providers::base::{MessageStream, Provider};
@@ -12,6 +10,8 @@ use bharatcode_core::session::session_manager::SessionStorage;
 use bharatcode_providers::errors::ProviderError;
 use bharatcode_providers::model::ModelConfig;
 use bharatcode_test_support::EnforceSessionId;
+use common_tests::fixtures::server::AcpServerConnection;
+use common_tests::fixtures::{run_test, send_custom, Connection, TestConnectionConfig};
 use serial_test::serial;
 use std::sync::Arc;
 

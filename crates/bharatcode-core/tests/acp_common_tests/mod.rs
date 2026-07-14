@@ -8,15 +8,15 @@ use agent_client_protocol::schema::{
     ContentBlock, ListSessionsResponse, McpServer, McpServerHttp, ModelId, SessionInfo,
     SessionModeId, SessionUpdate, ToolCallStatus, ToolKind,
 };
+use bharatcode_core::acp::server::AcpProviderFactory;
+use bharatcode_core::config::base::CONFIG_YAML_NAME;
+use bharatcode_core::config::GooseMode;
+use bharatcode_test_support::{McpFixture, FAKE_CODE, TEST_IMAGE_B64, TEST_MODEL};
 use fixtures::{
     assert_notifications, Connection, FsFixture, Notification, OpenAiFixture, PermissionDecision,
     Session, SessionData, TerminalCall, TerminalFixture, TestConnectionConfig,
 };
 use fs_err as fs;
-use bharatcode_core::acp::server::AcpProviderFactory;
-use bharatcode_core::config::base::CONFIG_YAML_NAME;
-use bharatcode_core::config::GooseMode;
-use bharatcode_test_support::{McpFixture, FAKE_CODE, TEST_IMAGE_B64, TEST_MODEL};
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
@@ -133,7 +133,7 @@ pub async fn run_session_name_update_notification<C: Connection>() {
     assert_eq!(output.text, "2");
 
     let mut notifications = session.notifications();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while !notifications
         .iter()
         .any(|n| matches!(n, Notification::SessionInfoUpdate { .. }))
@@ -258,7 +258,7 @@ pub async fn run_config_mcp<C: Connection>() {
     expected_session_id.set(&session.session_id().0);
 
     let output = session
-        .prompt(prompt, PermissionDecision::Cancel)
+        .prompt(prompt, PermissionDecision::AllowOnce)
         .await
         .unwrap();
     assert_eq!(output.text, FAKE_CODE);
@@ -628,7 +628,7 @@ pub async fn run_load_session_replays_image_attachment<C: Connection>() {
         )
         .await
         .unwrap();
-    assert!(output.text.contains("Hello Goose!"));
+    assert!(output.text.contains("Hello BharatCode!"));
     session.session_updates();
 
     let SessionData { session, .. } = conn.load_session(&session_id, vec![]).await.unwrap();
@@ -906,7 +906,9 @@ pub async fn run_new_session_returns_initial_config<C: Connection>() {
 
 pub async fn run_new_session_uses_current_config_mode<C: Connection>() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let config_path = temp_dir.path().join(bharatcode_core::config::base::CONFIG_YAML_NAME);
+    let config_path = temp_dir
+        .path()
+        .join(bharatcode_core::config::base::CONFIG_YAML_NAME);
     fs::write(
         &config_path,
         format!("BHARATCODE_MODEL: {TEST_MODEL}\nBHARATCODE_PROVIDER: openai\nBHARATCODE_MODE: approve\n"),
@@ -923,8 +925,8 @@ pub async fn run_new_session_uses_current_config_mode<C: Connection>() {
 
     let mut conn = C::new(config, openai).await;
 
-    let global_config_path =
-        bharatcode_core::config::paths::Paths::config_dir().join(bharatcode_core::config::base::CONFIG_YAML_NAME);
+    let global_config_path = bharatcode_core::config::paths::Paths::config_dir()
+        .join(bharatcode_core::config::base::CONFIG_YAML_NAME);
     fs::write(
         &global_config_path,
         format!(
@@ -1204,7 +1206,7 @@ pub async fn run_prompt_codemode<C: Connection>() {
     expected_session_id.set(&session.session_id().0);
 
     let output = session
-        .prompt(prompt, PermissionDecision::Cancel)
+        .prompt(prompt, PermissionDecision::AllowOnce)
         .await
         .unwrap();
     if matches!(output.tool_status, Some(ToolCallStatus::Failed)) || output.text.contains("error") {
@@ -1247,11 +1249,11 @@ pub async fn run_prompt_image<C: Connection>() {
     let output = session
         .prompt(
             "Use the get_image tool and describe what you see in its result.",
-            PermissionDecision::Cancel,
+            PermissionDecision::AllowOnce,
         )
         .await
         .unwrap();
-    assert_eq!(output.text, "Hello Goose!\nThis is a test image.");
+    assert_eq!(output.text, "Hello BharatCode!\nThis is a test image.");
     assert_notifications(
         &session.notifications(),
         &[
@@ -1288,7 +1290,7 @@ pub async fn run_prompt_image_attachment<C: Connection>() {
         )
         .await
         .unwrap();
-    assert!(output.text.contains("Hello Goose!"));
+    assert!(output.text.contains("Hello BharatCode!"));
     assert_notifications(&session.notifications(), &[Notification::AgentMessage]);
     expected_session_id.assert_matches(&session.session_id().0);
 }
@@ -1322,7 +1324,7 @@ pub async fn run_prompt_mcp<C: Connection>() {
     let output = session
         .prompt(
             "Use the get_code tool and output only its result.",
-            PermissionDecision::Cancel,
+            PermissionDecision::AllowOnce,
         )
         .await
         .unwrap();

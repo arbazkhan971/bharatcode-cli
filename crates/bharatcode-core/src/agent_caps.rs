@@ -115,20 +115,10 @@ impl AgentCaps {
     }
 }
 
-/// Resolve the agent-capability toggles from the global config.
-pub fn resolve() -> AgentCaps {
-    AgentCaps::from_config(Config::global())
-}
-
-/// One `key = on/off` row per capability, in registration order, for display in
-/// `bharatcode configure`/doctor. The planner-model override additionally shows
-/// the selected model when one is set.
-pub fn summary_lines() -> Vec<String> {
-    summary_lines_for(&resolve())
-}
-
-/// Like [`summary_lines`] but resolved from a specific `Config` rather than the
-/// global one. This is the real call site reached from `Config`'s public API.
+/// One `key = on/off` row per capability, in registration order, resolved from
+/// a specific config. The planner-model override additionally shows the selected
+/// model when one is set. This is the real call site reached from `Config`'s
+/// public API.
 pub fn summary_lines_for_config(config: &Config) -> Vec<String> {
     summary_lines_for(&AgentCaps::from_config(config))
 }
@@ -166,7 +156,7 @@ mod tests {
     #[test]
     fn resolve_defaults_to_all_off() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        let caps = resolve();
+        let caps = AgentCaps::from_config(Config::global());
         assert_eq!(caps, AgentCaps::default());
         assert!(!caps.subagents);
         assert!(!caps.plan_file);
@@ -181,7 +171,7 @@ mod tests {
         let mut keys = all_keys_unset();
         keys[0] = (SUBAGENTS_KEY, Some("1"));
         let _guard = env_lock::lock_env(keys);
-        let caps = resolve();
+        let caps = AgentCaps::from_config(Config::global());
         assert!(caps.subagents);
         // Other toggles stay off.
         assert!(!caps.plan_file);
@@ -193,14 +183,14 @@ mod tests {
         let mut keys = all_keys_unset();
         keys[4] = (PLANNER_MODEL_KEY, Some("planner-x"));
         let _guard = env_lock::lock_env(keys);
-        let caps = resolve();
+        let caps = AgentCaps::from_config(Config::global());
         assert_eq!(caps.planner_model.as_deref(), Some("planner-x"));
     }
 
     #[test]
     fn summary_lines_match_keys() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        let lines = summary_lines();
+        let lines = summary_lines_for_config(Config::global());
         assert_eq!(lines.len(), CAP_KEYS.len());
         for key in CAP_KEYS {
             assert!(
@@ -233,6 +223,6 @@ mod tests {
         let mut keys = all_keys_unset();
         keys[2] = (CODEBASE_INDEX_KEY, Some("maybe"));
         let _guard = env_lock::lock_env(keys);
-        assert!(!resolve().codebase_index);
+        assert!(!AgentCaps::from_config(Config::global()).codebase_index);
     }
 }

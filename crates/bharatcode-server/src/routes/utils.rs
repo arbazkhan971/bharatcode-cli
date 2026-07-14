@@ -252,7 +252,9 @@ fn accepts_huggingface_oauth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bharatcode_core::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
+    use bharatcode_core::config::declarative_providers::{
+        DeclarativeProviderConfig, ProviderEngine,
+    };
     use bharatcode_core::providers::base::ModelInfo;
 
     fn huggingface_metadata() -> ProviderMetadata {

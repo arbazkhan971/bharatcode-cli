@@ -117,11 +117,6 @@ impl UxPrefs {
     }
 }
 
-/// Resolve the UX preferences from the global config.
-pub fn resolve() -> UxPrefs {
-    UxPrefs::from_config(Config::global())
-}
-
 /// Resolve a user-facing label, preferring the i18n `tr!` macro when present and
 /// otherwise falling back to the supplied English string. The macro does not yet
 /// exist in every build, so the fallback keeps this module compiling and
@@ -147,11 +142,6 @@ fn on_off(enabled: bool) -> &'static str {
 /// names. This is the real call site reached from `Config`'s public API.
 pub fn summary_lines_for_config(config: &Config) -> Vec<String> {
     summary_lines_for(&UxPrefs::from_config(config))
-}
-
-/// Like [`summary_lines_for_config`] but resolved from the global config.
-pub fn summary_lines() -> Vec<String> {
-    summary_lines_for(&resolve())
 }
 
 fn summary_lines_for(prefs: &UxPrefs) -> Vec<String> {
@@ -188,7 +178,7 @@ mod tests {
     #[test]
     fn from_config_empty_yields_all_defaults() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        let prefs = resolve();
+        let prefs = UxPrefs::from_config(Config::global());
         assert_eq!(prefs, UxPrefs::default());
         assert_eq!(prefs.lang, "en");
         assert_eq!(prefs.theme, "default");
@@ -208,7 +198,7 @@ mod tests {
         keys[2] = (A11Y_KEY, Some("1"));
         keys[3] = (NOTIFY_KEY, Some("1"));
         let _guard = env_lock::lock_env(keys);
-        let prefs = resolve();
+        let prefs = UxPrefs::from_config(Config::global());
         assert!(prefs.a11y);
         assert!(prefs.notify);
         // Unset toggles stay at their defaults.
@@ -221,7 +211,7 @@ mod tests {
         let mut keys = all_keys_unset();
         keys[5] = (NO_NUDGE_KEY, Some("1"));
         let _guard = env_lock::lock_env(keys);
-        assert!(!resolve().nudge);
+        assert!(!UxPrefs::from_config(Config::global()).nudge);
     }
 
     #[test]
@@ -230,7 +220,7 @@ mod tests {
         keys[0] = (LANG_KEY, Some("hi"));
         keys[1] = (THEME_KEY, Some("dark"));
         let _guard = env_lock::lock_env(keys);
-        let prefs = resolve();
+        let prefs = UxPrefs::from_config(Config::global());
         assert_eq!(prefs.lang, "hi");
         assert_eq!(prefs.theme, "dark");
     }
@@ -238,7 +228,7 @@ mod tests {
     #[test]
     fn summary_has_one_line_per_pref_and_no_brand_leakage() {
         let _guard = env_lock::lock_env(all_keys_unset());
-        let lines = summary_lines();
+        let lines = summary_lines_for_config(Config::global());
         // One line per preference field.
         assert_eq!(lines.len(), 6);
         // Localization-agnostic English labels, no donor/upstream brand names.
@@ -261,6 +251,6 @@ mod tests {
         let mut keys = all_keys_unset();
         keys[4] = (COST_DASHBOARD_KEY, Some("maybe"));
         let _guard = env_lock::lock_env(keys);
-        assert!(!resolve().cost_dashboard);
+        assert!(!UxPrefs::from_config(Config::global()).cost_dashboard);
     }
 }

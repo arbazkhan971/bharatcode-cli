@@ -75,6 +75,10 @@ impl GooseAcpAgent {
         req: AddConfigExtensionRequest,
     ) -> Result<EmptyResponse, agent_client_protocol::Error> {
         let conversion = goose_extension_to_config(req.extension)?;
+        crate::agents::extension_malware_check::ensure_extension_config_trusted(&conversion.config)
+            .map_err(|error| {
+                agent_client_protocol::Error::invalid_params().data(error.to_string())
+            })?;
 
         Config::global()
             .set_secret_values(&conversion.secret_updates)

@@ -57,16 +57,8 @@ impl ProviderDef for AmpAcpProvider {
         Box::pin(async move {
             let config = Config::global();
             let resolved_command = SearchPaths::builder().with_npm().resolve(AMP_ACP_BINARY)?;
-            let goose_mode = config.get_bharatcode_mode().unwrap_or(GooseMode::Auto);
-
-            let mode_mapping = HashMap::from([
-                // "bypass" skips confirmations, closest to autonomous mode.
-                (GooseMode::Auto, "bypass".to_string()),
-                // "default" prompts before risky actions.
-                (GooseMode::Approve, "default".to_string()),
-                (GooseMode::SmartApprove, "default".to_string()),
-                (GooseMode::Chat, "default".to_string()),
-            ]);
+            let goose_mode = config.get_bharatcode_mode().unwrap_or_default();
+            let mode_mapping = mode_mapping();
 
             let provider_config = AcpProviderConfig {
                 command: resolved_command,
@@ -83,5 +75,33 @@ impl ProviderDef for AmpAcpProvider {
             let metadata = Self::metadata();
             AcpProvider::connect(metadata.name, model, goose_mode, provider_config).await
         })
+    }
+}
+
+fn mode_mapping() -> HashMap<GooseMode, String> {
+    HashMap::from([
+        // "bypass" skips confirmations, closest to autonomous mode.
+        (GooseMode::Auto, "bypass".to_string()),
+        // "default" prompts before risky actions.
+        (GooseMode::Approve, "default".to_string()),
+        (GooseMode::SmartApprove, "default".to_string()),
+        (GooseMode::Chat, "default".to_string()),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An absent BHARATCODE_MODE must not open the session in "bypass".
+    #[test]
+    fn test_default_mode_does_not_bypass_confirmations() {
+        assert_eq!(mode_mapping()[&GooseMode::default()], "default");
+    }
+
+    /// Explicitly requesting Auto still bypasses confirmations.
+    #[test]
+    fn test_auto_mode_remains_bypass() {
+        assert_eq!(mode_mapping()[&GooseMode::Auto], "bypass");
     }
 }

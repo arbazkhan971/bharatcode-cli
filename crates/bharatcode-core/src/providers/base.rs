@@ -1,9 +1,9 @@
 use super::api_client::TlsConfig;
 use anyhow::Result;
-use futures::future::BoxFuture;
 pub use bharatcode_providers::conversation::token_usage::{
     DraftStats, ProviderStats, ProviderUsage, Usage,
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 /// Default HTTP timeout for all provider API calls.

@@ -60,7 +60,7 @@ pub fn lookup(key: &str) -> Option<String> {
 fn token_is_marathi(raw: &str) -> bool {
     raw.trim()
         .to_ascii_lowercase()
-        .split(|c| c == '_' || c == '-' || c == '.')
+        .split(['_', '-', '.'])
         .next()
         .map(|primary| primary == MR_TAG)
         .unwrap_or(false)

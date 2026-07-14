@@ -113,7 +113,6 @@ pub enum UsageEvent<'a> {
 
 /// A ₹-spend event, kept separate from [`UsageEvent`] so it can carry the
 /// numeric amount (a count of paise/rupees, never text) bucketed by IST day.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpendEvent {
     /// Rupee amount for this spend, bucketed under the current IST day.
@@ -205,8 +204,7 @@ fn store(agg: &Aggregate) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     std::io::Write::write_all(&mut tmp, serialized.as_bytes())?;
-    tmp.persist(&path)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    tmp.persist(&path).map_err(std::io::Error::other)?;
     Ok(())
 }
 
@@ -216,12 +214,6 @@ fn store(agg: &Aggregate) -> std::io::Result<()> {
 /// so the default behaviour is untouched. When enabled, loads the aggregate,
 /// folds in the event, and writes it back atomically. Any I/O error is
 /// swallowed — analytics must never break a run.
-//
-// The recording API is part of this module's public surface; the agent loop's
-// call sites live outside the `cost` command's owned files, so suppress the
-// not-yet-wired-here dead-code warning in non-test builds. The footer entry
-// point ([`analytics_footer`]) is the wired call site reached from `cost`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn record(event: UsageEvent) {
     if !is_enabled() {
         return;
@@ -235,7 +227,6 @@ pub fn record(event: UsageEvent) {
 /// Record one ₹-spend event into the local aggregate, bucketed by IST day.
 ///
 /// Same gating and best-effort semantics as [`record`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn record_spend(spend: SpendEvent) {
     if !is_enabled() {
         return;

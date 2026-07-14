@@ -135,19 +135,19 @@ fn endpoint_host(endpoint: &str) -> Option<String> {
             return Some(host.to_ascii_lowercase());
         }
     }
-    let mut host = trimmed.to_ascii_lowercase();
-    if let Some(idx) = host.find("://") {
-        host = host[idx + 3..].to_string();
+    let mut host = trimmed;
+    if let Some((_, after_scheme)) = host.split_once("://") {
+        host = after_scheme;
     }
-    if let Some(idx) = host.find('/') {
-        host = host[..idx].to_string();
+    if let Some((before_path, _)) = host.split_once('/') {
+        host = before_path;
     }
     if !host.starts_with('[') {
-        if let Some(idx) = host.rfind(':') {
-            host = host[..idx].to_string();
+        if let Some((before_port, _)) = host.rsplit_once(':') {
+            host = before_port;
         }
     }
-    let host = host.trim_matches('.').to_string();
+    let host = host.trim_matches('.').to_ascii_lowercase();
     (!host.is_empty()).then_some(host)
 }
 

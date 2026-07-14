@@ -3,11 +3,11 @@
 mod common_tests;
 
 use agent_client_protocol::schema::{ForkSessionRequest, ForkSessionResponse, SessionId};
-use common_tests::fixtures::server::AcpServerConnection;
-use common_tests::fixtures::{run_test, Connection, OpenAiFixture, TestConnectionConfig};
 use bharatcode_core::config::GooseMode;
 use bharatcode_core::conversation::message::{Message, MessageContent};
 use bharatcode_core::session::{SessionManager, SessionType};
+use common_tests::fixtures::server::AcpServerConnection;
+use common_tests::fixtures::{run_test, Connection, OpenAiFixture, TestConnectionConfig};
 use std::path::Path;
 
 async fn new_connection(data_root: &Path) -> AcpServerConnection {
